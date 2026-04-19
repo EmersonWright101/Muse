@@ -38,7 +38,12 @@ export async function encryptData(plaintext: string, password: string): Promise<
   combined.set(iv, SALT_LEN);
   combined.set(new Uint8Array(encrypted), SALT_LEN + IV_LEN);
 
-  return btoa(String.fromCharCode(...combined));
+  // Chunk to avoid "Maximum call stack size exceeded" on large payloads
+  let binary = ''
+  for (let i = 0; i < combined.length; i += 8192) {
+    binary += String.fromCharCode(...combined.subarray(i, i + 8192))
+  }
+  return btoa(binary);
 }
 
 /** Decrypt a base64-encoded ciphertext produced by encryptData. */

@@ -1,19 +1,20 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { marked, type Tokens } from 'marked'
 import hljs from 'highlight.js'
 import DOMPurify from 'dompurify'
-import { Copy, Check, Pencil, RefreshCw, FileText } from 'lucide-vue-next'
+import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Bot, AtSign } from 'lucide-vue-next'
 import type { ChatMessage } from '../../../stores/chat'
 import { useChatStore } from '../../../stores/chat'
+import { useAiSettingsStore } from '../../../stores/aiSettings'
 
 const props = defineProps<{ message: ChatMessage; streaming?: boolean }>()
 
 const chat = useChatStore()
+const ai   = useAiSettingsStore()
 
-// ─── Hover + copy + edit ──────────────────────────────────────────────────────
+// ─── Copy + edit ─────────────────────────────────────────────────────────────
 
-const isHovered = ref(false)
 const copyDone  = ref(false)
 const isEditing = ref(false)
 const editText  = ref('')
@@ -75,7 +76,7 @@ function renderMarkdown(content: string): string {
 const msgEl = ref<HTMLElement>()
 
 const renderedContent = computed(() =>
-  props.message.role === 'user' ? '' : renderMarkdown(props.message.content ?? '')
+  props.message.role === 'user' ? '' : renderMarkdown(displayedContent.value)
 )
 
 onMounted(() => {
@@ -88,18 +89,118 @@ onMounted(() => {
 // ─── Avatar ───────────────────────────────────────────────────────────────────
 
 const isUser = computed(() => props.message.role === 'user')
+
+// Auto-discover model SVGs from assets/models/*.svg via Vite glob.
+// Each module's .default is the resolved asset URL (same as a plain SVG import).
+// Adding a new <name>.svg to that folder is all that's needed to support a new model.
+const modelSvgModules = import.meta.glob<{ default: string }>('/src/assets/models/*.svg', { eager: true })
+
+// Helper: look up SVG URL for any model/provider pair
+function lookupLogoUrl(model: string, providerId: string): string | null {
+  const mid = model.toLowerCase()
+  const pid = providerId.toLowerCase()
+  const svgMap: Record<string, string> = {}
+  for (const [path, mod] of Object.entries(modelSvgModules)) {
+    const name = path.replace(/^.*\//, '').replace(/\.svg$/, '')
+    svgMap[name] = mod.default
+  }
+  for (const name of Object.keys(svgMap)) { if (mid.includes(name)) return svgMap[name] }
+  for (const name of Object.keys(svgMap)) { if (pid.includes(name)) return svgMap[name] }
+  return null
+}
+
+const modelLogoUrl = computed<string | null>(() =>
+  lookupLogoUrl(displayedModel.value, displayedProviderId.value)
+)
+
+// ─── Variants (multi-model responses) ────────────────────────────────────────
+
+// The currently displayed response: idx 0 = original message, 1+ = variants[idx-1]
+const activeVariantIdx = computed(() => props.message.activeVariantIdx ?? 0)
+
+const activeVariantData = computed(() => {
+  const idx = activeVariantIdx.value
+  if (idx === 0 || !props.message.variants?.length) return null
+  return props.message.variants[idx - 1] ?? null
+})
+
+// All "slots": [{model, providerId}] — original first, then each variant
+const allVariantSlots = computed(() => {
+  const orig = [{ model: props.message.model ?? '', providerId: props.message.providerId ?? '' }]
+  const extras = (props.message.variants ?? []).map(v => ({ model: v.model, providerId: v.providerId }))
+  return [...orig, ...extras]
+})
+
+// Content / model / usage shown in the bubble come from the active slot
+const displayedModel      = computed(() => activeVariantData.value?.model      ?? props.message.model      ?? '')
+const displayedProviderId = computed(() => activeVariantData.value?.providerId ?? props.message.providerId ?? '')
+const displayedContent    = computed(() => activeVariantData.value?.content    ?? props.message.content    ?? '')
+const displayedUsage      = computed(() => activeVariantData.value?.usage      ?? props.message.usage)
+const displayedReasoning  = computed(() => activeVariantData.value?.reasoning  ?? props.message.reasoning)
+const displayedError      = computed(() => activeVariantData.value?.error      ?? props.message.error)
+
+// Short display name: strip provider prefix
+const modelDisplayName = computed(() => {
+  const raw   = displayedModel.value
+  const slash = raw.indexOf('/')
+  return slash > 0 ? raw.slice(slash + 1) : raw
+})
+
+// ─── @ Model picker ───────────────────────────────────────────────────────────
+
+const pickerOpen = ref(false)
+const pickerRoot = ref<HTMLElement>()
+
+function togglePicker() { pickerOpen.value = !pickerOpen.value }
+
+function selectModelForVariant(providerId: string, modelId: string) {
+  pickerOpen.value = false
+  chat.regenerateWithModel(props.message.id, providerId, modelId)
+}
+
+function handleOutside(e: MouseEvent) {
+  if (pickerRoot.value && !pickerRoot.value.contains(e.target as Node)) pickerOpen.value = false
+}
+
+onMounted(()    => document.addEventListener('mousedown', handleOutside))
+onUnmounted(()  => document.removeEventListener('mousedown', handleOutside))
+
+const configuredProviders = computed(() => ai.configuredProviders())
+
+// ─── Reasoning collapse ───────────────────────────────────────────────────────
+
+const reasoningExpanded = ref(true)
+
+// ─── Media lightbox ───────────────────────────────────────────────────────────
+
+const lightboxSrc = ref<string | null>(null)
+
+function openLightbox(mimeType: string, data: string) {
+  lightboxSrc.value = `data:${mimeType};base64,${data}`
+}
+
+function openLightboxUrl(url: string) {
+  lightboxSrc.value = url
+}
 </script>
 
 <template>
+  <!-- Image lightbox -->
+  <Teleport to="body">
+    <div v-if="lightboxSrc" class="lightbox-overlay" @click="lightboxSrc = null">
+      <img :src="lightboxSrc" class="lightbox-img" @click.stop />
+      <button class="lightbox-close" @click="lightboxSrc = null">✕</button>
+    </div>
+  </Teleport>
+
   <div
     class="message-row"
     :class="{ 'user-row': isUser, 'assistant-row': !isUser }"
-    @mouseenter="isHovered = true"
-    @mouseleave="isHovered = false"
   >
     <!-- Assistant avatar -->
     <div v-if="!isUser" class="avatar">
-      <div class="avatar-mark">M</div>
+      <img v-if="modelLogoUrl" :src="modelLogoUrl" class="avatar-logo" alt="" />
+      <div v-else class="avatar-mark">M</div>
     </div>
 
     <!-- Message bubble -->
@@ -112,6 +213,8 @@ const isUser = computed(() => props.message.role === 'user')
             :src="`data:${att.mimeType};base64,${att.data}`"
             class="attachment-img"
             :alt="att.name"
+          style="cursor: zoom-in"
+          @click="openLightbox(att.mimeType, att.data!)"
           />
           <div v-else-if="att.mimeType === 'application/pdf'" class="attachment-pdf">
             <FileText :size="15" class="pdf-att-icon" />
@@ -145,8 +248,18 @@ const isUser = computed(() => props.message.role === 'user')
         <span v-else class="user-text">{{ message.content }}</span>
       </div>
 
+      <!-- Reasoning block (collapsible) -->
+      <div v-if="!isUser && displayedReasoning" class="reasoning-block">
+        <button class="reasoning-header" @click="reasoningExpanded = !reasoningExpanded">
+          <ChevronDown :size="12" class="reasoning-chevron" :class="{ expanded: reasoningExpanded }" />
+          <span class="reasoning-header-label">思考过程</span>
+          <span class="reasoning-header-len">{{ displayedReasoning.length }} 字符</span>
+        </button>
+        <div v-if="reasoningExpanded" class="reasoning-content">{{ displayedReasoning }}</div>
+      </div>
+
       <!-- Assistant message: rendered markdown or inline edit -->
-      <template v-else>
+      <template v-if="!isUser">
         <template v-if="isEditing">
           <textarea
             v-model="editText"
@@ -163,14 +276,34 @@ const isUser = computed(() => props.message.role === 'user')
           v-else
           ref="msgEl"
           class="bubble assistant-bubble markdown-body"
-          :class="{ error: message.error, streaming }"
+          :class="{ error: displayedError, streaming }"
           v-html="renderedContent"
         />
       </template>
 
+      <!-- Media outputs (images / videos returned by model) -->
+      <div v-if="!isUser && message.mediaOutputs?.length" class="media-outputs">
+        <template v-for="(out, idx) in message.mediaOutputs" :key="idx">
+          <img
+            v-if="out.mimeType.startsWith('image/')"
+            :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
+            class="media-img"
+            :alt="`生成图片 ${idx + 1}`"
+            @click="out.url ? openLightboxUrl(out.url) : openLightbox(out.mimeType, out.data!)"
+          />
+          <video
+            v-else-if="out.mimeType.startsWith('video/')"
+            :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
+            class="media-video"
+            controls
+            preload="metadata"
+          />
+        </template>
+      </div>
+
       <!-- Footer: action buttons left, usage stats right -->
       <div v-if="!isEditing" class="msg-footer">
-        <div class="msg-actions" :style="{ opacity: isHovered ? 1 : 0 }">
+        <div class="msg-actions">
           <button class="action-btn" :class="{ done: copyDone }" title="复制" @click="copyContent">
             <Check v-if="copyDone" :size="13" />
             <Copy v-else :size="13" />
@@ -181,12 +314,62 @@ const isUser = computed(() => props.message.role === 'user')
           <button v-if="!isUser && !streaming" class="action-btn" title="重新生成" @click="chat.regenerate(message.id)">
             <RefreshCw :size="13" />
           </button>
+          <!-- @ button: pick another model to answer -->
+          <div v-if="!isUser && !streaming" ref="pickerRoot" class="picker-wrap">
+            <button class="action-btn" title="用其他模型回答" @click="togglePicker">
+              <AtSign :size="13" />
+            </button>
+            <Transition name="picker-pop">
+              <div v-if="pickerOpen" class="model-picker-popup">
+                <div v-for="p in configuredProviders" :key="p.id" class="picker-group">
+                  <div class="picker-group-label">{{ p.name }}</div>
+                  <button
+                    v-for="m in p.models"
+                    :key="m.id"
+                    class="picker-model-item"
+                    @click="selectModelForVariant(p.id, m.id)"
+                  >{{ m.name || m.id }}</button>
+                </div>
+              </div>
+            </Transition>
+          </div>
         </div>
-        <div v-if="!isUser && message.usage && !streaming" class="msg-usage">
-          <span v-if="message.usage.inputTokens != null">↑{{ message.usage.inputTokens }}</span>
-          <span v-if="message.usage.outputTokens != null">↓{{ message.usage.outputTokens }}</span>
-          <span v-if="message.usage.durationMs != null">{{ (message.usage.durationMs / 1000).toFixed(1) }}s</span>
-          <span v-if="message.usage.costUsd != null">${{ message.usage.costUsd.toFixed(4) }}</span>
+
+        <div v-if="!isUser && (displayedUsage || modelDisplayName) && !streaming" class="msg-usage">
+          <span v-if="modelDisplayName" class="msg-model-name">
+            <Bot :size="10" />{{ modelDisplayName }}
+          </span>
+          <span v-if="displayedUsage?.inputTokens != null">↑{{ displayedUsage.inputTokens }}</span>
+          <span v-if="displayedUsage?.outputTokens != null">↓{{ displayedUsage.outputTokens }}</span>
+          <span v-if="displayedUsage?.durationMs != null">{{ (displayedUsage.durationMs / 1000).toFixed(1) }}s</span>
+          <span v-if="displayedUsage?.costUsd != null">${{ displayedUsage.costUsd.toFixed(4) }}</span>
+        </div>
+      </div>
+
+      <!-- Variant switcher: shown when there are multiple model responses -->
+      <div v-if="!isUser && allVariantSlots.length > 1" class="variant-switcher">
+        <div
+          v-for="(slot, idx) in allVariantSlots"
+          :key="idx"
+          class="variant-slot"
+        >
+          <button
+            class="variant-btn"
+            :class="{
+              active: activeVariantIdx === idx,
+              streaming: chat.streamingVariantMsgId === message.id && activeVariantIdx === idx && idx > 0
+            }"
+            @click="chat.setActiveVariant(message.id, idx)"
+          >
+            <img
+              v-if="lookupLogoUrl(slot.model, slot.providerId)"
+              :src="lookupLogoUrl(slot.model, slot.providerId)!"
+              class="variant-logo"
+              alt=""
+            />
+            <span v-else class="variant-letter">{{ slot.model.charAt(0).toUpperCase() }}</span>
+          </button>
+          <span class="variant-tooltip">{{ slot.model }}</span>
         </div>
       </div>
     </div>
@@ -228,6 +411,13 @@ const isUser = computed(() => props.message.role === 'user')
   color: white;
   font-size: 13px;
   font-weight: 700;
+}
+
+.avatar-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  object-fit: contain;
 }
 
 .bubble-wrap {
@@ -367,16 +557,157 @@ const isUser = computed(() => props.message.role === 'user')
   align-items: center;
   opacity: 0;
   transition: opacity 0.15s;
+  will-change: opacity;
+}
+
+.message-row:hover .msg-actions {
+  opacity: 1;
 }
 
 
 .msg-usage {
   margin-left: auto;
   display: flex;
+  align-items: center;
   gap: 8px;
   font-size: 11px;
   color: #8e8e93;
 }
+
+.msg-model-name {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding-right: 4px;
+  border-right: 1px solid rgba(0, 0, 0, 0.10);
+}
+
+/* ─── @ Model picker ────────────────────────────────────────────────────────── */
+.picker-wrap {
+  position: relative;
+}
+
+.model-picker-popup {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  background: white;
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  min-width: 180px;
+  max-height: 320px;
+  overflow-y: auto;
+  z-index: 100;
+}
+
+.model-picker-popup::-webkit-scrollbar { width: 3px; }
+.model-picker-popup::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.10); border-radius: 2px; }
+
+.picker-group { margin-bottom: 4px; }
+.picker-group:last-child { margin-bottom: 0; }
+
+.picker-group-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #aeaeb2;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 4px 8px 2px;
+}
+
+.picker-model-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 5px 8px;
+  font-size: 12px;
+  color: #1c1c1e;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.picker-model-item:hover { background: rgba(0, 0, 0, 0.05); }
+
+.picker-pop-enter-active, .picker-pop-leave-active { transition: opacity 0.12s, transform 0.12s; }
+.picker-pop-enter-from, .picker-pop-leave-to { opacity: 0; transform: translateY(4px); }
+
+/* ─── Variant switcher ──────────────────────────────────────────────────────── */
+.variant-switcher {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.variant-slot {
+  position: relative;
+}
+
+.variant-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.12s, background 0.12s;
+  overflow: hidden;
+}
+
+.variant-btn:hover { background: rgba(0, 0, 0, 0.08); }
+.variant-btn.active { border-color: #223F79; background: rgba(34, 63, 121, 0.06); }
+
+@keyframes pulse-ring {
+  0%   { box-shadow: 0 0 0 0 rgba(34, 63, 121, 0.4); }
+  70%  { box-shadow: 0 0 0 4px rgba(34, 63, 121, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(34, 63, 121, 0); }
+}
+.variant-btn.streaming { animation: pulse-ring 1.2s ease-out infinite; }
+
+.variant-logo {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+.variant-letter {
+  font-size: 11px;
+  font-weight: 700;
+  color: #8e8e93;
+}
+
+/* Instant CSS tooltip — no delay */
+.variant-tooltip {
+  position: absolute;
+  bottom: calc(100% + 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(28, 28, 30, 0.88);
+  color: white;
+  font-size: 10px;
+  white-space: nowrap;
+  padding: 3px 7px;
+  border-radius: 5px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.08s;
+  z-index: 10;
+}
+
+.variant-slot:hover .variant-tooltip { opacity: 1; }
 
 .action-btn {
   width: 24px;
@@ -449,6 +780,140 @@ const isUser = computed(() => props.message.role === 'user')
   padding: 4px 12px;
   cursor: pointer;
 }
+
+/* ─── Reasoning block ───────────────────────────────────────────────────────── */
+.reasoning-block {
+  border: 1px solid rgba(34, 63, 121, 0.12);
+  border-radius: 10px;
+  background: rgba(34, 63, 121, 0.03);
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.reasoning-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.reasoning-header:hover { background: rgba(34, 63, 121, 0.05); }
+
+.reasoning-chevron {
+  color: #8e8e93;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.reasoning-chevron.expanded { transform: rotate(180deg); }
+
+.reasoning-header-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(34, 63, 121, 0.7);
+}
+
+.reasoning-header-len {
+  margin-left: auto;
+  font-size: 10px;
+  color: #aeaeb2;
+}
+
+.reasoning-content {
+  padding: 8px 10px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #6e6e73;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-top: 1px solid rgba(34, 63, 121, 0.08);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.reasoning-content::-webkit-scrollbar { width: 3px; }
+.reasoning-content::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.10); border-radius: 2px; }
+
+/* ─── Media outputs ─────────────────────────────────────────────────────────── */
+.media-outputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.media-img {
+  max-width: 480px;
+  max-height: 480px;
+  width: auto;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  cursor: zoom-in;
+  object-fit: contain;
+  transition: opacity 0.12s;
+}
+
+.media-img:hover { opacity: 0.92; }
+
+.media-video {
+  max-width: 520px;
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: #000;
+  outline: none;
+}
+
+/* ─── Lightbox ──────────────────────────────────────────────────────────────── */
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.lightbox-img {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 10px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  cursor: default;
+}
+
+.lightbox-close {
+  position: absolute;
+  top: 20px;
+  right: 24px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s;
+}
+
+.lightbox-close:hover { background: rgba(255, 255, 255, 0.25); }
 </style>
 
 <!-- Markdown + code block styles (not scoped so they apply to v-html content) -->

@@ -1,17 +1,24 @@
 <script setup lang="ts">
 import {
-  ref, computed, watch, nextTick, onMounted,
+  ref, computed, watch, nextTick, onMounted, onUnmounted,
 } from 'vue'
 import {
-  Send, Square, Paperclip, MessageSquare, X, FileText,
+  Send, Square, Paperclip, MessageSquare, X, FileText, Eraser, SquarePen, Brain,
 } from 'lucide-vue-next'
-import { useChatStore }      from '../../stores/chat'
-import MessageItem           from './components/MessageItem.vue'
-import ModelSelector         from './components/ModelSelector.vue'
-import type { AttachmentMeta } from '../../stores/chat'
-import { processPdfFile }    from '../../utils/pdf'
+import { useChatStore }         from '../../stores/chat'
+import { useAssistantsStore }   from '../../stores/assistants'
+import MessageItem              from './components/MessageItem.vue'
+import ModelSelector            from './components/ModelSelector.vue'
+import type { AttachmentMeta }  from '../../stores/chat'
+import { processPdfFile }       from '../../utils/pdf'
 
-const chat = useChatStore()
+const chat       = useChatStore()
+const assistants = useAssistantsStore()
+
+const activeAssistant = computed(() => {
+  const id = chat.activeConv?.assistantId
+  return id ? assistants.assistants.find(a => a.id === id) : undefined
+})
 
 // ─── Input state ──────────────────────────────────────────────────────────────
 
@@ -217,6 +224,20 @@ function startNewChat() {
   chat.newConversation()
   nextTick(() => textareaEl.value?.focus())
 }
+
+// ─── Reasoning popover ────────────────────────────────────────────────────────
+
+const reasoningOpen = ref(false)
+const reasoningRoot = ref<HTMLElement>()
+
+function handleReasoningOutside(e: MouseEvent) {
+  if (reasoningRoot.value && !reasoningRoot.value.contains(e.target as Node)) {
+    reasoningOpen.value = false
+  }
+}
+
+onMounted(()  => document.addEventListener('mousedown', handleReasoningOutside))
+onUnmounted(() => document.removeEventListener('mousedown', handleReasoningOutside))
 </script>
 
 <template>
@@ -238,7 +259,17 @@ function startNewChat() {
       <!-- Conv title bar -->
       <div class="conv-header">
         <span class="conv-title">{{ chat.activeConv?.title }}</span>
-        <span class="conv-model">{{ chat.activeConv?.model }}</span>
+        <div class="conv-meta">
+          <span
+            v-if="activeAssistant"
+            class="conv-assistant-badge"
+            :style="{ background: activeAssistant.color + '22', color: activeAssistant.color, borderColor: activeAssistant.color + '44' }"
+          >
+            <span class="badge-dot" :style="{ background: activeAssistant.color }" />
+            {{ activeAssistant.name }}
+          </span>
+          <ModelSelector drop-down />
+        </div>
       </div>
 
       <!-- Messages area -->
@@ -252,63 +283,120 @@ function startNewChat() {
             <p class="placeholder-hint">有什么可以帮您？</p>
           </div>
 
-          <!-- Message list -->
-          <MessageItem
-            v-for="(msg, i) in messages"
-            :key="msg.id"
-            :message="msg"
-            :streaming="chat.isStreaming && i === messages.length - 1 && msg.role === 'assistant'"
-          />
+          <!-- Message list with context divider -->
+          <template v-for="(msg, i) in messages" :key="msg.id">
+            <MessageItem
+              :message="msg"
+              :streaming="chat.isStreaming && i === messages.length - 1 && msg.role === 'assistant'"
+            />
+            <!-- Context cutoff divider appears after the cutoff message -->
+            <div v-if="msg.id === chat.activeConv?.contextCutoffMsgId" class="context-divider">
+              <div class="context-divider-line" />
+              <span class="context-divider-label">以下为发送给 AI 的上下文</span>
+              <button class="context-divider-remove" title="取消清除" @click="chat.removeContextCutoff()">
+                <X :size="11" />
+              </button>
+              <div class="context-divider-line" />
+            </div>
+          </template>
         </div>
       </div>
 
       <!-- Input area -->
       <div class="input-area">
-        <!-- Pending attachment previews -->
-        <div v-if="pendingImages.length > 0 || pdfLoading" class="pending-images">
-          <!-- PDF loading indicator -->
-          <div v-if="pdfLoading" class="pending-pdf-chip loading">
-            <FileText :size="14" class="pdf-chip-icon" />
-            <span class="pdf-chip-name">正在解析…</span>
-          </div>
-          <template v-for="att in pendingImages" :key="att.id">
-            <!-- Image preview -->
-            <div v-if="att.mimeType.startsWith('image/')" class="pending-img-wrap">
-              <img :src="`data:${att.mimeType};base64,${att.data}`" class="pending-img" :alt="att.name" />
-              <button class="remove-img-btn" @click="removeImage(att.id)"><X :size="10" /></button>
-            </div>
-            <!-- PDF chip -->
-            <div v-else-if="att.mimeType === 'application/pdf'" class="pending-pdf-chip">
-              <FileText :size="14" class="pdf-chip-icon" />
-              <div class="pdf-chip-info">
-                <span class="pdf-chip-name">{{ att.name }}</span>
-                <span v-if="att.pageCount" class="pdf-chip-pages">{{ att.pageCount }} 页</span>
-              </div>
-              <button class="remove-img-btn pdf-remove" @click="removeImage(att.id)"><X :size="10" /></button>
-            </div>
-          </template>
-        </div>
-
         <!-- PDF warning -->
         <div v-if="pdfWarning" class="pdf-warning">{{ pdfWarning }}</div>
 
-        <!-- Text input -->
+        <!-- Unified input box -->
         <div class="input-box">
+          <!-- Attachment previews — only rendered when there are attachments -->
+          <div v-if="pendingImages.length > 0 || pdfLoading" class="pending-images">
+            <div v-if="pdfLoading" class="pending-pdf-chip loading">
+              <FileText :size="14" class="pdf-chip-icon" />
+              <span class="pdf-chip-name">正在解析…</span>
+            </div>
+            <template v-for="att in pendingImages" :key="att.id">
+              <div v-if="att.mimeType.startsWith('image/')" class="pending-img-wrap">
+                <img :src="`data:${att.mimeType};base64,${att.data}`" class="pending-img" :alt="att.name" />
+                <button class="remove-img-btn" @click="removeImage(att.id)"><X :size="10" /></button>
+              </div>
+              <div v-else-if="att.mimeType === 'application/pdf'" class="pending-pdf-chip">
+                <FileText :size="14" class="pdf-chip-icon" />
+                <div class="pdf-chip-info">
+                  <span class="pdf-chip-name">{{ att.name }}</span>
+                  <span v-if="att.pageCount" class="pdf-chip-pages">{{ att.pageCount }} 页</span>
+                </div>
+                <button class="remove-img-btn pdf-remove" @click="removeImage(att.id)"><X :size="10" /></button>
+              </div>
+            </template>
+          </div>
+
+          <!-- Textarea -->
           <textarea
             ref="textareaEl"
             v-model="inputText"
             class="input-textarea"
-            placeholder="输入消息… (Enter 发送，Shift+Enter 换行)"
+            placeholder="输入消息…"
             rows="1"
             @keydown="handleKeydown"
             @compositionstart="onCompositionStart"
             @compositionend="onCompositionEnd"
             @paste="handlePaste"
           />
-          <div class="input-actions">
-            <button class="tool-btn" title="附加图片或 PDF" @click="pickFile">
-              <Paperclip :size="16" />
+
+          <!-- Bottom toolbar -->
+          <div class="input-toolbar">
+            <button class="toolbar-btn" title="新建对话" @click="startNewChat()">
+              <SquarePen :size="15" />
             </button>
+            <button class="toolbar-btn" title="附加图片或 PDF" @click="pickFile">
+              <Paperclip :size="15" />
+            </button>
+            <!-- Reasoning picker -->
+            <div ref="reasoningRoot" class="reasoning-picker">
+              <button
+                class="toolbar-btn"
+                :class="{ 'toolbar-btn-active': chat.useReasoning }"
+                title="推理设置"
+                @click="reasoningOpen = !reasoningOpen"
+              >
+                <Brain :size="15" />
+              </button>
+              <Transition name="reasoning-drop">
+                <div v-if="reasoningOpen" class="reasoning-popover">
+                  <div class="reasoning-row">
+                    <span class="reasoning-label">推理模式</span>
+                    <button
+                      class="reasoning-toggle-btn"
+                      :class="{ on: chat.useReasoning }"
+                      @click="chat.setReasoning(!chat.useReasoning)"
+                    >
+                      <span class="toggle-knob" />
+                    </button>
+                  </div>
+                  <div v-if="chat.useReasoning" class="reasoning-levels">
+                    <button
+                      v-for="lv in (['low', 'medium', 'high'] as const)"
+                      :key="lv"
+                      class="level-btn"
+                      :class="{ active: chat.reasoningLevel === lv }"
+                      @click="chat.setReasoningLevel(lv)"
+                    >
+                      {{ lv === 'low' ? '低' : lv === 'medium' ? '中' : '高' }}
+                    </button>
+                  </div>
+                </div>
+              </Transition>
+            </div>
+            <button
+              class="toolbar-btn"
+              :class="{ 'toolbar-btn-active': !!chat.activeConv?.contextCutoffMsgId }"
+              title="清除上下文（不删除记录，仅减少发送给 AI 的历史）"
+              @click="chat.clearContext()"
+            >
+              <Eraser :size="15" />
+            </button>
+            <span class="toolbar-spacer" />
             <button
               v-if="chat.isStreaming"
               class="send-btn stop"
@@ -320,7 +408,7 @@ function startNewChat() {
             <button
               v-else
               class="send-btn"
-              :class="{ disabled: !canSend }"
+              :class="{ active: canSend }"
               title="发送 (Enter)"
               :disabled="!canSend"
               @click="send()"
@@ -328,12 +416,6 @@ function startNewChat() {
               <Send :size="15" />
             </button>
           </div>
-        </div>
-
-        <!-- Bottom bar: model selector + hint -->
-        <div class="bottom-bar">
-          <ModelSelector />
-          <span class="input-hint">Enter 发送 · Shift+Enter 换行</span>
         </div>
       </div>
     </template>
@@ -436,12 +518,33 @@ function startNewChat() {
   flex: 1;
 }
 
-.conv-model {
-  font-size: 11px;
-  color: #8e8e93;
+.conv-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex-shrink: 0;
   margin-left: 12px;
 }
+
+.conv-assistant-badge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 5px;
+  border: 1px solid;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
 
 /* ─── Messages ─────────────────────────────────────────────────────────────── */
 .messages-area {
@@ -501,7 +604,6 @@ function startNewChat() {
 .input-area {
   flex-shrink: 0;
   padding: 12px 24px 16px;
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
   max-width: 860px;
   width: 100%;
   margin: 0 auto;
@@ -512,7 +614,7 @@ function startNewChat() {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 10px;
+  padding: 4px 0 10px;
 }
 
 .pending-img-wrap {
@@ -545,12 +647,11 @@ function startNewChat() {
 
 .input-box {
   display: flex;
-  align-items: flex-end;
-  gap: 10px;
+  flex-direction: column;
   background: #f5f5f7;
   border: 1.5px solid rgba(0, 0, 0, 0.09);
   border-radius: 14px;
-  padding: 10px 10px 10px 14px;
+  padding: 12px 12px 8px 14px;
   transition: border-color 0.15s;
 }
 
@@ -560,7 +661,7 @@ function startNewChat() {
 }
 
 .input-textarea {
-  flex: 1;
+  width: 100%;
   min-width: 0;
   background: transparent;
   border: none;
@@ -572,6 +673,7 @@ function startNewChat() {
   font-family: inherit;
   max-height: 180px;
   overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .input-textarea::placeholder { color: #aeaeb2; }
@@ -579,60 +681,104 @@ function startNewChat() {
 .input-textarea::-webkit-scrollbar { width: 3px; }
 .input-textarea::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.10); border-radius: 2px; }
 
-.input-actions {
+.input-toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
+  gap: 2px;
+  margin-top: 8px;
 }
 
-.tool-btn {
-  width: 32px;
-  height: 32px;
+.toolbar-spacer { flex: 1; }
+
+.toolbar-btn {
+  width: 28px;
+  height: 28px;
   border: none;
   background: transparent;
   color: #8e8e93;
-  border-radius: 8px;
+  border-radius: 7px;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
-}
-
-.tool-btn:hover { background: rgba(0, 0, 0, 0.06); color: #3c3c43; }
-
-.send-btn {
-  width: 32px;
-  height: 32px;
-  border: none;
-  border-radius: 9px;
-  background: #223F79;
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: opacity 0.12s, background 0.12s;
   flex-shrink: 0;
 }
 
-.send-btn:hover { opacity: 0.85; }
-.send-btn.disabled { opacity: 0.35; cursor: not-allowed; }
-.send-btn.stop { background: rgba(0, 0, 0, 0.12); color: #3c3c43; }
-.send-btn.stop:hover { background: rgba(0, 0, 0, 0.18); opacity: 1; }
+.toolbar-btn:hover { background: rgba(0, 0, 0, 0.06); color: #3c3c43; }
+.toolbar-btn-active { color: #223F79 !important; background: rgba(34, 63, 121, 0.08) !important; }
 
-.bottom-bar {
+.send-btn {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.10);
+  color: rgba(0, 0, 0, 0.25);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-top: 8px;
-  padding: 0 2px;
+  justify-content: center;
+  cursor: not-allowed;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
 }
 
-.input-hint {
+.send-btn.active {
+  background: #22c55e;
+  color: white;
+  cursor: pointer;
+}
+
+.send-btn.active:hover { background: #16a34a; }
+
+.send-btn.stop {
+  background: rgba(0, 0, 0, 0.12);
+  color: #3c3c43;
+  cursor: pointer;
+}
+
+.send-btn.stop:hover { background: rgba(0, 0, 0, 0.18); }
+
+/* ─── Context divider ──────────────────────────────────────────────────────── */
+.context-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  user-select: none;
+}
+
+.context-divider-line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(34, 63, 121, 0.25), transparent);
+}
+
+.context-divider-label {
   font-size: 11px;
-  color: #aeaeb2;
+  color: rgba(34, 63, 121, 0.6);
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.context-divider-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: rgba(34, 63, 121, 0.08);
+  color: rgba(34, 63, 121, 0.5);
+  border-radius: 50%;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.context-divider-remove:hover {
+  background: rgba(34, 63, 121, 0.16);
+  color: rgba(34, 63, 121, 0.8);
 }
 
 .hidden-file-input {
@@ -686,5 +832,102 @@ function startNewChat() {
 .pdf-remove {
   margin-left: auto;
   flex-shrink: 0;
+}
+
+/* ─── Reasoning popover ─────────────────────────────────────────────────────── */
+.reasoning-picker {
+  position: relative;
+}
+
+.reasoning-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 168px;
+  background: rgba(250, 250, 252, 0.97);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  padding: 10px;
+  z-index: 100;
+}
+
+.reasoning-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reasoning-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #1c1c1e;
+}
+
+.reasoning-toggle-btn {
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  border: none;
+  background: rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  position: relative;
+  transition: background 0.2s;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.reasoning-toggle-btn.on { background: #22c55e; }
+
+.toggle-knob {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.reasoning-toggle-btn.on .toggle-knob { transform: translateX(16px); }
+
+.reasoning-levels {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.level-btn {
+  flex: 1;
+  padding: 4px 0;
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12px;
+  color: #3c3c43;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.level-btn:hover { background: rgba(0, 0, 0, 0.05); }
+
+.level-btn.active {
+  background: rgba(34, 63, 121, 0.10);
+  border-color: rgba(34, 63, 121, 0.30);
+  color: #223F79;
+  font-weight: 500;
+}
+
+.reasoning-drop-enter-active, .reasoning-drop-leave-active {
+  transition: opacity 0.12s, transform 0.12s;
+}
+.reasoning-drop-enter-from, .reasoning-drop-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
 }
 </style>

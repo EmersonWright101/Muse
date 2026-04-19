@@ -3,6 +3,8 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ChevronDown, Check } from 'lucide-vue-next'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
 
+const props = defineProps<{ dropDown?: boolean }>()
+
 const ai    = useAiSettingsStore()
 const open  = ref(false)
 const root  = ref<HTMLElement>()
@@ -39,7 +41,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleOutside))
     </button>
 
     <Transition name="dropdown">
-      <div v-if="open" class="dropdown">
+      <div v-if="open" class="dropdown" :class="{ 'drop-down': props.dropDown }">
         <div v-if="configuredProviders.length === 0" class="no-providers">
           请先在设置中添加 API Key
         </div>
@@ -56,6 +58,8 @@ onUnmounted(() => document.removeEventListener('mousedown', handleOutside))
               <Check v-if="ai.activeProviderId === p.id && p.selectedModelId === m.id" :size="11" class="check-icon" />
               <span v-else class="check-placeholder" />
               <span class="m-name">{{ m.name }}</span>
+              <span v-if="m.reasoning"   class="m-cap reasoning">思考</span>
+              <span v-if="m.imageOutput" class="m-cap image">图像</span>
               <span v-if="m.contextLength" class="m-ctx">{{ formatCtx(m.contextLength) }}</span>
             </button>
           </div>
@@ -120,7 +124,8 @@ function formatCtx(n: number): string {
 .dropdown {
   position: absolute;
   bottom: calc(100% + 8px);
-  left: 0;
+  right: 0;
+  left: auto;
   min-width: 240px;
   max-height: 320px;
   overflow-y: auto;
@@ -184,6 +189,22 @@ function formatCtx(n: number): string {
   background: rgba(0, 0, 0, 0.05);
   padding: 1px 5px;
   border-radius: 4px;
+}
+
+.m-cap {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.m-cap.reasoning { background: rgba(88, 86, 214, 0.10); color: #5856d6; }
+.m-cap.image     { background: rgba(255, 149, 0, 0.12); color: #c8710a; }
+
+.drop-down {
+  bottom: auto;
+  top: calc(100% + 8px);
 }
 
 /* Transition */

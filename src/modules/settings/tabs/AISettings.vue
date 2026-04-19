@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Eye, EyeOff, Plus, Trash2, Check, X, ChevronRight, RefreshCw } from 'lucide-vue-next'
-import { useAiSettingsStore, type AIProvider } from '../../../stores/aiSettings'
+import { Eye, EyeOff, Plus, Trash2, Check, X, ChevronRight, RefreshCw, Search, SlidersHorizontal } from 'lucide-vue-next'
+import { useAiSettingsStore, inferModelCaps, type AIProvider } from '../../../stores/aiSettings'
+import openrouterLogoUrl from '../../../assets/providers/openrouter.svg'
 
 const ai = useAiSettingsStore()
 
@@ -10,7 +11,6 @@ const ai = useAiSettingsStore()
 const selectedId = ref(ai.providers[0]?.id ?? '')
 const selected   = computed(() => ai.providers.find(p => p.id === selectedId.value) ?? null)
 
-// When the selected provider is removed, move to the first available
 watch(() => ai.providers.length, () => {
   if (!ai.providers.find(p => p.id === selectedId.value)) {
     selectedId.value = ai.providers[0]?.id ?? ''
@@ -26,7 +26,6 @@ const addInputRef  = ref<HTMLInputElement | null>(null)
 function confirmAddProvider() {
   const name = (addInputRef.value?.value ?? newProvName.value).trim()
   if (!name) return
-  // Direct mutation — bypasses ai.addProvider which may be undefined after HMR
   const id = `provider_${Date.now()}`
   const newP: AIProvider = {
     id,
@@ -65,7 +64,6 @@ function doDelete() {
   const nextId = ai.providers.find(p => p.id !== id)?.id ?? ''
   selectedId.value    = nextId
   confirmDelete.value = false
-  // Direct mutation — bypasses ai.removeProvider which may be undefined after HMR
   const idx = ai.providers.findIndex(p => p.id === id)
   if (idx !== -1) ai.providers.splice(idx, 1)
 }
@@ -74,7 +72,6 @@ function cancelDelete() {
   confirmDelete.value = false
 }
 
-// Reset confirm state when switching providers
 watch(selectedId, () => { confirmDelete.value = false })
 
 // ─── Detail panel editing ─────────────────────────────────────────────────────
@@ -99,14 +96,13 @@ function cancelEdit() {
 function saveEdit() {
   if (!selected.value) return
   const patch: Partial<Pick<AIProvider, 'apiKey' | 'baseUrl' | 'name'>> = {
-    apiKey:  editKey.value,
+    apiKey: editKey.value,
   }
   if (!selected.value.builtIn) patch.name = editName.value
   ai.updateProvider(selected.value.id, patch)
   editMode.value = false
 }
 
-// Reset edit state when switching providers
 watch(selectedId, () => { editMode.value = false; showKey.value = false })
 
 // ─── Model management ─────────────────────────────────────────────────────────
@@ -134,7 +130,6 @@ function cancelAddModel() {
   showAddModel.value = false
 }
 
-// Reset add-model form when switching providers
 watch(selectedId, () => { showAddModel.value = false; fetchModelError.value = '' })
 
 // ─── Connection test & model fetch ───────────────────────────────────────────
@@ -145,7 +140,6 @@ const connMessage = ref<Record<string, string>>({})
 
 function getConn(id: string): ConnStatus { return connStatus.value[id] ?? 'idle' }
 
-// Persist/restore "ok" status so toggle stays unlocked across sessions
 const CONN_OK_KEY = 'muse-ai-conn-ok'
 function persistConnOk(id: string) {
   try {
@@ -173,15 +167,8 @@ async function testConnection() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json()
     const list: Array<{ id: string }> = data.data ?? data.models ?? []
-    let added = 0
-    for (const m of list) {
-      if (m.id && !selected.value!.models.find(x => x.id === m.id)) {
-        ai.addCustomModel(selected.value!.id, { id: m.id, name: m.id })
-        added++
-      }
-    }
     connStatus.value[id]  = 'ok'
-    connMessage.value[id] = `连接成功，获取到 ${list.length} 个模型${added ? `，新增 ${added} 个` : '（已是最新）'}`
+    connMessage.value[id] = `连接成功，获取到 ${list.length} 个模型`
     persistConnOk(id)
     setTimeout(() => { connMessage.value[id] = '' }, 3000)
   } catch (e: unknown) {
@@ -193,21 +180,91 @@ async function testConnection() {
 const fetchingModels  = ref(false)
 const fetchModelError = ref('')
 
-// ─── Model picker popup ───────────────────────────────────────────────────────
+// ─── Model picker ─────────────────────────────────────────────────────────────
 
-const showModelPicker  = ref(false)
-const pickerModels     = ref<Array<{ id: string }>>([])
-const pickerSearch     = ref('')
-const pickerSelected   = ref<Set<string>>(new Set())
+interface PickerModel {
+  id:            string
+  name?:         string
+  context_length?: number
+  architecture?: { modality?: string }
+  pricing?:      { prompt?: string | number }
+}
 
-const filteredPickerModels = computed(() => {
-  const q = pickerSearch.value.toLowerCase().trim()
-  return q ? pickerModels.value.filter(m => m.id.toLowerCase().includes(q)) : pickerModels.value
+interface PickerCaps {
+  reasoning:   boolean
+  vision:      boolean
+  imageOutput: boolean
+  embedding:   boolean
+  reranking:   boolean
+}
+
+function getPickerCaps(m: PickerModel): PickerCaps {
+  const inferred = inferModelCaps(m.id, m.architecture?.modality)
+  const id  = m.id.toLowerCase()
+  const mod = (m.architecture?.modality ?? '').toLowerCase()
+  return {
+    reasoning:   inferred.reasoning   ?? false,
+    vision:      inferred.multimodal  ?? false,
+    imageOutput: inferred.imageOutput ?? false,
+    embedding:   mod.includes('embed') || /embed/.test(id),
+    reranking:   /rerank/.test(id),
+  }
+}
+
+const showModelPicker = ref(false)
+const pickerModels    = ref<PickerModel[]>([])
+const pickerSearch    = ref('')
+const pickerSelected  = ref<Set<string>>(new Set())
+const pickerTab       = ref<'all' | 'reasoning' | 'vision' | 'imageOutput' | 'embedding' | 'reranking'>('all')
+
+// Group OpenRouter-style "provider/model-name" by their prefix
+const pickerGroups = computed(() => {
+  const search = pickerSearch.value.toLowerCase().trim()
+  let list = search
+    ? pickerModels.value.filter(m =>
+        m.id.toLowerCase().includes(search) ||
+        (m.name ?? '').toLowerCase().includes(search))
+    : pickerModels.value
+
+  if (pickerTab.value !== 'all') {
+    const tab = pickerTab.value
+    list = list.filter(m => getPickerCaps(m)[tab])
+  }
+
+  // Group by prefix (e.g. "openai" from "openai/gpt-4o"), or "其他" if no slash
+  const groups = new Map<string, PickerModel[]>()
+  for (const m of list) {
+    const slash = m.id.indexOf('/')
+    const group = slash > 0 ? m.id.slice(0, slash) : '其他'
+    if (!groups.has(group)) groups.set(group, [])
+    groups.get(group)!.push(m)
+  }
+  return [...groups.entries()].map(([name, models]) => ({ name, models }))
+})
+
+const pickerTabs = computed(() => {
+  const counts = {
+    all:         pickerModels.value.length,
+    reasoning:   pickerModels.value.filter(m => getPickerCaps(m).reasoning).length,
+    vision:      pickerModels.value.filter(m => getPickerCaps(m).vision).length,
+    imageOutput: pickerModels.value.filter(m => getPickerCaps(m).imageOutput).length,
+    embedding:   pickerModels.value.filter(m => getPickerCaps(m).embedding).length,
+    reranking:   pickerModels.value.filter(m => getPickerCaps(m).reranking).length,
+  }
+  return [
+    { id: 'all'         as const, label: '全部', count: counts.all },
+    { id: 'reasoning'   as const, label: '推理', count: counts.reasoning },
+    { id: 'vision'      as const, label: '视觉', count: counts.vision },
+    { id: 'imageOutput' as const, label: '图像', count: counts.imageOutput },
+    { id: 'embedding'   as const, label: '嵌入', count: counts.embedding },
+    { id: 'reranking'   as const, label: '重排', count: counts.reranking },
+  ].filter(t => t.id === 'all' || t.count > 0)
 })
 
 function closeModelPicker() {
   showModelPicker.value = false
   pickerSearch.value    = ''
+  pickerTab.value       = 'all'
 }
 
 function togglePickerModel(id: string) {
@@ -219,13 +276,17 @@ function confirmPickerSelection() {
   if (!selected.value) return
   const prov = selected.value
   const fetchedIds = new Set(pickerModels.value.map(m => m.id))
-  // Add newly checked models
-  for (const id of pickerSelected.value) {
-    if (!prov.models.find(m => m.id === id)) {
-      ai.addCustomModel(prov.id, { id, name: id })
+  for (const m of pickerModels.value) {
+    if (pickerSelected.value.has(m.id) && !prov.models.find(x => x.id === m.id)) {
+      const caps = inferModelCaps(m.id, m.architecture?.modality)
+      ai.addCustomModel(prov.id, {
+        id:            m.id,
+        name:          m.name || m.id,
+        contextLength: m.context_length,
+        ...caps,
+      })
     }
   }
-  // Remove unchecked models that came from the fetched list
   for (const m of [...prov.models]) {
     if (fetchedIds.has(m.id) && !pickerSelected.value.has(m.id)) {
       ai.removeCustomModel(prov.id, m.id)
@@ -246,12 +307,12 @@ async function fetchModels() {
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json()
-    const list: Array<{ id: string }> = data.data ?? data.models ?? []
+    const list: PickerModel[] = data.data ?? data.models ?? []
     if (list.length === 0) { fetchModelError.value = '未返回任何模型'; return }
     pickerModels.value   = list
-    // Pre-select models already in the provider
     pickerSelected.value = new Set(list.filter(m => selected.value!.models.find(x => x.id === m.id)).map(m => m.id))
     pickerSearch.value   = ''
+    pickerTab.value      = 'all'
     showModelPicker.value = true
   } catch (e: unknown) {
     fetchModelError.value = `获取失败: ${e instanceof Error ? e.message : String(e)}`
@@ -292,6 +353,36 @@ function formatCtx(n: number): string {
   if (n >= 1_000)     return `${(n / 1_000).toFixed(0)}K`
   return String(n)
 }
+
+function isOpenRouter(p: AIProvider | null): boolean {
+  return !!(p && (p.id === 'openrouter' || (p.baseUrl && p.baseUrl.includes('openrouter.ai'))))
+}
+
+// Sub-provider initial for OpenRouter models (e.g. "openai" from "openai/gpt-4o")
+function subProviderInitial(modelId: string): string {
+  const slash = modelId.indexOf('/')
+  return slash > 0 ? modelId.slice(0, slash).charAt(0).toUpperCase() : modelId.charAt(0).toUpperCase()
+}
+
+// Model SVG logos — auto-discovered; adding a new <name>.svg to assets/models/ is enough
+const modelSvgModules = import.meta.glob<{ default: string }>('/src/assets/models/*.svg', { eager: true })
+
+function getModelLogoUrl(modelId: string, providerId = ''): string | null {
+  const mid = modelId.toLowerCase()
+  const pid = providerId.toLowerCase()
+  const svgMap: Record<string, string> = {}
+  for (const [path, mod] of Object.entries(modelSvgModules)) {
+    const name = path.replace(/^.*\//, '').replace(/\.svg$/, '')
+    svgMap[name] = mod.default
+  }
+  for (const name of Object.keys(svgMap)) {
+    if (mid.includes(name)) return svgMap[name]
+  }
+  for (const name of Object.keys(svgMap)) {
+    if (pid.includes(name)) return svgMap[name]
+  }
+  return null
+}
 </script>
 
 <template>
@@ -310,9 +401,18 @@ function formatCtx(n: number): string {
           :class="{ selected: selectedId === p.id }"
           @click="selectedId = p.id"
         >
-          <span class="p-dot" :style="{ background: providerColor(p.id) }">
-            {{ providerInitial(p.name) }}
-          </span>
+          <!-- Show actual logo for OpenRouter, otherwise color-dot -->
+          <span
+            v-if="!isOpenRouter(p)"
+            class="p-dot"
+            :style="{ background: providerColor(p.id) }"
+          >{{ providerInitial(p.name) }}</span>
+          <img
+            v-else
+            :src="openrouterLogoUrl"
+            class="p-logo-img"
+            alt="OpenRouter"
+          />
           <span class="p-name">{{ p.name }}</span>
           <span class="p-status" :class="getConn(p.id) === 'error' ? 'err' : p.enabled ? 'on' : 'off'">
             {{ getConn(p.id) === 'error' ? 'ERR' : p.enabled ? 'ON' : 'OFF' }}
@@ -339,7 +439,6 @@ function formatCtx(n: number): string {
         </div>
       </div>
 
-      <!-- Add button -->
       <button v-if="!showAddForm" class="add-provider-btn" @click="showAddForm = true">
         <Plus :size="13" />
         添加服务商
@@ -352,13 +451,20 @@ function formatCtx(n: number): string {
         <!-- Header -->
         <div class="detail-header">
           <div class="detail-title-row">
-            <span class="detail-dot" :style="{ background: providerColor(selected.id) }">
-              {{ providerInitial(selected.name) }}
-            </span>
+            <span
+              v-if="!isOpenRouter(selected)"
+              class="detail-dot"
+              :style="{ background: providerColor(selected.id) }"
+            >{{ providerInitial(selected.name) }}</span>
+            <img
+              v-else
+              :src="openrouterLogoUrl"
+              class="detail-logo-img"
+              alt="OpenRouter"
+            />
             <h2 class="detail-name">{{ selected.name }}</h2>
           </div>
           <div class="detail-header-actions">
-            <!-- Test connection -->
             <button
               class="test-btn"
               :class="getConn(selected.id)"
@@ -368,7 +474,6 @@ function formatCtx(n: number): string {
               <RefreshCw :size="12" :class="{ spin: getConn(selected.id) === 'testing' }" />
               {{ getConn(selected.id) === 'testing' ? '测试中…' : '测试连接' }}
             </button>
-            <!-- Enable toggle — only active after successful test -->
             <label
               class="toggle-switch"
               :class="{ 'toggle-locked': getConn(selected.id) !== 'ok' }"
@@ -382,14 +487,12 @@ function formatCtx(n: number): string {
               />
               <span class="toggle-track"><span class="toggle-thumb" /></span>
             </label>
-            <!-- Delete -->
             <button class="delete-btn" title="删除服务商" @click="handleDelete">
               <Trash2 :size="14" />
             </button>
           </div>
         </div>
 
-        <!-- Delete confirmation banner — full width, below header -->
         <div v-if="confirmDelete" class="delete-confirm-banner">
           <span class="delete-confirm-label">确认删除「{{ selected.name }}」？</span>
           <div style="display:flex;gap:6px;flex-shrink:0">
@@ -398,22 +501,19 @@ function formatCtx(n: number): string {
           </div>
         </div>
 
-        <!-- Connection message -->
         <div v-if="connMessage[selected.id]" class="conn-msg" :class="getConn(selected.id)">
           {{ connMessage[selected.id] }}
         </div>
 
-        <!-- API Key section -->
+        <!-- API Key -->
         <div class="detail-section">
           <div class="section-label">API 密钥</div>
-
           <template v-if="!editMode">
             <div class="key-display-row">
               <span class="key-mono">{{ selected.apiKey ? maskKey(selected.apiKey) : '未配置' }}</span>
               <button class="btn-small" @click="startEdit">{{ selected.apiKey ? '修改' : '添加' }}</button>
             </div>
           </template>
-
           <template v-else>
             <div class="edit-field">
               <div v-if="!selected.builtIn" style="margin-bottom:8px">
@@ -442,7 +542,7 @@ function formatCtx(n: number): string {
           </template>
         </div>
 
-        <!-- Base URL — always inline editable -->
+        <!-- Base URL -->
         <div class="detail-section">
           <div class="section-label">API 地址</div>
           <input
@@ -456,11 +556,14 @@ function formatCtx(n: number): string {
         <!-- Models section -->
         <div class="detail-section">
           <div class="models-header">
-            <span class="section-label" style="margin-bottom:0">模型</span>
+            <div class="models-header-left">
+              <span class="section-label" style="margin-bottom:0">模型</span>
+              <span class="model-count-badge">{{ selected.models.length }}</span>
+            </div>
             <div style="display:flex;gap:6px">
               <button class="btn-small" :disabled="fetchingModels" @click="fetchModels">
                 <RefreshCw :size="11" :class="{ spin: fetchingModels }" />
-                {{ fetchingModels ? '获取中…' : '获取列表' }}
+                {{ fetchingModels ? '获取中…' : '获取模型列表' }}
               </button>
               <button class="btn-small" @click="startAddModel">
                 <Plus :size="11" /> 手动添加
@@ -491,23 +594,63 @@ function formatCtx(n: number): string {
             </div>
           </div>
 
-          <div class="model-chips">
+          <!-- Cherry Studio-style model table -->
+          <div class="model-table">
             <div
               v-for="m in selected.models"
               :key="m.id"
-              class="model-chip"
-              :class="{ active: selected.selectedModelId === m.id }"
-              @click="ai.setModelForProvider(selected.id, m.id)"
+              class="model-row"
+              :class="{ 'model-row-default': selected.selectedModelId === m.id }"
             >
-              <span class="chip-name">{{ m.name }}</span>
-              <span v-if="m.contextLength" class="chip-ctx">{{ formatCtx(m.contextLength) }}</span>
-              <button
-                class="chip-remove"
-                @click.stop="ai.removeCustomModel(selected.id, m.id)"
-                title="移除模型"
+              <!-- Model logo if SVG exists, otherwise color dot with letter -->
+              <div
+                class="model-row-icon"
+                :style="getModelLogoUrl(m.id, selected.id) ? {} : { background: isOpenRouter(selected) ? providerColor(m.id.split('/')[0] ?? m.id) : providerColor(selected.id) }"
               >
-                <X :size="9" />
-              </button>
+                <img
+                  v-if="getModelLogoUrl(m.id, selected.id)"
+                  :src="getModelLogoUrl(m.id, selected.id)!"
+                  class="model-row-logo"
+                  alt=""
+                />
+                <template v-else>
+                  {{ isOpenRouter(selected) ? subProviderInitial(m.id) : providerInitial(selected.name) }}
+                </template>
+              </div>
+
+              <div class="model-row-info">
+                <span class="model-row-name">{{ m.name || m.id }}</span>
+                <span v-if="m.name && m.name !== m.id" class="model-row-id">{{ m.id }}</span>
+              </div>
+
+              <div class="model-row-caps">
+                <span v-if="m.reasoning"   class="m-badge reasoning">推理</span>
+                <span v-if="m.multimodal"  class="m-badge vision">视觉</span>
+                <span v-if="m.imageOutput" class="m-badge image">图像</span>
+                <span v-if="m.contextLength" class="m-ctx">{{ formatCtx(m.contextLength) }}</span>
+              </div>
+
+              <div class="model-row-actions">
+                <button
+                  class="row-action-btn set-default-btn"
+                  :class="{ 'is-default': selected.selectedModelId === m.id }"
+                  @click="ai.setModelForProvider(selected.id, m.id)"
+                  :title="selected.selectedModelId === m.id ? '当前默认' : '设为默认'"
+                >
+                  <Check :size="11" />
+                </button>
+                <button
+                  class="row-action-btn remove-btn"
+                  @click.stop="ai.removeCustomModel(selected.id, m.id)"
+                  title="移除模型"
+                >
+                  <X :size="11" />
+                </button>
+              </div>
+            </div>
+
+            <div v-if="selected.models.length === 0" class="model-table-empty">
+              暂无模型，点击「获取模型列表」或「手动添加」
             </div>
           </div>
         </div>
@@ -523,45 +666,102 @@ function formatCtx(n: number): string {
   <Teleport to="body">
     <div v-if="showModelPicker" class="picker-backdrop" @click.self="closeModelPicker">
       <div class="picker-panel">
+        <!-- Header -->
         <div class="picker-header">
-          <span class="picker-title">选择模型</span>
+          <div class="picker-header-left">
+            <span v-if="selected && isOpenRouter(selected)" class="picker-provider-logo">
+              <img :src="openrouterLogoUrl" class="picker-logo-img" alt="" />
+            </span>
+            <span
+              v-else-if="selected"
+              class="picker-provider-dot"
+              :style="{ background: providerColor(selected?.id ?? '') }"
+            >{{ providerInitial(selected?.name ?? '') }}</span>
+            <div>
+              <div class="picker-title">{{ selected?.name ?? '' }} 模型</div>
+              <div class="picker-subtitle">{{ pickerSelected.size }} 已选 / {{ pickerModels.length }} 个可用</div>
+            </div>
+          </div>
           <div class="picker-header-right">
-            <span class="picker-count">{{ pickerSelected.size }} / {{ pickerModels.length }}</span>
-            <button class="picker-select-all" @click="pickerSelected = new Set(filteredPickerModels.map(m => m.id))">全选</button>
-            <button class="picker-select-all" @click="pickerSelected = new Set()">取消全选</button>
+            <button class="picker-select-text" @click="pickerSelected = new Set(pickerModels.map(m => m.id))">全选</button>
+            <button class="picker-select-text" @click="pickerSelected = new Set()">清空</button>
+            <button class="picker-close-btn" @click="closeModelPicker"><X :size="16" /></button>
           </div>
         </div>
 
-        <div class="picker-search-wrap">
-          <input
-            v-model="pickerSearch"
-            class="picker-search"
-            placeholder="搜索模型…"
-            autofocus
-          />
+        <!-- Search + filter tabs -->
+        <div class="picker-search-area">
+          <div class="picker-search-wrap">
+            <Search :size="14" class="search-icon" />
+            <input
+              v-model="pickerSearch"
+              class="picker-search"
+              placeholder="搜索模型 ID 或名称…"
+              autofocus
+            />
+          </div>
+          <div class="picker-tabs">
+            <button
+              v-for="tab in pickerTabs"
+              :key="tab.id"
+              class="picker-tab"
+              :class="{ active: pickerTab === tab.id }"
+              @click="pickerTab = tab.id"
+            >
+              {{ tab.label }}
+              <span class="tab-count">{{ tab.count }}</span>
+            </button>
+          </div>
         </div>
 
+        <!-- Model list grouped by provider -->
         <div class="picker-list">
-          <label
-            v-for="m in filteredPickerModels"
-            :key="m.id"
-            class="picker-item"
-            :class="{ checked: pickerSelected.has(m.id) }"
-          >
-            <input
-              type="checkbox"
-              class="picker-checkbox"
-              :checked="pickerSelected.has(m.id)"
-              @change="togglePickerModel(m.id)"
-            />
-            <span class="picker-model-id">{{ m.id }}</span>
-          </label>
-          <div v-if="filteredPickerModels.length === 0" class="picker-empty">无匹配结果</div>
+          <template v-for="group in pickerGroups" :key="group.name">
+            <div class="picker-group-header">
+              <span
+                class="picker-group-dot"
+                :style="{ background: providerColor(group.name) }"
+              >{{ group.name.charAt(0).toUpperCase() }}</span>
+              <span class="picker-group-name">{{ group.name }}</span>
+              <span class="picker-group-count">{{ group.models.length }}</span>
+            </div>
+            <label
+              v-for="m in group.models"
+              :key="m.id"
+              class="picker-item"
+              :class="{ checked: pickerSelected.has(m.id) }"
+            >
+              <input
+                type="checkbox"
+                class="picker-checkbox"
+                :checked="pickerSelected.has(m.id)"
+                @change="togglePickerModel(m.id)"
+              />
+              <div class="picker-item-info">
+                <span class="picker-model-name">{{ m.name || m.id }}</span>
+                <span v-if="m.name && m.name !== m.id" class="picker-model-id">{{ m.id }}</span>
+              </div>
+              <div class="picker-item-caps">
+                <span v-if="getPickerCaps(m).reasoning"   class="m-badge reasoning">推理</span>
+                <span v-if="getPickerCaps(m).vision"      class="m-badge vision">视觉</span>
+                <span v-if="getPickerCaps(m).imageOutput" class="m-badge image">图像</span>
+                <span v-if="getPickerCaps(m).embedding"   class="m-badge embed">嵌入</span>
+                <span v-if="getPickerCaps(m).reranking"   class="m-badge rerank">重排</span>
+                <span v-if="m.context_length" class="picker-ctx">{{ formatCtx(m.context_length) }}</span>
+              </div>
+            </label>
+          </template>
+          <div v-if="pickerGroups.length === 0" class="picker-empty">
+            <SlidersHorizontal :size="28" class="picker-empty-icon" />
+            <span>无匹配结果</span>
+          </div>
         </div>
 
         <div class="picker-footer">
           <button class="btn-ghost" @click="closeModelPicker">取消</button>
-          <button class="btn-primary" @click="confirmPickerSelection">确认</button>
+          <button class="btn-primary" @click="confirmPickerSelection">
+            <Check :size="13" /> 确认选择
+          </button>
         </div>
       </div>
     </div>
@@ -641,6 +841,16 @@ function formatCtx(n: number): string {
   letter-spacing: -0.3px;
 }
 
+.p-logo-img {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  object-fit: contain;
+  background: #f0f0f5;
+  padding: 2px;
+}
+
 .p-name {
   flex: 1;
   font-size: 13px;
@@ -668,7 +878,6 @@ function formatCtx(n: number): string {
 .p-chevron { color: #c7c7cc; flex-shrink: 0; }
 .provider-row.selected .p-chevron { color: #223F79; }
 
-/* Add form */
 .add-form {
   padding: 8px 10px 4px;
   display: flex;
@@ -754,6 +963,16 @@ function formatCtx(n: number): string {
   flex-shrink: 0;
 }
 
+.detail-logo-img {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  flex-shrink: 0;
+  object-fit: contain;
+  background: #f0f0f5;
+  padding: 4px;
+}
+
 .detail-name {
   font-size: 18px;
   font-weight: 700;
@@ -766,7 +985,6 @@ function formatCtx(n: number): string {
   gap: 10px;
 }
 
-/* Toggle switch */
 .toggle-switch {
   position: relative;
   display: inline-flex;
@@ -829,10 +1047,7 @@ function formatCtx(n: number): string {
   border-radius: 10px;
 }
 
-.delete-confirm-label {
-  font-size: 13px;
-  color: #c0392b;
-}
+.delete-confirm-label { font-size: 13px; color: #c0392b; }
 
 .delete-confirm-yes {
   padding: 3px 10px;
@@ -844,7 +1059,6 @@ function formatCtx(n: number): string {
   cursor: pointer;
   transition: opacity 0.12s;
 }
-
 .delete-confirm-yes:hover { opacity: 0.85; }
 
 .delete-confirm-no {
@@ -856,7 +1070,6 @@ function formatCtx(n: number): string {
   font-size: 12px;
   cursor: pointer;
 }
-
 .delete-confirm-no:hover { background: rgba(0,0,0,0.10); }
 
 .toggle-locked { opacity: 0.4; cursor: not-allowed; }
@@ -898,10 +1111,7 @@ function formatCtx(n: number): string {
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 0.8s linear infinite; }
 
-/* Sections */
-.detail-section {
-  margin-bottom: 24px;
-}
+.detail-section { margin-bottom: 24px; }
 
 .section-label {
   font-size: 11px;
@@ -932,13 +1142,6 @@ function formatCtx(n: number): string {
   white-space: nowrap;
 }
 
-.url-text {
-  font-size: 13px;
-  color: #3c3c43;
-  word-break: break-all;
-}
-
-/* Edit field */
 .edit-field {
   display: flex;
   flex-direction: column;
@@ -988,7 +1191,6 @@ function formatCtx(n: number): string {
   justify-content: center;
   cursor: pointer;
 }
-
 .eye-btn:hover { background: #f5f5f7; }
 
 .edit-actions {
@@ -1011,7 +1213,6 @@ function formatCtx(n: number): string {
   cursor: pointer;
   transition: opacity 0.12s;
 }
-
 .btn-primary:hover { opacity: 0.85; }
 .btn-primary.sm { padding: 4px 10px; font-size: 12px; }
 
@@ -1028,7 +1229,6 @@ function formatCtx(n: number): string {
   cursor: pointer;
   transition: background 0.12s;
 }
-
 .btn-ghost:hover { background: rgba(0,0,0,0.10); }
 .btn-ghost.sm { padding: 4px 10px; font-size: 12px; }
 
@@ -1046,15 +1246,30 @@ function formatCtx(n: number): string {
   transition: background 0.12s;
   flex-shrink: 0;
 }
-
 .btn-small:hover { background: rgba(34, 63, 121, 0.14); }
+.btn-small:disabled { opacity: 0.5; cursor: default; }
 
-/* Models */
+/* Models section */
 .models-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+}
+
+.models-header-left {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.model-count-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8e8e93;
+  background: rgba(0,0,0,0.06);
+  padding: 1px 7px;
+  border-radius: 10px;
 }
 
 .add-model-form {
@@ -1064,56 +1279,153 @@ function formatCtx(n: number): string {
   gap: 6px;
 }
 
-.model-chips {
+/* Cherry Studio-style model table */
+.model-table {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 2px;
+  background: rgba(0,0,0,0.02);
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 12px;
+  overflow: hidden;
+  padding: 4px;
 }
 
-.model-chip {
+.model-row {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  background: rgba(0,0,0,0.04);
-  border: 1.5px solid transparent;
-  border-radius: 20px;
-  font-size: 12px;
-  color: #3c3c43;
-  cursor: pointer;
-  transition: all 0.10s;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  transition: background 0.10s;
+  cursor: default;
 }
 
-.model-chip:hover { background: rgba(0,0,0,0.07); }
+.model-row:hover { background: rgba(0,0,0,0.04); }
 
-.model-chip.active {
-  background: rgba(34, 63, 121, 0.08);
-  border-color: rgba(34, 63, 121, 0.25);
-  color: #223F79;
+.model-row-default {
+  background: rgba(34, 63, 121, 0.06);
 }
 
-.chip-name { line-height: 1; }
+.model-row-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: white;
+}
 
-.chip-ctx {
+.model-row-logo {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  object-fit: contain;
+}
+
+.model-row-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.model-row-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #1c1c1e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-row-default .model-row-name { color: #223F79; }
+
+.model-row-id {
+  font-size: 10.5px;
+  color: #8e8e93;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-row-caps {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.m-badge {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.m-badge.reasoning { background: rgba(88, 86, 214, 0.10); color: #5856d6; }
+.m-badge.vision    { background: rgba(52, 199, 89, 0.10); color: #28a745; }
+.m-badge.image     { background: rgba(255, 149, 0, 0.12); color: #c8710a; }
+.m-badge.embed     { background: rgba(0, 122, 255, 0.10); color: #0062cc; }
+.m-badge.rerank    { background: rgba(255, 45, 85, 0.10); color: #c0002f; }
+
+.m-ctx {
   font-size: 10px;
   color: #8e8e93;
   background: rgba(0,0,0,0.05);
-  padding: 1px 5px;
+  padding: 1px 6px;
   border-radius: 4px;
+  white-space: nowrap;
 }
 
-.chip-remove {
-  background: none;
-  border: none;
-  color: #c7c7cc;
-  cursor: pointer;
-  padding: 0;
+.model-row-actions {
   display: flex;
   align-items: center;
-  transition: color 0.10s;
+  gap: 4px;
+  flex-shrink: 0;
 }
 
-.chip-remove:hover { color: #ff3b30; }
+.row-action-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.10s;
+  color: #c7c7cc;
+}
+
+.set-default-btn:hover { background: rgba(34, 63, 121, 0.10); color: #223F79; }
+.set-default-btn.is-default { color: #223F79; background: rgba(34, 63, 121, 0.10); }
+.remove-btn:hover { background: rgba(255,59,48,0.08); color: #ff3b30; }
+
+.model-table-empty {
+  padding: 24px;
+  text-align: center;
+  font-size: 12px;
+  color: #8e8e93;
+}
+
+/* Empty state */
+.detail-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 14px;
+  color: #8e8e93;
+}
 
 /* ── Model picker popup ── */
 .picker-backdrop {
@@ -1128,11 +1440,11 @@ function formatCtx(n: number): string {
 }
 
 .picker-panel {
-  width: 420px;
-  max-height: 560px;
+  width: 680px;
+  max-height: 680px;
   background: #ffffff;
-  border-radius: 14px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(0, 0, 0, 0.08);
+  border-radius: 16px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(0, 0, 0, 0.08);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1142,68 +1454,209 @@ function formatCtx(n: number): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 20px 0;
+  padding: 18px 20px 14px;
   flex-shrink: 0;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
 }
 
-.picker-header-right {
+.picker-header-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
-.picker-select-all {
-  font-size: 12px;
-  color: #223F79;
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 5px;
-  transition: background 0.10s;
+.picker-provider-logo {
+  display: flex;
+  align-items: center;
 }
 
-.picker-select-all:hover { background: rgba(34, 63, 121, 0.08); }
+.picker-logo-img {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  object-fit: contain;
+  background: #f0f0f5;
+  padding: 3px;
+}
+
+.picker-provider-dot {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: white;
+}
 
 .picker-title {
   font-size: 15px;
   font-weight: 700;
   color: #1c1c1e;
+  line-height: 1.2;
 }
 
-.picker-count {
+.picker-subtitle {
   font-size: 11px;
   color: #8e8e93;
+  margin-top: 1px;
 }
 
-.picker-search-wrap {
-  padding: 12px 20px;
+.picker-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.picker-select-text {
+  font-size: 12px;
+  color: #223F79;
+  background: rgba(34, 63, 121, 0.07);
+  border: none;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 6px;
+  transition: background 0.10s;
+}
+.picker-select-text:hover { background: rgba(34, 63, 121, 0.13); }
+
+.picker-close-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 7px;
+  background: rgba(0,0,0,0.05);
+  color: #8e8e93;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.10s;
+  margin-left: 4px;
+}
+.picker-close-btn:hover { background: rgba(0,0,0,0.10); color: #1c1c1e; }
+
+/* Search + tabs */
+.picker-search-area {
+  padding: 12px 16px 0;
   flex-shrink: 0;
 }
 
-.picker-search {
-  width: 100%;
-  height: 34px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  border-radius: 8px;
-  padding: 0 10px;
-  font-size: 13px;
-  color: #1c1c1e;
-  background: rgba(0, 0, 0, 0.03);
-  outline: none;
-  box-sizing: border-box;
+.picker-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0,0,0,0.04);
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 9px;
+  padding: 0 12px;
+  margin-bottom: 10px;
 }
 
-.picker-search:focus { border-color: rgba(34, 63, 121, 0.4); background: white; }
+.search-icon { color: #8e8e93; flex-shrink: 0; }
 
+.picker-search {
+  flex: 1;
+  height: 36px;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 13px;
+  color: #1c1c1e;
+}
+
+.picker-tabs {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  padding-bottom: 1px;
+}
+
+.picker-tabs::-webkit-scrollbar { display: none; }
+
+.picker-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: #8e8e93;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.10s;
+  border-bottom: 2px solid transparent;
+}
+
+.picker-tab:hover { color: #3c3c43; background: rgba(0,0,0,0.04); }
+.picker-tab.active { color: #223F79; border-bottom-color: #223F79; background: rgba(34, 63, 121, 0.05); }
+
+.tab-count {
+  font-size: 10px;
+  background: rgba(0,0,0,0.07);
+  padding: 1px 5px;
+  border-radius: 8px;
+  font-weight: 600;
+}
+.picker-tab.active .tab-count { background: rgba(34, 63, 121, 0.12); color: #223F79; }
+
+/* Model list */
 .picker-list {
   flex: 1;
   overflow-y: auto;
-  padding: 0 12px;
+  padding: 8px 12px;
+  border-top: 1px solid rgba(0,0,0,0.06);
 }
 
 .picker-list::-webkit-scrollbar { width: 4px; }
 .picker-list::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.10); border-radius: 2px; }
+
+.picker-group-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px 4px;
+  position: sticky;
+  top: 0;
+  background: white;
+  z-index: 1;
+}
+
+.picker-group-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: white;
+}
+
+.picker-group-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8e8e93;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  flex: 1;
+}
+
+.picker-group-count {
+  font-size: 10px;
+  color: #c7c7cc;
+  background: rgba(0,0,0,0.05);
+  padding: 1px 6px;
+  border-radius: 8px;
+}
 
 .picker-item {
   display: flex;
@@ -1216,8 +1669,8 @@ function formatCtx(n: number): string {
   user-select: none;
 }
 
-.picker-item:hover { background: rgba(0, 0, 0, 0.04); }
-.picker-item.checked { background: rgba(34, 63, 121, 0.06); }
+.picker-item:hover { background: rgba(0,0,0,0.04); }
+.picker-item.checked { background: rgba(34, 63, 121, 0.05); }
 
 .picker-checkbox {
   width: 15px;
@@ -1227,20 +1680,60 @@ function formatCtx(n: number): string {
   cursor: pointer;
 }
 
-.picker-model-id {
-  font-size: 12.5px;
+.picker-item-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.picker-model-name {
+  font-size: 13px;
   color: #1c1c1e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-item.checked .picker-model-name { color: #223F79; font-weight: 500; }
+
+.picker-model-id {
+  font-size: 10.5px;
+  color: #8e8e93;
   font-family: 'SF Mono', 'Menlo', monospace;
-  word-break: break-all;
-  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-item-caps {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.picker-ctx {
+  font-size: 10px;
+  color: #8e8e93;
+  background: rgba(0,0,0,0.05);
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
 }
 
 .picker-empty {
-  padding: 24px 0;
-  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 48px 0;
   font-size: 13px;
   color: #8e8e93;
 }
+
+.picker-empty-icon { color: #c7c7cc; }
 
 .picker-footer {
   display: flex;
@@ -1249,15 +1742,8 @@ function formatCtx(n: number): string {
   padding: 14px 20px;
   border-top: 1px solid rgba(0, 0, 0, 0.07);
   flex-shrink: 0;
+  background: rgba(248, 248, 250, 0.8);
 }
 
-/* Empty state */
-.detail-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  font-size: 14px;
-  color: #8e8e93;
-}
+.url-input { width: 100%; }
 </style>

@@ -38,6 +38,17 @@ export interface MessageUsage {
   costUsd?:      number;
 }
 
+export interface MessageVariant {
+  id:           string;
+  content:      string;
+  model:        string;
+  providerId:   string;
+  usage?:       MessageUsage;
+  reasoning?:   string;
+  error?:       boolean;
+  mediaOutputs?: Array<{ mimeType: string; data?: string; url?: string }>;
+}
+
 export interface ChatMessage {
   id:          string;
   role:        'user' | 'assistant' | 'system';
@@ -46,30 +57,46 @@ export interface ChatMessage {
   timestamp:   string;
   model?:      string;
   providerId?: string;
-  error?:      boolean;
-  usage?:      MessageUsage;
+  error?:        boolean;
+  usage?:        MessageUsage;
+  reasoning?:    string;
+  mediaOutputs?: Array<{ mimeType: string; data?: string; url?: string }>;
+  variants?:        MessageVariant[];
+  activeVariantIdx?: number;  // 0 = original, 1+ = variants[activeVariantIdx-1]
+}
+
+export interface Assistant {
+  id:           string;
+  name:         string;
+  systemPrompt: string;
+  color:        string;
+  createdAt:    string;
+  updatedAt:    string;
 }
 
 export interface Conversation {
-  id:         string;
-  title:      string;
-  createdAt:  string;
-  updatedAt:  string;
-  providerId: string;
-  model:      string;
-  messages:   ChatMessage[];
-  pinned?:    boolean;
+  id:                  string;
+  title:               string;
+  createdAt:           string;
+  updatedAt:           string;
+  providerId:          string;
+  model:               string;
+  messages:            ChatMessage[];
+  pinned?:             boolean;
+  assistantId?:        string;
+  contextCutoffMsgId?: string;
 }
 
 export interface ConversationMeta {
-  id:         string;
-  title:      string;
-  createdAt:  string;
-  updatedAt:  string;
-  preview:    string;
-  model:      string;
-  providerId: string;
-  pinned?:    boolean;
+  id:          string;
+  title:       string;
+  createdAt:   string;
+  updatedAt:   string;
+  preview:     string;
+  model:       string;
+  providerId:  string;
+  pinned?:     boolean;
+  assistantId?: string;
 }
 
 // ─── Paths ───────────────────────────────────────────────────────────────────
@@ -138,20 +165,22 @@ export async function saveConversation(conv: Conversation): Promise<void> {
   await ensureDirs();
   const path = `${await convDir()}/${conv.id}.json`;
   await writeTextFile(path, JSON.stringify(conv, null, 2));
+  localStorage.setItem('muse-ts-conversations', new Date().toISOString());
 
   // Update index entry
   const index = await readIndex();
   const idx   = index.findIndex(m => m.id === conv.id);
   const lastMsg = conv.messages.filter(m => m.role !== 'system').at(-1);
   const meta: ConversationMeta = {
-    id:         conv.id,
-    title:      conv.title,
-    createdAt:  conv.createdAt,
-    updatedAt:  conv.updatedAt,
-    preview:    lastMsg ? lastMsg.content.slice(0, 80).replace(/\n/g, ' ') : '',
-    model:      conv.model,
-    providerId: conv.providerId,
-    pinned:     conv.pinned,
+    id:          conv.id,
+    title:       conv.title,
+    createdAt:   conv.createdAt,
+    updatedAt:   conv.updatedAt,
+    preview:     lastMsg ? lastMsg.content.slice(0, 80).replace(/\n/g, ' ') : '',
+    model:       conv.model,
+    providerId:  conv.providerId,
+    pinned:      conv.pinned,
+    assistantId: conv.assistantId,
   };
   if (idx >= 0) index[idx] = meta;
   else index.unshift(meta);
@@ -166,6 +195,7 @@ export async function deleteConversation(id: string): Promise<void> {
 
   const index = await readIndex();
   await writeIndex(index.filter(m => m.id !== id));
+  localStorage.setItem('muse-ts-conversations', new Date().toISOString());
 }
 
 export async function deleteConversations(ids: string[]): Promise<void> {
@@ -178,6 +208,40 @@ export async function deleteConversations(ids: string[]): Promise<void> {
   }
   const index = await readIndex();
   await writeIndex(index.filter(m => !set.has(m.id)));
+  localStorage.setItem('muse-ts-conversations', new Date().toISOString());
+}
+
+// ─── Assistants ──────────────────────────────────────────────────────────────
+
+async function assistantsPath(): Promise<string> {
+  return `${await dataDir()}/assistants.json`;
+}
+
+export async function listAssistants(): Promise<Assistant[]> {
+  try {
+    const path = await assistantsPath();
+    if (!(await exists(path))) return [];
+    const raw = await readTextFile(path);
+    return JSON.parse(raw) as Assistant[];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveAssistant(assistant: Assistant): Promise<void> {
+  await ensureDirs();
+  const list = await listAssistants();
+  const idx  = list.findIndex(a => a.id === assistant.id);
+  if (idx >= 0) list[idx] = assistant;
+  else list.push(assistant);
+  await writeTextFile(await assistantsPath(), JSON.stringify(list, null, 2));
+  localStorage.setItem('muse-ts-assistants', new Date().toISOString());
+}
+
+export async function deleteAssistant(id: string): Promise<void> {
+  const list = await listAssistants();
+  await writeTextFile(await assistantsPath(), JSON.stringify(list.filter(a => a.id !== id), null, 2));
+  localStorage.setItem('muse-ts-assistants', new Date().toISOString());
 }
 
 /** Generate a UUID v4. */

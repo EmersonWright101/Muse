@@ -1,42 +1,61 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Search, SquarePen, Trash2, CheckSquare, Square, X, Pin } from 'lucide-vue-next'
-import { useChatStore } from '../../stores/chat'
+import { Search, SquarePen, Trash2, ListChecks, X, Pin, Plus, Pencil, ChevronDown } from 'lucide-vue-next'
+import { useChatStore }       from '../../stores/chat'
+import { useAssistantsStore, ASSISTANT_COLORS } from '../../stores/assistants'
+import type { Assistant }     from '../../stores/assistants'
 
 const { t } = useI18n()
-const chat  = useChatStore()
+const chat       = useChatStore()
+const assistants = useAssistantsStore()
 
-const searchQuery  = ref('')
-const renamingId   = ref<string | null>(null)
-const renameInput  = ref('')
+// ─── Conversation filter ───────────────────────────────────────────────────────
+
+const searchQuery        = ref('')
+const filterAssistantId  = ref<string | null>(null)
+
+// Assistant picker dropdown
+const pickerOpen = ref(false)
+const pickerRoot = ref<HTMLElement>()
+
+function handlePickerOutside(e: MouseEvent) {
+  if (pickerRoot.value && !pickerRoot.value.contains(e.target as Node)) pickerOpen.value = false
+}
+
+onMounted(()  => document.addEventListener('mousedown', handlePickerOutside))
+onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside))
+
+function selectFilter(id: string | null) {
+  filterAssistantId.value = id
+  pickerOpen.value = false
+}
+
+const activeFilterLabel = computed(() => {
+  if (filterAssistantId.value === null) return null
+  return assistants.assistants.find(a => a.id === filterAssistantId.value) ?? null
+})
 
 const filtered = computed(() => {
+  let list = chat.conversations
+  if (filterAssistantId.value !== null) {
+    list = list.filter(c => c.assistantId === filterAssistantId.value)
+  }
   const q = searchQuery.value.toLowerCase().trim()
-  if (!q) return chat.conversations
-  return chat.conversations.filter(c =>
+  if (!q) return list
+  return list.filter(c =>
     c.title.toLowerCase().includes(q) || c.preview.toLowerCase().includes(q),
   )
 })
 
-function formatTime(iso: string): string {
-  const d   = new Date(iso)
-  const now = new Date()
-  const diff = now.getTime() - d.getTime()
-  const days = Math.floor(diff / 86400_000)
-  if (days === 0) return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-  if (days === 1) return t('common.yesterday')
-  if (days < 7)   return ['日', '一', '二', '三', '四', '五', '六'][d.getDay()] ? `周${['日', '一', '二', '三', '四', '五', '六'][d.getDay()]}` : '上周'
-  return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+function assistantColor(id: string): string {
+  return assistants.assistants.find(a => a.id === id)?.color ?? '#aeaeb2'
 }
 
-function clickItem(id: string) {
-  if (chat.batchMode) {
-    chat.toggleSelect(id)
-  } else {
-    chat.openConversation(id)
-  }
-}
+// ─── Rename ───────────────────────────────────────────────────────────────────
+
+const renamingId  = ref<string | null>(null)
+const renameInput = ref('')
 
 function startRename(id: string, title: string) {
   renamingId.value  = id
@@ -54,13 +73,125 @@ function handleRenameKeydown(e: KeyboardEvent, id: string) {
   if (e.key === 'Enter') finishRename(id)
   if (e.key === 'Escape') renamingId.value = null
 }
+
+// ─── Time formatting ──────────────────────────────────────────────────────────
+
+function formatTime(iso: string): string {
+  const d   = new Date(iso)
+  const now = new Date()
+  const days = Math.floor((now.getTime() - d.getTime()) / 86400_000)
+  if (days === 0) return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  if (days === 1) return t('common.yesterday')
+  if (days < 7)   return `周${['日', '一', '二', '三', '四', '五', '六'][d.getDay()]}`
+  return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+}
+
+// ─── Click item ───────────────────────────────────────────────────────────────
+
+function clickItem(id: string) {
+  if (chat.batchMode) {
+    chat.toggleSelect(id)
+  } else {
+    chat.openConversation(id)
+  }
+}
+
+// ─── New conversation ─────────────────────────────────────────────────────────
+
+function handleNewChat() {
+  chat.newConversation(undefined, undefined, filterAssistantId.value ?? undefined)
+}
+
+// ─── Assistant form ───────────────────────────────────────────────────────────
+
+const showForm      = ref(false)
+const editingId     = ref<string | null>(null)
+const formName      = ref('')
+const formPrompt    = ref('')
+const formColor     = ref(ASSISTANT_COLORS[0])
+const formNameInput = ref<HTMLInputElement>()
+
+function openCreate() {
+  editingId.value  = null
+  formName.value   = ''
+  formPrompt.value = ''
+  formColor.value  = ASSISTANT_COLORS[0]
+  showForm.value   = true
+  nextTick(() => formNameInput.value?.focus())
+}
+
+function openEdit(a: Assistant) {
+  editingId.value  = a.id
+  formName.value   = a.name
+  formPrompt.value = a.systemPrompt
+  formColor.value  = a.color
+  showForm.value   = true
+  nextTick(() => formNameInput.value?.focus())
+}
+
+function cancelForm() {
+  showForm.value = false
+}
+
+async function saveForm() {
+  if (!formName.value.trim()) return
+  if (editingId.value) {
+    await assistants.update(editingId.value, formName.value, formPrompt.value, formColor.value)
+  } else {
+    await assistants.create(formName.value, formPrompt.value, formColor.value)
+  }
+  showForm.value = false
+}
+
+async function removeAssistant(id: string) {
+  if (filterAssistantId.value === id) filterAssistantId.value = null
+  await assistants.remove(id)
+}
 </script>
 
 <template>
   <div class="chat-sidebar">
     <!-- Header -->
     <div class="panel-header">
-      <h2 class="panel-title">{{ t('chat.title') }}</h2>
+      <div ref="pickerRoot" class="assistant-picker">
+        <button class="picker-btn" @click="pickerOpen = !pickerOpen">
+          <span v-if="activeFilterLabel" class="picker-dot" :style="{ background: activeFilterLabel.color }" />
+          <span class="picker-label">{{ activeFilterLabel?.name ?? '全部对话' }}</span>
+          <ChevronDown :size="11" class="picker-chevron" :class="{ rotated: pickerOpen }" />
+        </button>
+        <Transition name="picker-drop">
+          <div v-if="pickerOpen" class="picker-dropdown">
+            <button
+              class="picker-item"
+              :class="{ active: filterAssistantId === null }"
+              @click="selectFilter(null)"
+            >
+              <span class="picker-item-dot all" />
+              <span class="picker-item-name">全部对话</span>
+            </button>
+            <div v-if="assistants.assistants.length" class="picker-divider" />
+            <div v-for="a in assistants.assistants" :key="a.id" class="picker-item-row">
+              <button
+                class="picker-item"
+                :class="{ active: filterAssistantId === a.id }"
+                @click="selectFilter(a.id)"
+              >
+                <span class="picker-item-dot" :style="{ background: a.color }" />
+                <span class="picker-item-name">{{ a.name }}</span>
+              </button>
+              <button class="picker-edit" :title="'编辑 ' + a.name" @click.stop="openEdit(a)">
+                <Pencil :size="10" />
+              </button>
+            </div>
+            <div class="picker-divider" />
+            <button class="picker-item add-item" @click="pickerOpen = false; openCreate()">
+              <Plus :size="12" class="picker-add-icon" />
+              <span class="picker-item-name">新建助手</span>
+            </button>
+          </div>
+        </Transition>
+      </div>
+
       <div class="header-actions">
         <button
           v-if="chat.batchMode"
@@ -77,10 +208,9 @@ function handleRenameKeydown(e: KeyboardEvent, id: string) {
           :title="chat.batchMode ? '退出选择' : '批量选择'"
           @click="chat.toggleBatchMode()"
         >
-          <CheckSquare v-if="chat.batchMode" :size="14" />
-          <Square v-else :size="14" />
+          <ListChecks :size="14" />
         </button>
-        <button class="icon-btn" :title="t('chat.newChat')" @click="chat.newConversation()">
+        <button class="icon-btn" :title="t('chat.newChat')" @click="handleNewChat()">
           <SquarePen :size="14" />
         </button>
       </div>
@@ -138,6 +268,13 @@ function handleRenameKeydown(e: KeyboardEvent, id: string) {
           <Pin :size="9" />
         </div>
 
+        <!-- Assistant color dot (shown in "全部" view) -->
+        <div
+          v-else-if="!chat.batchMode && conv.assistantId && filterAssistantId === null"
+          class="assistant-indicator"
+          :style="{ background: assistantColor(conv.assistantId) }"
+        />
+
         <div class="item-content">
           <!-- Title row -->
           <div class="item-header">
@@ -186,6 +323,55 @@ function handleRenameKeydown(e: KeyboardEvent, id: string) {
         </div>
       </div>
     </div>
+
+    <!-- Assistant form overlay -->
+    <Transition name="form-fade">
+      <div v-if="showForm" class="form-overlay" @click.self="cancelForm()">
+        <div class="form-panel">
+          <div class="form-header">
+            <span class="form-title">{{ editingId ? '编辑助手' : '新建助手' }}</span>
+            <button v-if="editingId" class="form-delete-btn" title="删除助手" @click="removeAssistant(editingId!)">
+              <Trash2 :size="12" />
+            </button>
+          </div>
+
+          <label class="form-label">名称</label>
+          <input
+            ref="formNameInput"
+            v-model="formName"
+            class="form-input"
+            placeholder="助手名称"
+            @keydown.enter="saveForm()"
+            @keydown.esc="cancelForm()"
+          />
+
+          <label class="form-label">标识颜色</label>
+          <div class="color-row">
+            <button
+              v-for="c in ASSISTANT_COLORS"
+              :key="c"
+              class="color-dot"
+              :class="{ selected: formColor === c }"
+              :style="{ background: c }"
+              @click="formColor = c"
+            />
+          </div>
+
+          <label class="form-label">System Prompt</label>
+          <textarea
+            v-model="formPrompt"
+            class="form-textarea"
+            placeholder="请输入助手的 system prompt，用于定义角色和行为…"
+            rows="5"
+          />
+
+          <div class="form-actions">
+            <button class="form-btn cancel" @click="cancelForm()">取消</button>
+            <button class="form-btn save" :disabled="!formName.trim()" @click="saveForm()">保存</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -202,7 +388,10 @@ function handleRenameKeydown(e: KeyboardEvent, id: string) {
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 2px 16px rgba(0, 0, 0, 0.10), 0 0 0 0.5px rgba(255, 255, 255, 0.6) inset;
+  position: relative;
 }
+
+/* ─── Header ──────────────────────────────────────────────────────────────── */
 
 .panel-header {
   height: 48px;
@@ -212,13 +401,6 @@ function handleRenameKeydown(e: KeyboardEvent, id: string) {
   justify-content: space-between;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   flex-shrink: 0;
-}
-
-.panel-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1c1c1e;
-  margin: 0;
 }
 
 .header-actions {
@@ -246,6 +428,155 @@ function handleRenameKeydown(e: KeyboardEvent, id: string) {
 .icon-btn.danger:hover { background: rgba(255, 59, 48, 0.08); color: #ff3b30; }
 .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* ─── Assistant picker dropdown ───────────────────────────────────────────── */
+
+.assistant-picker {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.picker-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 8px 0 6px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  max-width: 160px;
+  transition: background 0.12s;
+}
+
+.picker-btn:hover { background: rgba(0, 0, 0, 0.06); }
+
+.picker-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.picker-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1c1c1e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.picker-chevron {
+  color: #8e8e93;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+
+.picker-chevron.rotated { transform: rotate(180deg); }
+
+.picker-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 180px;
+  background: rgba(250, 250, 252, 0.96);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  padding: 5px;
+  z-index: 50;
+}
+
+.picker-divider {
+  height: 1px;
+  background: rgba(0, 0, 0, 0.07);
+  margin: 4px 4px;
+}
+
+.picker-item-row {
+  display: flex;
+  align-items: center;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.picker-item-row:hover .picker-edit { opacity: 1; }
+
+.picker-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.10s;
+}
+
+.picker-item:hover { background: rgba(0, 0, 0, 0.05); }
+.picker-item.active { background: rgba(34, 63, 121, 0.08); }
+.picker-item.active .picker-item-name { color: #223F79; }
+
+.picker-item-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.picker-item-dot.all {
+  background: #aeaeb2;
+}
+
+.picker-item-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #1c1c1e;
+}
+
+.picker-edit {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: #8e8e93;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s;
+  margin-right: 3px;
+}
+
+.picker-edit:hover { background: rgba(0, 0, 0, 0.07); color: #3c3c43; }
+
+.add-item { color: #8e8e93; }
+.add-item .picker-item-name { color: #8e8e93; font-weight: 400; }
+.add-item:hover .picker-item-name { color: #3c3c43; }
+
+.picker-add-icon { color: #8e8e93; flex-shrink: 0; }
+
+/* Transition */
+.picker-drop-enter-active, .picker-drop-leave-active {
+  transition: opacity 0.12s, transform 0.12s;
+}
+.picker-drop-enter-from, .picker-drop-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+/* ─── Batch bar ───────────────────────────────────────────────────────────── */
+
 .batch-bar {
   display: flex;
   align-items: center;
@@ -267,6 +598,8 @@ function handleRenameKeydown(e: KeyboardEvent, id: string) {
   cursor: pointer;
   padding: 0;
 }
+
+/* ─── Search ──────────────────────────────────────────────────────────────── */
 
 .search-bar {
   margin: 8px 10px;
@@ -302,6 +635,8 @@ function handleRenameKeydown(e: KeyboardEvent, id: string) {
   display: flex;
   align-items: center;
 }
+
+/* ─── List ────────────────────────────────────────────────────────────────── */
 
 .list-scroll {
   flex: 1;
@@ -359,6 +694,14 @@ function handleRenameKeydown(e: KeyboardEvent, id: string) {
   opacity: 0.5;
   display: flex;
   align-items: center;
+}
+
+.assistant-indicator {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-left: 2px;
 }
 
 .item-content {
@@ -438,4 +781,175 @@ function handleRenameKeydown(e: KeyboardEvent, id: string) {
 
 .action-btn:hover { background: rgba(0, 0, 0, 0.06); color: #3c3c43; }
 .action-btn.danger:hover { background: rgba(255, 59, 48, 0.08); color: #ff3b30; }
+
+/* ─── Assistant form overlay ──────────────────────────────────────────────── */
+
+.form-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(235, 235, 235, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: flex-end;
+  z-index: 10;
+}
+
+.form-panel {
+  width: 100%;
+  background: rgba(248, 248, 250, 0.98);
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px 12px 0 0;
+  padding: 16px 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.10);
+}
+
+.form-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.form-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1c1c1e;
+}
+
+.form-delete-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: #ff3b30;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.form-delete-btn:hover { background: rgba(255, 59, 48, 0.08); }
+
+.form-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #8e8e93;
+  letter-spacing: 0.02em;
+  margin-top: 2px;
+}
+
+.form-input {
+  height: 30px;
+  border: 1.5px solid rgba(0, 0, 0, 0.10);
+  border-radius: 7px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: #1c1c1e;
+  background: white;
+  outline: none;
+  transition: border-color 0.15s;
+  font-family: inherit;
+}
+
+.form-input:focus { border-color: rgba(34, 63, 121, 0.4); }
+
+.color-row {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.color-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.12s;
+  flex-shrink: 0;
+}
+
+.color-dot:hover { transform: scale(1.15); }
+
+.color-dot.selected {
+  border-color: white;
+  box-shadow: 0 0 0 2px currentColor, 0 0 0 3px rgba(0, 0, 0, 0.15);
+}
+
+.form-textarea {
+  border: 1.5px solid rgba(0, 0, 0, 0.10);
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #1c1c1e;
+  background: white;
+  outline: none;
+  resize: none;
+  font-family: inherit;
+  transition: border-color 0.15s;
+}
+
+.form-textarea:focus { border-color: rgba(34, 63, 121, 0.4); }
+.form-textarea::placeholder { color: #aeaeb2; }
+
+.form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.form-btn {
+  flex: 1;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+
+.form-btn.cancel {
+  background: rgba(0, 0, 0, 0.07);
+  color: #3c3c43;
+}
+
+.form-btn.cancel:hover { background: rgba(0, 0, 0, 0.10); }
+
+.form-btn.save {
+  background: #223F79;
+  color: white;
+}
+
+.form-btn.save:hover { opacity: 0.88; }
+.form-btn.save:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ─── Form transition ─────────────────────────────────────────────────────── */
+
+.form-fade-enter-active,
+.form-fade-leave-active {
+  transition: opacity 0.18s;
+}
+
+.form-fade-enter-active .form-panel,
+.form-fade-leave-active .form-panel {
+  transition: transform 0.18s;
+}
+
+.form-fade-enter-from,
+.form-fade-leave-to {
+  opacity: 0;
+}
+
+.form-fade-enter-from .form-panel,
+.form-fade-leave-to .form-panel {
+  transform: translateY(24px);
+}
 </style>

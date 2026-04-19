@@ -11,13 +11,50 @@ import { ref, watch } from 'vue'
 import { encryptLocal, decryptLocal } from '../utils/crypto'
 
 const LS_KEY             = 'muse-ai-settings'
+const LS_DELETED_KEY     = 'muse-deleted-providers'
 export const LS_MODIFIED_AT_KEY = 'muse-ai-settings-modified-at'
+
+// Tombstone helpers — record provider deletions for cross-device sync
+export function getDeletedProviders(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(LS_DELETED_KEY) ?? '{}') } catch { return {} }
+}
+function recordProviderDeletion(id: string) {
+  const map = getDeletedProviders()
+  map[id] = new Date().toISOString()
+  localStorage.setItem(LS_DELETED_KEY, JSON.stringify(map))
+}
+export function applyRemoteDeletedProviders(remote: Record<string, string>) {
+  const local = getDeletedProviders()
+  let changed = false
+  for (const [id, ts] of Object.entries(remote)) {
+    if (!local[id] || ts > local[id]) { local[id] = ts; changed = true }
+  }
+  if (changed) localStorage.setItem(LS_DELETED_KEY, JSON.stringify(local))
+}
 
 export interface AIModel {
   id:            string;
   name:          string;
   contextLength?: number;
-  multimodal?:   boolean;
+  multimodal?:   boolean;  // supports image/video INPUT
+  reasoning?:    boolean;  // is a reasoning/thinking model
+  imageOutput?:  boolean;  // generates images as output
+}
+
+/** Infer model capabilities from model ID and optional OpenRouter modality string. */
+export function inferModelCaps(modelId: string, openRouterModality?: string): Partial<Pick<AIModel, 'multimodal' | 'reasoning' | 'imageOutput'>> {
+  const id = modelId.toLowerCase()
+  const reasoning = /\bo[1-9](-|$)|\bo4|deepseek-r[0-9]|qwq|thinking|reflect|reasoner/.test(id)
+  if (openRouterModality) {
+    return {
+      multimodal:  openRouterModality.includes('image') && openRouterModality.includes('->text'),
+      imageOutput: openRouterModality.includes('->image'),
+      reasoning,
+    }
+  }
+  const imageOutput = /dall-e|imagen|gpt-image|gpt-5-image|flux|stable-diff|sd-|midj/.test(id)
+  const multimodal  = !imageOutput && /vision|gpt-4o|claude-3|gemini|llava|pixtral|qwen-vl|intern-vl|phi.*vision|cogvlm|minicpm-v/.test(id)
+  return { multimodal, imageOutput, reasoning }
 }
 
 export interface AIProvider {
@@ -41,9 +78,11 @@ const OPENAI_MODELS: AIModel[] = [
   { id: 'gpt-4-turbo',     name: 'GPT-4 Turbo',   contextLength: 128_000, multimodal: true },
   { id: 'gpt-4',           name: 'GPT-4',          contextLength:   8_192 },
   { id: 'gpt-3.5-turbo',   name: 'GPT-3.5 Turbo', contextLength:  16_385 },
-  { id: 'o1',              name: 'o1',             contextLength: 200_000 },
-  { id: 'o1-mini',         name: 'o1 Mini',        contextLength: 128_000 },
-  { id: 'o3-mini',         name: 'o3 Mini',        contextLength: 200_000 },
+  { id: 'o1',              name: 'o1',             contextLength: 200_000, reasoning: true },
+  { id: 'o1-mini',         name: 'o1 Mini',        contextLength: 128_000, reasoning: true },
+  { id: 'o3-mini',         name: 'o3 Mini',        contextLength: 200_000, reasoning: true },
+  { id: 'o3',              name: 'o3',             contextLength: 200_000, reasoning: true },
+  { id: 'o4-mini',         name: 'o4 Mini',        contextLength: 200_000, reasoning: true, multimodal: true },
 ]
 
 const ANTHROPIC_MODELS: AIModel[] = [
@@ -190,7 +229,10 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
 
   function addCustomModel(providerId: string, model: AIModel) {
     const p = providers.value.find(p => p.id === providerId)
-    if (p && !p.models.find(m => m.id === model.id)) p.models.push(model)
+    if (p && !p.models.find(m => m.id === model.id)) {
+      const inferred = inferModelCaps(model.id)
+      p.models.push({ ...inferred, ...model })
+    }
     persist()
   }
 
@@ -228,6 +270,7 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     if (activeProviderId.value === id) {
       activeProviderId.value = providers.value[0]?.id ?? ''
     }
+    recordProviderDeletion(id)
     persist()
   }
 

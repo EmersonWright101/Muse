@@ -71,6 +71,7 @@ async function send() {
   const images = [...pendingImages.value]
   inputText.value     = ''
   pendingImages.value = []
+  pdfWarning.value    = ''
   await nextTick()
   adjustHeight()
   await chat.sendMessage(text, images.length ? images : undefined)
@@ -111,6 +112,7 @@ async function handlePaste(e: ClipboardEvent) {
       pdfLoading.value = true
       try {
         const meta = await processPdfFile(file)
+        if (!meta.extractedText) pdfWarning.value = '该 PDF 可能为扫描件，文字无法提取。建议改用 Claude 或 Gemini。'
         pendingImages.value.push({
           id:            crypto.randomUUID(),
           name:          file.name || 'document.pdf',
@@ -121,6 +123,7 @@ async function handlePaste(e: ClipboardEvent) {
           pageCount:     meta.pageCount,
         })
       } catch {
+        pdfWarning.value = 'PDF 解析失败，文字无法提取。建议改用 Claude 或 Gemini。'
         const reader = new FileReader()
         reader.onload = (ev) => {
           const base64 = (ev.target?.result as string).split(',')[1]
@@ -144,6 +147,7 @@ async function handlePaste(e: ClipboardEvent) {
 
 const fileInput  = ref<HTMLInputElement>()
 const pdfLoading = ref(false)
+const pdfWarning = ref('')
 
 function pickFile() {
   fileInput.value?.click()
@@ -170,6 +174,7 @@ async function handleFileChange(e: Event) {
       pdfLoading.value = true
       try {
         const meta = await processPdfFile(file)
+        if (!meta.extractedText) pdfWarning.value = '该 PDF 可能为扫描件，文字无法提取。建议改用 Claude 或 Gemini。'
         pendingImages.value.push({
           id:            crypto.randomUUID(),
           name:          file.name,
@@ -180,7 +185,7 @@ async function handleFileChange(e: Event) {
           pageCount:     meta.pageCount,
         })
       } catch {
-        // If text extraction fails, still attach the PDF without extracted text
+        pdfWarning.value = 'PDF 解析失败，文字无法提取。建议改用 Claude 或 Gemini。'
         const reader = new FileReader()
         reader.onload = (ev) => {
           const base64 = (ev.target?.result as string).split(',')[1]
@@ -284,6 +289,9 @@ function startNewChat() {
           </template>
         </div>
 
+        <!-- PDF warning -->
+        <div v-if="pdfWarning" class="pdf-warning">{{ pdfWarning }}</div>
+
         <!-- Text input -->
         <div class="input-box">
           <textarea
@@ -343,6 +351,16 @@ function startNewChat() {
 </template>
 
 <style scoped>
+.pdf-warning {
+  font-size: 12px;
+  color: #b45309;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 0 0 6px;
+}
+
 .chat-main {
   flex: 1;
   height: 100%;

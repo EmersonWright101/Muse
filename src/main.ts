@@ -4,8 +4,18 @@ import App from './App.vue'
 import router from './router'
 import i18n from './i18n'
 
-createApp(App)
+const app = createApp(App)
   .use(createPinia())
   .use(router)
   .use(i18n)
-  .mount('#app')
+
+app.mount('#app')
+
+// Wait for first paint before showing window to avoid any flash
+requestAnimationFrame(() => {
+  requestAnimationFrame(() => {
+    import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+      getCurrentWindow().show()
+    })
+  })
+})

@@ -189,6 +189,10 @@ async function streamGoogle(
   handler.onDone(usage)
 }
 
+// ─── PDF provider routing (mirrors Cherry Studio's PDF_NATIVE_PROVIDER_TYPES) ─
+
+const PDF_NATIVE_PROVIDERS = new Set(['anthropic', 'google'])
+
 // ─── Build message payload ────────────────────────────────────────────────────
 
 function buildPayload(
@@ -203,7 +207,6 @@ function buildPayload(
       const pdfs   = atts.filter(a => a.mimeType === 'application/pdf' && a.data)
 
       if (providerType === 'google') {
-        // Gemini: build parts array with native inlineData for PDFs and images
         const parts: unknown[] = []
         for (const pdf of pdfs) {
           parts.push({ inlineData: { mimeType: 'application/pdf', data: pdf.data } })
@@ -219,7 +222,6 @@ function buildPayload(
       }
 
       if (providerType === 'anthropic') {
-        // Anthropic: native document block for PDFs, base64 image block for images
         const blocks: unknown[] = []
         for (const pdf of pdfs) {
           blocks.push({
@@ -240,19 +242,18 @@ function buildPayload(
         return { role: m.role, content: m.content }
       }
 
-      // OpenAI-compatible / custom / OpenRouter:
-      // PDFs → inject extracted text; images → image_url
+      // OpenAI-compatible / OpenRouter: PDFs → extracted text; images → image_url
+      // (matches Cherry Studio's pdfCompatibilityPlugin fallback for non-native providers)
       if (pdfs.length > 0 || images.length > 0) {
         const contentParts: unknown[] = []
         for (const img of images) {
           contentParts.push({
-            type:       'image_url',
+            type:      'image_url',
             image_url: { url: `data:${img.mimeType};base64,${img.data}` },
           })
         }
-        // Build text part: prepend PDF text blocks before user message
         const pdfTexts = pdfs.map(
-          pdf => `[附件 PDF: ${pdf.name}${pdf.pageCount ? ` (${pdf.pageCount} 页)` : ''}]\n${pdf.extractedText ?? '（无法提取文字内容）'}`,
+          pdf => `${pdf.name}\n${pdf.extractedText || '（无法提取文字内容，该 PDF 可能为扫描件）'}`,
         )
         const fullText = pdfTexts.length > 0
           ? `${pdfTexts.join('\n\n')}\n\n---\n\n${m.content}`
@@ -267,6 +268,8 @@ function buildPayload(
       return { role: m.role, content: m.content }
     })
 }
+
+export { PDF_NATIVE_PROVIDERS }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 

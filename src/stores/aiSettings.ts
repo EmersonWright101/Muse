@@ -30,6 +30,7 @@ export interface AIProvider {
   enabled:         boolean;
   selectedModelId: string;
   builtIn?:        boolean;  // true for the four default providers
+  updatedAt?:      string;   // ISO timestamp, updated on every user-facing change
 }
 
 // ─── Built-in model lists ─────────────────────────────────────────────────────
@@ -80,6 +81,7 @@ interface PersistedProvider {
   enabled:         boolean;
   selectedModelId: string;
   customModels?:   AIModel[];
+  updatedAt?:      string;
 }
 
 interface PersistedSettings {
@@ -108,6 +110,7 @@ async function saveToStorage(
         enabled:         p.enabled,
         selectedModelId: p.selectedModelId,
         customModels:    p.type === 'custom' ? p.models : undefined,
+        updatedAt:       p.updatedAt,
       })
     }
     localStorage.setItem(LS_KEY, JSON.stringify({
@@ -149,7 +152,39 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
 
   function updateProvider(id: string, patch: Partial<Pick<AIProvider, 'apiKey' | 'baseUrl' | 'enabled' | 'name'>>) {
     const p = providers.value.find(p => p.id === id)
-    if (p) Object.assign(p, patch)
+    if (p) Object.assign(p, patch, { updatedAt: new Date().toISOString() })
+    persist()
+  }
+
+  /** Upsert a provider from a remote sync payload — creates it if not present locally. */
+  function importProvider(rp: {
+    id: string; name?: string; type?: AIProvider['type']; builtIn?: boolean;
+    apiKey?: string; baseUrl?: string; enabled?: boolean;
+    selectedModelId?: string; customModels?: AIModel[]; updatedAt?: string;
+  }) {
+    const p = providers.value.find(p => p.id === rp.id)
+    if (p) {
+      if (rp.apiKey          !== undefined) p.apiKey          = rp.apiKey
+      if (rp.baseUrl         !== undefined) p.baseUrl         = rp.baseUrl
+      if (rp.enabled         !== undefined) p.enabled         = rp.enabled
+      if (rp.name            !== undefined) p.name            = rp.name
+      if (rp.selectedModelId)               p.selectedModelId = rp.selectedModelId
+      if (rp.customModels?.length)          p.models          = rp.customModels
+      if (rp.updatedAt)                     p.updatedAt       = rp.updatedAt
+    } else if (rp.id && rp.name) {
+      providers.value.push({
+        id:              rp.id,
+        type:            rp.type            ?? 'custom',
+        name:            rp.name,
+        apiKey:          rp.apiKey          ?? '',
+        baseUrl:         rp.baseUrl         ?? '',
+        models:          rp.customModels?.length ? rp.customModels : [{ id: 'default', name: '默认模型' }],
+        enabled:         rp.enabled         ?? true,
+        selectedModelId: rp.selectedModelId ?? 'default',
+        builtIn:         false,
+        updatedAt:       rp.updatedAt,
+      })
+    }
     persist()
   }
 
@@ -179,6 +214,7 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
       enabled:         true,
       selectedModelId: 'default',
       builtIn:         false,
+      updatedAt:       new Date().toISOString(),
     }
     providers.value.push(newP)
     persist()
@@ -227,6 +263,7 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
             enabled:         sp.enabled,
             selectedModelId: sp.selectedModelId,
             builtIn:         false,
+            updatedAt:       sp.updatedAt,
           }
           if (sp.apiKeyEnc) {
             try { newP.apiKey = await decryptLocal(sp.apiKeyEnc) } catch { /* skip */ }
@@ -239,6 +276,7 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
         p.baseUrl         = sp.baseUrl || p.baseUrl
         p.enabled         = sp.enabled
         p.selectedModelId = sp.selectedModelId || p.selectedModelId
+        p.updatedAt       = sp.updatedAt
         if (sp.customModels?.length) p.models = sp.customModels
         if (sp.apiKeyEnc) {
           try { p.apiKey = await decryptLocal(sp.apiKeyEnc) } catch { /* skip */ }
@@ -271,6 +309,7 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     setActiveProvider,
     setModelForProvider,
     updateProvider,
+    importProvider,
     addCustomModel,
     removeCustomModel,
     addProvider,

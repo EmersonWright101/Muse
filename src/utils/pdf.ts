@@ -49,7 +49,7 @@ export async function extractPdfText(base64: string): Promise<{ text: string; pa
       .join(' ')
       .replace(/\s+/g, ' ')
       .trim()
-    if (text) pages.push(`[第 ${i} 页]\n${text}`)
+    if (text) pages.push(text)
   }
 
   return { text: pages.join('\n\n'), pageCount: pdf.numPages }

@@ -1,37 +1,32 @@
 /**
  * WebDAV Sync Store
  *
- * Syncs AI settings (re-encrypted with WebDAV password) and all conversation
- * history to a user-configured WebDAV server.
+ * Syncs AI settings and all conversation history to a WebDAV server.
+ * Every remote file is encrypted with AES-256-GCM; key derived from WebDAV password.
  *
- * ── Security ────────────────────────────────────────────────────────────────
- * Every remote file is encrypted with AES-256-GCM before upload.
- * The encryption key is derived from the WebDAV password via PBKDF2-SHA256.
- * Even if someone gains access to the remote storage they cannot read the
- * content without the password.
+ * ── Merge strategy ──────────────────────────────────────────────────────────
+ * AI Settings  : per-provider merge using each provider's own updatedAt.
+ *                Non-conflicting changes (different providers) are always merged.
+ *                Same provider modified on both sides → newer updatedAt wins.
+ *                activeProviderId uses overall settings timestamp.
  *
- * ── Conflict resolution ─────────────────────────────────────────────────────
- * Conversations : union merge by message ID per conversation.
- * AI Settings   : last-write-wins using an ISO timestamp.
- *
- * ── Bandwidth optimisation ──────────────────────────────────────────────────
- * A tiny encrypted manifest (manifest.enc) records the last successful sync
- * timestamp.  A full sync is skipped when neither local dirty flag is set nor
- * the remote manifest has changed.
+ * Conversations: per-message union merge using message ID.
+ *                Messages only on one side → added to the other.
+ *                Same message ID on both sides → newer timestamp wins.
+ *                Conversation metadata (title, model, etc.) → newer updatedAt wins.
  */
 
 import { reactive, watch } from 'vue'
 import { defineStore } from 'pinia'
 import {
   listConversations, loadConversation, saveConversation,
-  type ConversationMeta, type Conversation,
+  type ConversationMeta, type Conversation, type ChatMessage,
 } from '../utils/storage'
 import { encryptData, decryptData }    from '../utils/crypto'
 import { webdavGet, webdavPut, webdavMkcol, webdavPing } from '../utils/webdav'
-import { useAiSettingsStore, LS_MODIFIED_AT_KEY } from './aiSettings'
+import { useAiSettingsStore, LS_MODIFIED_AT_KEY, type AIProvider } from './aiSettings'
 
 const SYNC_CONFIG_LS_KEY = 'muse-webdav-sync-config'
-const MANIFEST_LS_KEY    = 'muse-webdav-manifest-at'
 
 export interface SyncConfig {
   enabled:                 boolean;
@@ -68,6 +63,49 @@ function loadConfig(): SyncConfig {
   return { ...DEFAULT_CONFIG }
 }
 
+// ─── Merge helpers ────────────────────────────────────────────────────────────
+
+type RemoteProvider = {
+  id: string; name?: string; type?: AIProvider['type']; builtIn?: boolean;
+  apiKey?: string; baseUrl?: string; enabled?: boolean;
+  selectedModelId?: string; customModels?: AIProvider['models']; updatedAt?: string;
+}
+
+/** Merge two message arrays by ID; for the same ID keep the newer timestamp. */
+function mergeMessages(local: ChatMessage[], remote: ChatMessage[]): ChatMessage[] {
+  const map = new Map<string, ChatMessage>()
+  for (const msg of local)  map.set(msg.id, msg)
+  for (const msg of remote) {
+    const existing = map.get(msg.id)
+    if (!existing || msg.timestamp > existing.timestamp) map.set(msg.id, msg)
+  }
+  return [...map.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+}
+
+/** Merge two versions of the same conversation. Returns merged + whether it differs from local. */
+function mergeConversation(
+  local: Conversation,
+  remote: Conversation,
+): { merged: Conversation; localChanged: boolean; remoteChanged: boolean } {
+  const messages    = mergeMessages(local.messages, remote.messages)
+  const newerIsRemote = remote.updatedAt > local.updatedAt
+  const base        = newerIsRemote ? remote : local
+  const updatedAt   = newerIsRemote ? remote.updatedAt : local.updatedAt
+
+  const merged: Conversation = { ...base, messages, updatedAt }
+
+  const localChanged  = messages.length !== local.messages.length
+    || merged.updatedAt !== local.updatedAt
+    || merged.title    !== local.title
+  const remoteChanged = messages.length !== remote.messages.length
+    || merged.updatedAt !== remote.updatedAt
+    || merged.title    !== remote.title
+
+  return { merged, localChanged, remoteChanged }
+}
+
+// ─── Store ────────────────────────────────────────────────────────────────────
+
 export const useSyncStore = defineStore('sync', () => {
   const config = reactive<SyncConfig>(loadConfig())
   const status = reactive<SyncStatus>({
@@ -77,16 +115,9 @@ export const useSyncStore = defineStore('sync', () => {
     progress:   '',
   })
 
-  let _syncInProgress      = false
-  let _localDirtyAt        = 0
-  let _lastRemoteSyncedAt  = localStorage.getItem(MANIFEST_LS_KEY)
+  let _syncInProgress = false
   let _autoSyncTimer: ReturnType<typeof setInterval> | null = null
 
-  function markDirty() {
-    if (!_syncInProgress) _localDirtyAt = Date.now()
-  }
-
-  // Persist config changes
   watch(() => ({ ...config }), (v) => localStorage.setItem(SYNC_CONFIG_LS_KEY, JSON.stringify(v)))
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -106,42 +137,31 @@ export const useSyncStore = defineStore('sync', () => {
     await webdavMkcol(dav(), `/${base}/conversations/`)
   }
 
-  // ─── Manifest ────────────────────────────────────────────────────────────
-
-  async function fetchRemoteManifest(): Promise<{ syncedAt: string } | null> {
-    try {
-      const resp  = await webdavGet(dav(), remotePath('manifest.enc'))
-      if (!resp.ok) return null
-      const plain = await decryptData(resp.body, config.password)
-      return JSON.parse(plain)
-    } catch { return null }
-  }
-
-  async function uploadManifest(syncedAt: string) {
-    try {
-      const enc = await encryptData(JSON.stringify({ syncedAt }), config.password)
-      await webdavPut(dav(), remotePath('manifest.enc'), enc)
-      _lastRemoteSyncedAt = syncedAt
-      localStorage.setItem(MANIFEST_LS_KEY, syncedAt)
-    } catch { /* non-critical */ }
-  }
-
   // ─── AI Settings sync ────────────────────────────────────────────────────
 
   async function syncAiSettings() {
-    status.progress = '同步 AI 设置…'
-    const aiStore   = useAiSettingsStore()
+    status.progress   = '同步 AI 设置…'
+    const aiStore     = useAiSettingsStore()
+    const localTs     = localStorage.getItem(LS_MODIFIED_AT_KEY) ?? new Date(0).toISOString()
 
-    const localData = {
-      timestamp: localStorage.getItem(LS_MODIFIED_AT_KEY) ?? new Date(0).toISOString(),
-      providers: aiStore.providers.map(p => ({
+    function toRemoteProvider(p: AIProvider): RemoteProvider {
+      return {
         id:              p.id,
+        name:            p.name,
+        type:            p.type,
+        builtIn:         p.builtIn,
         apiKey:          p.apiKey,
         baseUrl:         p.baseUrl,
         enabled:         p.enabled,
         selectedModelId: p.selectedModelId,
-        customModels:    p.id === 'custom' ? p.models : undefined,
-      })),
+        customModels:    p.type === 'custom' ? p.models : undefined,
+        updatedAt:       p.updatedAt ?? new Date(0).toISOString(),
+      }
+    }
+
+    const localData = {
+      timestamp:        localTs,
+      providers:        aiStore.providers.map(toRemoteProvider),
       activeProviderId: aiStore.activeProviderId,
     }
 
@@ -154,30 +174,51 @@ export const useSyncStore = defineStore('sync', () => {
       return
     }
 
+    let remoteData: typeof localData
     try {
-      const plain      = await decryptData(remote.body, config.password)
-      const remoteData = JSON.parse(plain)
-
-      if (remoteData.timestamp > localData.timestamp) {
-        // Apply remote settings
-        for (const rp of remoteData.providers ?? []) {
-          aiStore.updateProvider(rp.id, {
-            apiKey:  rp.apiKey  ?? '',
-            baseUrl: rp.baseUrl ?? '',
-            enabled: rp.enabled ?? true,
-          })
-          if (rp.selectedModelId) aiStore.setModelForProvider(rp.id, rp.selectedModelId)
-        }
-        if (remoteData.activeProviderId) aiStore.setActiveProvider(remoteData.activeProviderId)
-      } else {
-        // Upload local
-        const enc = await encryptData(JSON.stringify(localData), config.password)
-        await webdavPut(dav(), path, enc)
-      }
+      const plain = await decryptData(remote.body, config.password)
+      remoteData  = JSON.parse(plain)
     } catch {
       const enc = await encryptData(JSON.stringify(localData), config.password)
       await webdavPut(dav(), path, enc)
+      return
     }
+
+    const remoteProviderMap = new Map<string, RemoteProvider>(
+      (remoteData.providers ?? []).map((p: RemoteProvider) => [p.id, p]),
+    )
+    const localProviderMap = new Map<string, RemoteProvider>(
+      localData.providers.map(p => [p.id, p]),
+    )
+
+    // Apply remote-newer providers to local
+    for (const [id, rp] of remoteProviderMap) {
+      const lp = localProviderMap.get(id)
+      if (!lp || (rp.updatedAt ?? '') > (lp.updatedAt ?? '')) {
+        aiStore.importProvider(rp)
+      }
+    }
+
+    // activeProviderId: overall last-write-wins
+    if ((remoteData.timestamp ?? '') > localTs && remoteData.activeProviderId) {
+      aiStore.setActiveProvider(remoteData.activeProviderId)
+    }
+
+    // Upload merged state (union of all providers, each at its winning version)
+    const mergedData = {
+      timestamp:        new Date().toISOString(),
+      providers:        aiStore.providers.map(toRemoteProvider),
+      activeProviderId: aiStore.activeProviderId,
+    }
+    // Also include any remote-only providers not yet in local store
+    for (const [id, rp] of remoteProviderMap) {
+      if (!localProviderMap.has(id) && !mergedData.providers.find(p => p.id === id)) {
+        mergedData.providers.push(rp)
+      }
+    }
+
+    const enc = await encryptData(JSON.stringify(mergedData), config.password)
+    await webdavPut(dav(), path, enc)
   }
 
   // ─── Conversation sync ───────────────────────────────────────────────────
@@ -185,12 +226,9 @@ export const useSyncStore = defineStore('sync', () => {
   async function syncConversations() {
     status.progress = '同步对话历史…'
 
-    // Upload remote index
     const localList = await listConversations()
-
-    // Fetch remote index
-    const idxPath = remotePath('conversations/index.enc')
-    const idxResp = await webdavGet(dav(), idxPath)
+    const idxPath   = remotePath('conversations/index.enc')
+    const idxResp   = await webdavGet(dav(), idxPath)
 
     let remoteList: ConversationMeta[] = []
     if (idxResp.ok) {
@@ -200,43 +238,65 @@ export const useSyncStore = defineStore('sync', () => {
       } catch { /* use empty */ }
     }
 
-    // Union by id
     const localIds  = new Set(localList.map(c => c.id))
     const remoteIds = new Set(remoteList.map(c => c.id))
 
     // Download remote-only conversations
     for (const meta of remoteList) {
-      if (!localIds.has(meta.id)) {
-        const resp = await webdavGet(dav(), remotePath(`conversations/${meta.id}.enc`))
-        if (resp.ok) {
-          try {
-            const plain = await decryptData(resp.body, config.password)
-            const conv  = JSON.parse(plain) as Conversation
-            await saveConversation(conv)
-          } catch { /* skip */ }
-        }
-      }
+      if (localIds.has(meta.id)) continue
+      const resp = await webdavGet(dav(), remotePath(`conversations/${meta.id}.enc`))
+      if (!resp.ok) continue
+      try {
+        const conv = JSON.parse(await decryptData(resp.body, config.password)) as Conversation
+        await saveConversation(conv)
+      } catch { /* skip */ }
     }
 
     // Upload local-only conversations
     for (const meta of localList) {
-      if (!remoteIds.has(meta.id)) {
-        const conv = await loadConversation(meta.id)
-        if (conv) {
-          const enc = await encryptData(JSON.stringify(conv), config.password)
-          await webdavPut(dav(), remotePath(`conversations/${meta.id}.enc`), enc)
-        }
-      }
+      if (remoteIds.has(meta.id)) continue
+      const conv = await loadConversation(meta.id)
+      if (!conv) continue
+      const enc = await encryptData(JSON.stringify(conv), config.password)
+      await webdavPut(dav(), remotePath(`conversations/${meta.id}.enc`), enc)
     }
 
-    // Upload updated conversations (updatedAt > remote's updatedAt)
-    for (const local of localList) {
-      const remote = remoteList.find(r => r.id === local.id)
-      if (remote && local.updatedAt > remote.updatedAt) {
-        const conv = await loadConversation(local.id)
-        if (conv) {
-          const enc = await encryptData(JSON.stringify(conv), config.password)
-          await webdavPut(dav(), remotePath(`conversations/${local.id}.enc`), enc)
+    // Merge conversations that exist on both sides
+    for (const localMeta of localList) {
+      const remoteMeta = remoteList.find(r => r.id === localMeta.id)
+      if (!remoteMeta) continue
+      if (localMeta.updatedAt === remoteMeta.updatedAt) continue  // identical
+
+      const localConv = await loadConversation(localMeta.id)
+      if (!localConv) continue
+
+      const remoteResp = await webdavGet(dav(), remotePath(`conversations/${localMeta.id}.enc`))
+      if (!remoteResp.ok) {
+        // Remote file missing but index says it exists — upload local
+        if (localMeta.updatedAt > remoteMeta.updatedAt) {
+          const enc = await encryptData(JSON.stringify(localConv), config.password)
+          await webdavPut(dav(), remotePath(`conversations/${localMeta.id}.enc`), enc)
+        }
+        continue
+      }
+
+      try {
+        const remoteConv = JSON.parse(
+          await decryptData(remoteResp.body, config.password),
+        ) as Conversation
+
+        const { merged, localChanged, remoteChanged } = mergeConversation(localConv, remoteConv)
+
+        if (localChanged)  await saveConversation(merged)
+        if (remoteChanged) {
+          const enc = await encryptData(JSON.stringify(merged), config.password)
+          await webdavPut(dav(), remotePath(`conversations/${localMeta.id}.enc`), enc)
+        }
+      } catch {
+        // Fallback: simple last-write-wins
+        if (localMeta.updatedAt > remoteMeta.updatedAt) {
+          const enc = await encryptData(JSON.stringify(localConv), config.password)
+          await webdavPut(dav(), remotePath(`conversations/${localMeta.id}.enc`), enc)
         }
       }
     }
@@ -257,7 +317,7 @@ export const useSyncStore = defineStore('sync', () => {
   }
 
   async function syncNow(): Promise<void> {
-    if (status.state === 'syncing') return
+    if (_syncInProgress) return
     if (!config.enabled) {
       status.state     = 'error'
       status.lastError = '同步未启用。'
@@ -273,25 +333,6 @@ export const useSyncStore = defineStore('sync', () => {
     status.state     = 'syncing'
     status.lastError = null
 
-    // Pre-flight manifest check
-    try {
-      status.progress    = '检查更新…'
-      const manifest     = await fetchRemoteManifest()
-      const remoteChanged = manifest === null || manifest.syncedAt !== _lastRemoteSyncedAt
-      const localDirty   = _localDirtyAt > 0
-
-      if (!remoteChanged && !localDirty) {
-        status.state    = 'uptodate'
-        status.progress = ''
-        _syncInProgress = false
-        setTimeout(() => {
-          if (status.state === 'uptodate')
-            status.state = status.lastSyncAt ? 'success' : 'idle'
-        }, 3000)
-        return
-      }
-    } catch { /* fall through to full sync */ }
-
     try {
       status.progress = '准备远端目录…'
       await ensureRemoteDir()
@@ -304,9 +345,6 @@ export const useSyncStore = defineStore('sync', () => {
       status.lastSyncAt = syncedAt
       status.progress   = ''
       localStorage.setItem('muse-webdav-last-at', syncedAt)
-
-      await uploadManifest(syncedAt)
-      _localDirtyAt = 0
     } catch (e: unknown) {
       status.state     = 'error'
       status.lastError = e instanceof Error ? e.message : String(e)
@@ -337,5 +375,5 @@ export const useSyncStore = defineStore('sync', () => {
     { immediate: true },
   )
 
-  return { config, status, markDirty, testConnection, syncNow }
+  return { config, status, testConnection, syncNow }
 })

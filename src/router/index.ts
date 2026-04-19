@@ -1,17 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 
-// Chat module
-import ChatSidebar from '../modules/chat/ChatSidebar.vue'
-import ChatMain from '../modules/chat/ChatMain.vue'
-
-// Travel module
-import TravelSidebar from '../modules/travel/TravelSidebar.vue'
-import TravelMain from '../modules/travel/TravelMain.vue'
-
-// Settings module
-import SettingsSidebar from '../modules/settings/SettingsSidebar.vue'
-import SettingsMain from '../modules/settings/SettingsMain.vue'
-
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
@@ -22,22 +10,22 @@ const router = createRouter({
     {
       path: '/chat',
       components: {
-        sidebar: ChatSidebar,
-        main: ChatMain,
+        sidebar: () => import('../modules/chat/ChatSidebar.vue'),
+        main: () => import('../modules/chat/ChatMain.vue'),
       },
     },
     {
       path: '/travel',
       components: {
-        sidebar: TravelSidebar,
-        main: TravelMain,
+        sidebar: () => import('../modules/travel/TravelSidebar.vue'),
+        main: () => import('../modules/travel/TravelMain.vue'),
       },
     },
     {
       path: '/settings',
       components: {
-        sidebar: SettingsSidebar,
-        main: SettingsMain,
+        sidebar: () => import('../modules/settings/SettingsSidebar.vue'),
+        main: () => import('../modules/settings/SettingsMain.vue'),
       },
     },
   ],

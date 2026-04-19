@@ -1,0 +1,35 @@
+{
+  "name": "muse",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-fs": "^2.5.0",
+    "@tauri-apps/plugin-http": "^2.5.8",
+    "@tauri-apps/plugin-opener": "^2",
+    "@types/dompurify": "^3.0.5",
+    "dompurify": "^3.4.0",
+    "highlight.js": "^11.11.1",
+    "lucide-vue-next": "^1.0.0",
+    "marked": "^18.0.1",
+    "pdfjs-dist": "^5.6.205",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.13",
+    "vue-i18n": "^10.0.7",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.3",
+    "vue-tsc": "^2.1.10"
+  }
+}

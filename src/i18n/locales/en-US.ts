@@ -1,0 +1,50 @@
+export default {
+  app: {
+    name: 'Muse',
+  },
+  nav: {
+    chat:     'Chat',
+    travel:   'Travel',
+    settings: 'Settings',
+  },
+  chat: {
+    title:       'Chat',
+    newChat:     'New Chat',
+    search:      'Search…',
+    placeholder: 'Select a conversation or start a new chat.',
+  },
+  travel: {
+    title:       'Travel',
+    newEntry:    'New Entry',
+    search:      'Search diaries…',
+    placeholder: 'Select a travel entry to view details.',
+    noEntries:   'No travel entries yet.',
+  },
+  settings: {
+    title:       'Settings',
+    placeholder: 'Select a settings category on the left.',
+    sections: {
+      general:       'General',
+      appearance:    'Appearance',
+      language:      'Language',
+      notifications: 'Notifications',
+      ai:            'AI Assistant',
+      sync:          'Sync',
+      privacy:       'Privacy & Security',
+      about:         'About',
+    },
+  },
+  common: {
+    loading:   'Loading…',
+    save:      'Save',
+    cancel:    'Cancel',
+    delete:    'Delete',
+    edit:      'Edit',
+    close:     'Close',
+    today:     'Today',
+    yesterday: 'Yesterday',
+    confirm:   'Confirm',
+    error:     'Error',
+    success:   'Success',
+  },
+}

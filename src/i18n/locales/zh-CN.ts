@@ -1,0 +1,50 @@
+export default {
+  app: {
+    name: 'Muse',
+  },
+  nav: {
+    chat:     '对话',
+    travel:   '旅行',
+    settings: '设置',
+  },
+  chat: {
+    title:       '对话',
+    newChat:     '新建对话',
+    search:      '搜索…',
+    placeholder: '选择一个对话，或开始新的聊天。',
+  },
+  travel: {
+    title:      '旅行日记',
+    newEntry:   '新建日记',
+    search:     '搜索日记…',
+    placeholder: '选择一篇旅行日记查看详情。',
+    noEntries:  '还没有旅行日记。',
+  },
+  settings: {
+    title:       '设置',
+    placeholder: '从左侧选择一个设置分类。',
+    sections: {
+      general:      '通用',
+      appearance:   '外观',
+      language:     '语言',
+      notifications:'通知',
+      ai:           'AI 助手',
+      sync:         '同步',
+      privacy:      '隐私与安全',
+      about:        '关于',
+    },
+  },
+  common: {
+    loading:   '加载中…',
+    save:      '保存',
+    cancel:    '取消',
+    delete:    '删除',
+    edit:      '编辑',
+    close:     '关闭',
+    today:     '今天',
+    yesterday: '昨天',
+    confirm:   '确认',
+    error:     '错误',
+    success:   '成功',
+  },
+}

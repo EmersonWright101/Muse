@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { Eye, EyeOff, Plus, Trash2, Check, X, ChevronRight, RefreshCw, Search, SlidersHorizontal } from 'lucide-vue-next'
 import { useAiSettingsStore, inferModelCaps, type AIProvider } from '../../../stores/aiSettings'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import openrouterLogoUrl from '../../../assets/providers/openrouter.svg'
 
 const ai = useAiSettingsStore()
@@ -164,13 +165,13 @@ async function testConnection() {
     let list: unknown[]
     if (type === 'ollama') {
       // Ollama uses /api/tags and needs no API key
-      const resp = await fetch(`${baseUrl}/api/tags`)
+      const resp = await tauriFetch(`${baseUrl}/api/tags`)
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const data = await resp.json()
       list = data.models ?? []
     } else {
       if (!apiKey) { connStatus.value[id] = 'error'; connMessage.value[id] = '请先配置 API 密钥'; return }
-      const resp = await fetch(`${baseUrl}/models`, {
+      const resp = await tauriFetch(`${baseUrl}/models`, {
         headers: { Authorization: `Bearer ${apiKey}` },
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
@@ -315,7 +316,7 @@ async function fetchModels() {
     let list: PickerModel[]
     if (type === 'ollama') {
       // Ollama: GET /api/tags, no auth, response { models: [{ name, model, size, ... }] }
-      const resp = await fetch(`${baseUrl}/api/tags`)
+      const resp = await tauriFetch(`${baseUrl}/api/tags`)
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const data = await resp.json()
       list = (data.models ?? []).map((m: { name?: string; model?: string }) => ({
@@ -324,7 +325,7 @@ async function fetchModels() {
       }))
     } else {
       if (!apiKey) { fetchModelError.value = '需要先配置 API 密钥'; return }
-      const resp = await fetch(`${baseUrl}/models`, {
+      const resp = await tauriFetch(`${baseUrl}/models`, {
         headers: { Authorization: `Bearer ${apiKey}` },
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)

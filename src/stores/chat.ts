@@ -28,6 +28,7 @@ import {
 } from '../utils/storage'
 import { useAiSettingsStore }    from './aiSettings'
 import { useAssistantsStore }   from './assistants'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { useChatSettingsStore, DEFAULT_TITLE_PROMPT } from './chatSettings'
 
 export type { ConversationMeta, Conversation, ChatMessage, AttachmentMeta, MessageVariant }
@@ -82,7 +83,7 @@ async function streamOpenAI(
   if (modalities?.length) reqBody.modalities = modalities
   if (temperature !== undefined) reqBody.temperature = temperature
   if (maxTokens   !== undefined) reqBody.max_tokens  = maxTokens
-  const resp = await fetch(`${baseUrl}/chat/completions`, {
+  const resp = await tauriFetch(`${baseUrl}/chat/completions`, {
     method:  'POST',
     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body:    JSON.stringify(reqBody),
@@ -171,7 +172,7 @@ async function streamAnthropic(
     body.thinking    = { type: 'enabled', budget_tokens: thinkingBudget }
     body.max_tokens  = Math.max(16384, thinkingBudget + 4096)
   }
-  const resp = await fetch(`${baseUrl}/v1/messages`, {
+  const resp = await tauriFetch(`${baseUrl}/v1/messages`, {
     method:  'POST',
     headers: {
       'x-api-key':         apiKey,
@@ -246,7 +247,7 @@ async function streamGoogle(
     if (maxTokens   !== undefined) cfg.maxOutputTokens = maxTokens
     reqBody.generationConfig = cfg
   }
-  const resp = await fetch(
+  const resp = await tauriFetch(
     `${baseUrl}/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`,
     {
       method:  'POST',
@@ -314,7 +315,7 @@ async function streamOllama(
   if (maxTokens   !== undefined) options.num_predict = maxTokens
   if (Object.keys(options).length) reqBody.options = options
 
-  const resp = await fetch(`${baseUrl}/api/chat`, {
+  const resp = await tauriFetch(`${baseUrl}/api/chat`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify(reqBody),

@@ -8,6 +8,19 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [vue()],
 
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-vue':    ['vue', 'vue-router', 'pinia', 'vue-i18n'],
+          'vendor-tauri':  ['@tauri-apps/api', '@tauri-apps/plugin-fs', '@tauri-apps/plugin-http', '@tauri-apps/plugin-opener', '@tauri-apps/plugin-updater', '@tauri-apps/plugin-process'],
+          'vendor-render': ['marked', 'dompurify', 'highlight.js'],
+          'vendor-pdf':    ['pdfjs-dist'],
+        },
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

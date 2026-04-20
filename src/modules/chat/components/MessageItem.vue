@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { marked, type Tokens } from 'marked'
 import hljs from 'highlight.js'
 import DOMPurify from 'dompurify'
-import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Bot, AtSign } from 'lucide-vue-next'
+import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Bot, AtSign, Download, Clock } from 'lucide-vue-next'
 import type { ChatMessage } from '../../../stores/chat'
 import { useChatStore } from '../../../stores/chat'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
@@ -93,24 +93,47 @@ const isUser = computed(() => props.message.role === 'user')
 // Auto-discover model SVGs from assets/models/*.svg via Vite glob.
 // Each module's .default is the resolved asset URL (same as a plain SVG import).
 // Adding a new <name>.svg to that folder is all that's needed to support a new model.
-const modelSvgModules = import.meta.glob<{ default: string }>('/src/assets/models/*.svg', { eager: true })
+const modelSvgModules    = import.meta.glob<{ default: string }>('/src/assets/models/*.svg',    { eager: true })
+const providerSvgModules = import.meta.glob<{ default: string }>('/src/assets/providers/*.svg', { eager: true })
+
+function buildSvgMap(modules: Record<string, { default: string }>): Record<string, string> {
+  const map: Record<string, string> = {}
+  for (const [path, mod] of Object.entries(modules)) {
+    map[path.replace(/^.*\//, '').replace(/\.svg$/, '')] = mod.default
+  }
+  return map
+}
 
 // Helper: look up SVG URL for any model/provider pair
 function lookupLogoUrl(model: string, providerId: string): string | null {
   const mid = model.toLowerCase()
   const pid = providerId.toLowerCase()
-  const svgMap: Record<string, string> = {}
-  for (const [path, mod] of Object.entries(modelSvgModules)) {
-    const name = path.replace(/^.*\//, '').replace(/\.svg$/, '')
-    svgMap[name] = mod.default
-  }
+  const svgMap = buildSvgMap(modelSvgModules)
   for (const name of Object.keys(svgMap)) { if (mid.includes(name)) return svgMap[name] }
   for (const name of Object.keys(svgMap)) { if (pid.includes(name)) return svgMap[name] }
   return null
 }
 
+// Helper: look up provider icon by id + name + baseUrl
+function lookupProviderIcon(providerId: string): string | null {
+  const p = ai.providers.find(pr => pr.id === providerId)
+  const svgMap = buildSvgMap(providerSvgModules)
+  const idAliases: Record<string, string> = { anthropic: 'claude', google: 'gemini' }
+  const idKey = idAliases[providerId] ?? providerId
+  if (svgMap[idKey]) return svgMap[idKey]
+  if (!p) return null
+  const hay = (p.name + ' ' + p.baseUrl).toLowerCase()
+  for (const [name, url] of Object.entries(svgMap)) { if (hay.includes(name)) return url }
+  return null
+}
+
 const modelLogoUrl = computed<string | null>(() =>
   lookupLogoUrl(displayedModel.value, displayedProviderId.value)
+)
+
+
+const providerDisplayName = computed(() =>
+  ai.providers.find(p => p.id === displayedProviderId.value)?.name ?? ''
 )
 
 // ─── Variants (multi-model responses) ────────────────────────────────────────
@@ -182,14 +205,66 @@ function openLightbox(mimeType: string, data: string) {
 function openLightboxUrl(url: string) {
   lightboxSrc.value = url
 }
+
+const saveToast = ref('')
+let _saveToastTimer: ReturnType<typeof setTimeout> | null = null
+
+async function downloadImage(src: string, filename = 'muse-image.png') {
+  // Convert src to Uint8Array
+  let bytes: Uint8Array
+  if (src.startsWith('data:')) {
+    const b64 = src.split(',')[1]
+    const bin = atob(b64)
+    bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  } else {
+    const buf = await fetch(src).then(r => r.arrayBuffer())
+    bytes = new Uint8Array(buf)
+  }
+
+  try {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const { writeFile } = await import('@tauri-apps/plugin-fs')
+
+    const savePath = await save({
+      defaultPath: filename,
+      filters: [{ name: 'Image', extensions: ['png', 'jpg', 'webp'] }],
+    })
+    if (!savePath) return  // user cancelled
+
+    await writeFile(savePath, bytes)
+    showSaveToast('已保存')
+  } catch {
+    // Fallback: data-URL download (works for most cases)
+    const a = document.createElement('a')
+    a.href = src.startsWith('data:') ? src : URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer]))
+    a.download = filename
+    a.click()
+    showSaveToast('已保存到下载文件夹')
+  }
+}
+
+function showSaveToast(msg: string) {
+  saveToast.value = msg
+  if (_saveToastTimer) clearTimeout(_saveToastTimer)
+  _saveToastTimer = setTimeout(() => { saveToast.value = '' }, 2500)
+}
 </script>
 
 <template>
+  <!-- Save toast -->
+  <Teleport to="body">
+    <div v-if="saveToast" class="save-toast">{{ saveToast }}</div>
+  </Teleport>
+
   <!-- Image lightbox -->
   <Teleport to="body">
     <div v-if="lightboxSrc" class="lightbox-overlay" @click="lightboxSrc = null">
       <img :src="lightboxSrc" class="lightbox-img" @click.stop />
       <button class="lightbox-close" @click="lightboxSrc = null">✕</button>
+      <button class="lightbox-download" @click.stop="downloadImage(lightboxSrc!)">
+        <Download :size="18" />
+      </button>
     </div>
   </Teleport>
 
@@ -284,13 +359,21 @@ function openLightboxUrl(url: string) {
       <!-- Media outputs (images / videos returned by model) -->
       <div v-if="!isUser && message.mediaOutputs?.length" class="media-outputs">
         <template v-for="(out, idx) in message.mediaOutputs" :key="idx">
-          <img
-            v-if="out.mimeType.startsWith('image/')"
-            :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
-            class="media-img"
-            :alt="`生成图片 ${idx + 1}`"
-            @click="out.url ? openLightboxUrl(out.url) : openLightbox(out.mimeType, out.data!)"
-          />
+          <div v-if="out.mimeType.startsWith('image/')" class="media-img-wrap">
+            <img
+              :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
+              class="media-img"
+              :alt="`生成图片 ${idx + 1}`"
+              @click="out.url ? openLightboxUrl(out.url) : openLightbox(out.mimeType, out.data!)"
+            />
+            <button
+              class="media-download-btn"
+              title="下载原图"
+              @click.stop="downloadImage(out.url ?? `data:${out.mimeType};base64,${out.data}`, `muse-image-${idx + 1}.png`)"
+            >
+              <Download :size="15" />
+            </button>
+          </div>
           <video
             v-else-if="out.mimeType.startsWith('video/')"
             :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
@@ -337,11 +420,17 @@ function openLightboxUrl(url: string) {
 
         <div v-if="!isUser && (displayedUsage || modelDisplayName) && !streaming" class="msg-usage">
           <span v-if="modelDisplayName" class="msg-model-name">
-            <Bot :size="10" />{{ modelDisplayName }}
+            <Bot :size="10" />
+            <template v-if="providerDisplayName">{{ providerDisplayName }} · </template>{{ modelDisplayName }}
           </span>
           <span v-if="displayedUsage?.inputTokens != null">↑{{ displayedUsage.inputTokens }}</span>
           <span v-if="displayedUsage?.outputTokens != null">↓{{ displayedUsage.outputTokens }}</span>
-          <span v-if="displayedUsage?.durationMs != null">{{ (displayedUsage.durationMs / 1000).toFixed(1) }}s</span>
+          <span
+            v-if="displayedUsage?.outputTokens != null && displayedUsage?.durationMs != null && displayedUsage.durationMs > 0"
+          >{{ Math.round(displayedUsage.outputTokens / (displayedUsage.durationMs / 1000)) }} t/s</span>
+          <span v-if="displayedUsage?.durationMs != null" class="msg-duration">
+            <Clock :size="9" />{{ (displayedUsage.durationMs / 1000).toFixed(1) }}s
+          </span>
           <span v-if="displayedUsage?.costUsd != null">${{ displayedUsage.costUsd.toFixed(4) }}</span>
         </div>
       </div>
@@ -578,8 +667,17 @@ function openLightboxUrl(url: string) {
   display: flex;
   align-items: center;
   gap: 3px;
-  padding-right: 4px;
+  padding-right: 6px;
   border-right: 1px solid rgba(0, 0, 0, 0.10);
+}
+
+
+.msg-duration {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding-left: 6px;
+  border-left: 1px solid rgba(0, 0, 0, 0.10);
 }
 
 /* ─── @ Model picker ────────────────────────────────────────────────────────── */
@@ -914,6 +1012,67 @@ function openLightboxUrl(url: string) {
 }
 
 .lightbox-close:hover { background: rgba(255, 255, 255, 0.25); }
+
+.lightbox-download {
+  position: absolute;
+  top: 20px;
+  right: 68px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s;
+}
+.lightbox-download:hover { background: rgba(255, 255, 255, 0.25); }
+
+.save-toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(30, 30, 30, 0.88);
+  color: #fff;
+  padding: 8px 20px;
+  border-radius: 20px;
+  font-size: 13px;
+  pointer-events: none;
+  z-index: 99999;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.media-img-wrap {
+  position: relative;
+  display: inline-block;
+}
+.media-img-wrap:hover .media-download-btn { opacity: 1; }
+
+.media-download-btn {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  opacity: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s, background 0.12s;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.media-download-btn:hover { background: rgba(0, 0, 0, 0.75); }
 </style>
 
 <!-- Markdown + code block styles (not scoped so they apply to v-html content) -->

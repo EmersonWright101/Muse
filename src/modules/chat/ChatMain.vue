@@ -7,6 +7,7 @@ import {
 } from 'lucide-vue-next'
 import { useChatStore }         from '../../stores/chat'
 import { useAssistantsStore }   from '../../stores/assistants'
+import { useAiSettingsStore }   from '../../stores/aiSettings'
 import MessageItem              from './components/MessageItem.vue'
 import ModelSelector            from './components/ModelSelector.vue'
 import type { AttachmentMeta }  from '../../stores/chat'
@@ -14,6 +15,14 @@ import { processPdfFile }       from '../../utils/pdf'
 
 const chat       = useChatStore()
 const assistants = useAssistantsStore()
+const aiSettings = useAiSettingsStore()
+
+// Providers that accept PDFs natively — skip local text extraction for these
+const pdfNative = computed(() => {
+  const p = aiSettings.providers.find(pr => pr.id === aiSettings.activeProviderId)
+  if (!p) return false
+  return p.type === 'anthropic' || p.type === 'google' || p.baseUrl.includes('openrouter.ai')
+})
 
 const activeAssistant = computed(() => {
   const id = chat.activeConv?.assistantId
@@ -117,34 +126,32 @@ async function handlePaste(e: ClipboardEvent) {
       const file = item.getAsFile()
       if (!file) continue
       pdfLoading.value = true
-      try {
-        const meta = await processPdfFile(file)
-        if (!meta.extractedText) pdfWarning.value = '该 PDF 可能为扫描件，文字无法提取。建议改用 Claude 或 Gemini。'
-        pendingImages.value.push({
-          id:            crypto.randomUUID(),
-          name:          file.name || 'document.pdf',
-          mimeType:      'application/pdf',
-          data:          meta.base64,
-          size:          file.size,
-          extractedText: meta.extractedText,
-          pageCount:     meta.pageCount,
-        })
-      } catch {
-        pdfWarning.value = 'PDF 解析失败，文字无法提取。建议改用 Claude 或 Gemini。'
+      if (pdfNative.value) {
+        // Native PDF provider (OpenRouter / Anthropic / Google) — just read base64, no text extraction needed
         const reader = new FileReader()
         reader.onload = (ev) => {
           const base64 = (ev.target?.result as string).split(',')[1]
-          pendingImages.value.push({
-            id:       crypto.randomUUID(),
-            name:     file.name || 'document.pdf',
-            mimeType: 'application/pdf',
-            data:     base64,
-            size:     file.size,
-          })
+          pendingImages.value.push({ id: crypto.randomUUID(), name: file.name || 'document.pdf', mimeType: 'application/pdf', data: base64, size: file.size })
+          pdfLoading.value = false
         }
+        reader.onerror = () => { pdfLoading.value = false }
         reader.readAsDataURL(file)
-      } finally {
-        pdfLoading.value = false
+      } else {
+        try {
+          const meta = await processPdfFile(file)
+          if (!meta.extractedText) pdfWarning.value = '该 PDF 可能为扫描件，文字无法提取。建议改用 Claude 或 Gemini。'
+          pendingImages.value.push({ id: crypto.randomUUID(), name: file.name || 'document.pdf', mimeType: 'application/pdf', data: meta.base64, size: file.size, extractedText: meta.extractedText, pageCount: meta.pageCount })
+        } catch {
+          pdfWarning.value = 'PDF 解析失败，文字无法提取。建议改用 Claude 或 Gemini。'
+          const reader = new FileReader()
+          reader.onload = (ev) => {
+            const base64 = (ev.target?.result as string).split(',')[1]
+            pendingImages.value.push({ id: crypto.randomUUID(), name: file.name || 'document.pdf', mimeType: 'application/pdf', data: base64, size: file.size })
+          }
+          reader.readAsDataURL(file)
+        } finally {
+          pdfLoading.value = false
+        }
       }
     }
   }
@@ -179,34 +186,31 @@ async function handleFileChange(e: Event) {
       reader.readAsDataURL(file)
     } else if (file.type === 'application/pdf') {
       pdfLoading.value = true
-      try {
-        const meta = await processPdfFile(file)
-        if (!meta.extractedText) pdfWarning.value = '该 PDF 可能为扫描件，文字无法提取。建议改用 Claude 或 Gemini。'
-        pendingImages.value.push({
-          id:            crypto.randomUUID(),
-          name:          file.name,
-          mimeType:      'application/pdf',
-          data:          meta.base64,
-          size:          file.size,
-          extractedText: meta.extractedText,
-          pageCount:     meta.pageCount,
-        })
-      } catch {
-        pdfWarning.value = 'PDF 解析失败，文字无法提取。建议改用 Claude 或 Gemini。'
+      if (pdfNative.value) {
         const reader = new FileReader()
         reader.onload = (ev) => {
           const base64 = (ev.target?.result as string).split(',')[1]
-          pendingImages.value.push({
-            id:       crypto.randomUUID(),
-            name:     file.name,
-            mimeType: 'application/pdf',
-            data:     base64,
-            size:     file.size,
-          })
+          pendingImages.value.push({ id: crypto.randomUUID(), name: file.name, mimeType: 'application/pdf', data: base64, size: file.size })
+          pdfLoading.value = false
         }
+        reader.onerror = () => { pdfLoading.value = false }
         reader.readAsDataURL(file)
-      } finally {
-        pdfLoading.value = false
+      } else {
+        try {
+          const meta = await processPdfFile(file)
+          if (!meta.extractedText) pdfWarning.value = '该 PDF 可能为扫描件，文字无法提取。建议改用 Claude 或 Gemini。'
+          pendingImages.value.push({ id: crypto.randomUUID(), name: file.name, mimeType: 'application/pdf', data: meta.base64, size: file.size, extractedText: meta.extractedText, pageCount: meta.pageCount })
+        } catch {
+          pdfWarning.value = 'PDF 解析失败，文字无法提取。建议改用 Claude 或 Gemini。'
+          const reader = new FileReader()
+          reader.onload = (ev) => {
+            const base64 = (ev.target?.result as string).split(',')[1]
+            pendingImages.value.push({ id: crypto.randomUUID(), name: file.name, mimeType: 'application/pdf', data: base64, size: file.size })
+          }
+          reader.readAsDataURL(file)
+        } finally {
+          pdfLoading.value = false
+        }
       }
     }
   }

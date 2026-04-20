@@ -74,6 +74,12 @@ function handleRenameKeydown(e: KeyboardEvent, id: string) {
   if (e.key === 'Escape') renamingId.value = null
 }
 
+// ─── Title truncation ────────────────────────────────────────────────────────
+
+function truncateTitle(title: string, max = 12): string {
+  return title.length > max ? title.slice(0, max) + '…' : title
+}
+
 // ─── Time formatting ──────────────────────────────────────────────────────────
 
 function formatTime(iso: string): string {
@@ -275,51 +281,51 @@ async function removeAssistant(id: string) {
           :style="{ background: assistantColor(conv.assistantId) }"
         />
 
+        <!-- Streaming indicator dot -->
+        <div v-if="chat.streamingConvIds.has(conv.id)" class="streaming-dot" />
+
         <div class="item-content">
-          <!-- Title row -->
-          <div class="item-header">
-            <input
-              v-if="renamingId === conv.id"
-              v-model="renameInput"
-              class="rename-input"
-              @blur="finishRename(conv.id)"
-              @keydown="handleRenameKeydown($event, conv.id)"
-              @click.stop
-              autofocus
-            />
-            <span v-else class="item-title">{{ conv.title }}</span>
-            <span class="item-time">{{ formatTime(conv.updatedAt) }}</span>
-          </div>
-          <!-- Preview -->
-          <div class="item-preview">{{ conv.preview }}</div>
+          <input
+            v-if="renamingId === conv.id"
+            v-model="renameInput"
+            class="rename-input"
+            @blur="finishRename(conv.id)"
+            @keydown="handleRenameKeydown($event, conv.id)"
+            @click.stop
+            autofocus
+          />
+          <span v-else class="item-title">{{ truncateTitle(conv.title) }}</span>
         </div>
 
-        <!-- Hover actions (non-batch mode) -->
-        <div v-if="!chat.batchMode" class="item-actions">
-          <button
-            class="action-btn"
-            :title="conv.pinned ? '取消置顶' : '置顶'"
-            @click.stop="chat.togglePin(conv.id)"
-          >
-            <Pin :size="11" />
-          </button>
-          <button
-            class="action-btn"
-            title="重命名"
-            @click.stop="startRename(conv.id, conv.title)"
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-            </svg>
-          </button>
-          <button
-            class="action-btn danger"
-            :title="t('common.delete')"
-            @click.stop="chat.deleteOne(conv.id)"
-          >
-            <Trash2 :size="11" />
-          </button>
+        <!-- Right side: time fades out, actions fade in on hover -->
+        <div v-if="!chat.batchMode" class="item-right">
+          <span class="item-time">{{ formatTime(conv.updatedAt) }}</span>
+          <div class="item-actions">
+            <button
+              class="action-btn"
+              :title="conv.pinned ? '取消置顶' : '置顶'"
+              @click.stop="chat.togglePin(conv.id)"
+            >
+              <Pin :size="11" />
+            </button>
+            <button
+              class="action-btn"
+              title="重命名"
+              @click.stop="startRename(conv.id, conv.title)"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+            </button>
+            <button
+              class="action-btn danger"
+              :title="t('common.delete')"
+              @click.stop="chat.deleteOne(conv.id)"
+            >
+              <Trash2 :size="11" />
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -707,14 +713,8 @@ async function removeAssistant(id: string) {
 .item-content {
   flex: 1;
   min-width: 0;
-}
-
-.item-header {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px;
-  margin-bottom: 2px;
+  align-items: center;
 }
 
 .item-title {
@@ -724,24 +724,41 @@ async function removeAssistant(id: string) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1;
   min-width: 0;
 }
 
 .list-item.active .item-title { color: #223F79; }
 
+.item-right {
+  position: relative;
+  flex-shrink: 0;
+  width: 70px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
 .item-time {
   font-size: 10px;
   color: #8e8e93;
-  flex-shrink: 0;
+  white-space: nowrap;
+  transition: opacity 0.12s;
 }
 
-.item-preview {
-  font-size: 11px;
-  color: #8e8e93;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.list-item:hover .item-time { opacity: 0; }
+
+.streaming-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #30d158;
+  flex-shrink: 0;
+  animation: stream-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes stream-pulse {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%       { opacity: 0.4; transform: scale(0.7); }
 }
 
 .rename-input {
@@ -758,12 +775,21 @@ async function removeAssistant(id: string) {
 }
 
 .item-actions {
-  display: none;
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
   gap: 2px;
-  flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
 }
 
-.list-item:hover .item-actions { display: flex; }
+.list-item:hover .item-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
 
 .action-btn {
   width: 22px;

@@ -41,6 +41,12 @@ html, body, #app {
   width: 100%;
   overflow: hidden;
   background: transparent;
+  animation: app-fade-in 0.12s ease both;
+}
+
+@keyframes app-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 body {

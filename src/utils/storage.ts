@@ -85,6 +85,7 @@ export interface Conversation {
   pinned?:             boolean;
   assistantId?:        string;
   contextCutoffMsgId?: string;
+  titleGenerated?:     boolean;
 }
 
 export interface ConversationMeta {
@@ -187,6 +188,21 @@ export async function saveConversation(conv: Conversation): Promise<void> {
   await writeIndex(index);
 }
 
+const LS_DELETED_CONVERSATIONS_KEY = 'muse-deleted-conversations';
+
+export function getDeletedConversations(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(LS_DELETED_CONVERSATIONS_KEY) ?? '{}') } catch { return {} }
+}
+
+export function applyRemoteDeletedConversations(remote: Record<string, string>) {
+  const local = getDeletedConversations();
+  let changed = false;
+  for (const [id, ts] of Object.entries(remote)) {
+    if (!local[id] || ts > local[id]) { local[id] = ts; changed = true; }
+  }
+  if (changed) localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(local));
+}
+
 export async function deleteConversation(id: string): Promise<void> {
   try {
     const path = `${await convDir()}/${id}.json`;
@@ -195,11 +211,15 @@ export async function deleteConversation(id: string): Promise<void> {
 
   const index = await readIndex();
   await writeIndex(index.filter(m => m.id !== id));
+  const map = getDeletedConversations();
+  map[id] = new Date().toISOString();
+  localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
 }
 
 export async function deleteConversations(ids: string[]): Promise<void> {
   const set = new Set(ids);
+  const now = new Date().toISOString();
   for (const id of set) {
     try {
       const path = `${await convDir()}/${id}.json`;
@@ -208,10 +228,28 @@ export async function deleteConversations(ids: string[]): Promise<void> {
   }
   const index = await readIndex();
   await writeIndex(index.filter(m => !set.has(m.id)));
+  const map = getDeletedConversations();
+  for (const id of set) map[id] = now;
+  localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
 }
 
 // ─── Assistants ──────────────────────────────────────────────────────────────
+
+const LS_DELETED_ASSISTANTS_KEY = 'muse-deleted-assistants';
+
+export function getDeletedAssistants(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(LS_DELETED_ASSISTANTS_KEY) ?? '{}') } catch { return {} }
+}
+
+export function applyRemoteDeletedAssistants(remote: Record<string, string>) {
+  const local = getDeletedAssistants();
+  let changed = false;
+  for (const [id, ts] of Object.entries(remote)) {
+    if (!local[id] || ts > local[id]) { local[id] = ts; changed = true; }
+  }
+  if (changed) localStorage.setItem(LS_DELETED_ASSISTANTS_KEY, JSON.stringify(local));
+}
 
 async function assistantsPath(): Promise<string> {
   return `${await dataDir()}/assistants.json`;
@@ -241,6 +279,9 @@ export async function saveAssistant(assistant: Assistant): Promise<void> {
 export async function deleteAssistant(id: string): Promise<void> {
   const list = await listAssistants();
   await writeTextFile(await assistantsPath(), JSON.stringify(list.filter(a => a.id !== id), null, 2));
+  const map = getDeletedAssistants();
+  map[id] = new Date().toISOString();
+  localStorage.setItem(LS_DELETED_ASSISTANTS_KEY, JSON.stringify(map));
   localStorage.setItem('muse-ts-assistants', new Date().toISOString());
 }
 

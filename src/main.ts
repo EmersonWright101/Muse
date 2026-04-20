@@ -3,6 +3,7 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 import i18n from './i18n'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 
 const app = createApp(App)
   .use(createPinia())
@@ -11,11 +12,7 @@ const app = createApp(App)
 
 app.mount('#app')
 
-// Wait for first paint before showing window to avoid any flash
+// Show window after first paint to avoid white flash; CSS fade handles visual smoothness
 requestAnimationFrame(() => {
-  requestAnimationFrame(() => {
-    import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
-      getCurrentWindow().show()
-    })
-  })
+  getCurrentWindow().show()
 })

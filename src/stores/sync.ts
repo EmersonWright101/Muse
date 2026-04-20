@@ -38,13 +38,15 @@
 import { reactive, watch } from 'vue'
 import { defineStore } from 'pinia'
 import {
-  listConversations, loadConversation, saveConversation,
-  listAssistants, saveAssistant,
+  listConversations, loadConversation, saveConversation, deleteConversation,
+  listAssistants, saveAssistant, deleteAssistant,
+  getDeletedAssistants, applyRemoteDeletedAssistants,
+  getDeletedConversations, applyRemoteDeletedConversations,
   type ConversationMeta, type Conversation, type ChatMessage, type Assistant,
   type MessageVariant,
 } from '../utils/storage'
 import { encryptData, decryptData }    from '../utils/crypto'
-import { webdavGet, webdavPut, webdavMkcol, webdavPing } from '../utils/webdav'
+import { webdavGet, webdavPut, webdavMkcol, webdavPing, webdavDelete } from '../utils/webdav'
 import {
   useAiSettingsStore, LS_MODIFIED_AT_KEY,
   getDeletedProviders, applyRemoteDeletedProviders,
@@ -337,16 +339,35 @@ export const useSyncStore = defineStore('sync', () => {
 
   // ─── Module: Assistants ──────────────────────────────────────────────────
 
+  interface AssistantsPayload {
+    list:             Assistant[];
+    deletedAssistants: Record<string, string>;
+  }
+
   async function syncAssistants() {
     status.progress = '同步助手配置…'
-    const localList = await listAssistants()
-    const path      = rp('assistants/list.enc')
-    const remoteList = await getEncrypted<Assistant[]>(path, [])
+    const localList    = await listAssistants()
+    const path         = rp('assistants/list.enc')
 
-    // Union merge by id; newer updatedAt (fallback createdAt) wins per item
+    // Support old format (bare array) and new format (payload object)
+    const raw = await getEncrypted<AssistantsPayload | Assistant[]>(path, { list: [], deletedAssistants: {} })
+    const remotePayload: AssistantsPayload = Array.isArray(raw)
+      ? { list: raw, deletedAssistants: {} }
+      : raw
+
+    // Merge tombstones from both sides
+    applyRemoteDeletedAssistants(remotePayload.deletedAssistants ?? {})
+    const mergedDeleted = getDeletedAssistants()
+
+    function isDeleted(a: Assistant): boolean {
+      const ts = mergedDeleted[a.id]
+      return !!ts && ts > (a.updatedAt ?? a.createdAt)
+    }
+
+    // Union merge live assistants; newer updatedAt (fallback createdAt) wins per item
     const merged = new Map<string, Assistant>()
-    for (const a of localList)  merged.set(a.id, a)
-    for (const a of remoteList) {
+    for (const a of localList)           if (!isDeleted(a)) merged.set(a.id, a)
+    for (const a of remotePayload.list)  if (!isDeleted(a)) {
       const local = merged.get(a.id)
       if (!local || (a.updatedAt ?? a.createdAt) > (local.updatedAt ?? local.createdAt)) {
         merged.set(a.id, a)
@@ -355,50 +376,85 @@ export const useSyncStore = defineStore('sync', () => {
 
     const mergedList = [...merged.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 
-    // Write remote-newer items to local storage
+    // Apply changes to local storage
     for (const a of mergedList) {
       const local = localList.find(l => l.id === a.id)
       if (!local || (a.updatedAt ?? a.createdAt) > (local.updatedAt ?? local.createdAt)) {
         await saveAssistant(a)
       }
     }
+    // Remove locally any assistant covered by a valid tombstone
+    for (const local of localList) {
+      if (isDeleted(local)) await deleteAssistant(local.id)
+    }
 
-    await putEncrypted(path, mergedList)
+    await putEncrypted(path, { list: mergedList, deletedAssistants: mergedDeleted } satisfies AssistantsPayload)
   }
 
   // ─── Module: Conversations ───────────────────────────────────────────────
 
+  interface ConversationsPayload {
+    list:               ConversationMeta[];
+    deletedConversations: Record<string, string>;
+  }
+
   async function syncConversations() {
     status.progress = '同步对话历史…'
 
-    const localList  = await listConversations()
-    const idxPath    = rp('conversations/index.enc')
-    const remoteList = await getEncrypted<ConversationMeta[]>(idxPath, [])
+    const localList = await listConversations()
+    const idxPath   = rp('conversations/index.enc')
 
-    const localIds  = new Set(localList.map(c => c.id))
-    const remoteIds = new Set(remoteList.map(c => c.id))
+    // Support old format (bare array) and new format (payload object)
+    const raw = await getEncrypted<ConversationsPayload | ConversationMeta[]>(idxPath, { list: [], deletedConversations: {} })
+    const remotePayload: ConversationsPayload = Array.isArray(raw)
+      ? { list: raw, deletedConversations: {} }
+      : raw
 
-    // ① Download conversations that only exist on remote
+    // Merge tombstones from both sides
+    applyRemoteDeletedConversations(remotePayload.deletedConversations ?? {})
+    const mergedDeleted = getDeletedConversations()
+
+    function isDeleted(id: string, updatedAt: string): boolean {
+      const ts = mergedDeleted[id]
+      return !!ts && ts > updatedAt
+    }
+
+    const remoteList = remotePayload.list
+    const localIds   = new Set(localList.map(c => c.id))
+    const remoteIds  = new Set(remoteList.map(c => c.id))
+
+    // ① Apply tombstones: delete locally + delete remote .enc file
+    for (const meta of localList) {
+      if (isDeleted(meta.id, meta.updatedAt)) await deleteConversation(meta.id)
+    }
+    for (const [id] of Object.entries(mergedDeleted)) {
+      await webdavDelete(dav(), rp(`conversations/${id}.enc`))
+    }
+
+    // ② Download conversations that only exist on remote (and are not tombstoned)
     for (const meta of remoteList) {
       if (localIds.has(meta.id)) continue
+      if (isDeleted(meta.id, meta.updatedAt)) continue
       const resp = await webdavGet(dav(), rp(`conversations/${meta.id}.enc`))
       if (!resp.ok) continue
       try {
         const conv = JSON.parse(await decryptData(resp.body, config.password)) as Conversation
-        await saveConversation(conv)
+        if (!isDeleted(conv.id, conv.updatedAt)) await saveConversation(conv)
       } catch { /* skip corrupt remote entry */ }
     }
 
-    // ② Upload conversations that only exist locally
+    // ③ Upload conversations that only exist locally (and are not tombstoned)
     for (const meta of localList) {
       if (remoteIds.has(meta.id)) continue
+      if (isDeleted(meta.id, meta.updatedAt)) continue
       const conv = await loadConversation(meta.id)
       if (!conv) continue
       await putEncrypted(rp(`conversations/${meta.id}.enc`), conv)
     }
 
-    // ③ Merge conversations that exist on both sides but differ
+    // ④ Merge conversations that exist on both sides but differ (skip tombstoned)
     for (const localMeta of localList) {
+      if (isDeleted(localMeta.id, localMeta.updatedAt)) continue
       const remoteMeta = remoteList.find(r => r.id === localMeta.id)
       if (!remoteMeta || localMeta.updatedAt === remoteMeta.updatedAt) continue
 
@@ -409,7 +465,6 @@ export const useSyncStore = defineStore('sync', () => {
       const remoteResp = await webdavGet(dav(), convPath)
 
       if (!remoteResp.ok) {
-        // Remote file missing but index says it exists → upload local if newer
         if (localMeta.updatedAt > remoteMeta.updatedAt) {
           await putEncrypted(convPath, localConv)
         }
@@ -424,16 +479,24 @@ export const useSyncStore = defineStore('sync', () => {
         if (localChanged)  await saveConversation(merged)
         if (remoteChanged) await putEncrypted(convPath, merged)
       } catch {
-        // Fallback: simple last-write-wins
         if (localMeta.updatedAt > remoteMeta.updatedAt) {
           await putEncrypted(convPath, localConv)
         }
       }
     }
 
-    // ④ Upload refreshed index
+    // ⑤ Prune tombstones older than 6 months, then upload refreshed index
+    const sixMonthsAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString()
+    for (const [id, ts] of Object.entries(mergedDeleted)) {
+      if (ts < sixMonthsAgo) delete mergedDeleted[id]
+    }
+    localStorage.setItem('muse-deleted-conversations', JSON.stringify(mergedDeleted))
+
     const finalIndex = await listConversations()
-    await putEncrypted(idxPath, finalIndex)
+    await putEncrypted(idxPath, {
+      list: finalIndex,
+      deletedConversations: mergedDeleted,
+    } satisfies ConversationsPayload)
   }
 
   // ─── Public API ──────────────────────────────────────────────────────────

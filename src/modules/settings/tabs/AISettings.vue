@@ -364,6 +364,28 @@ function subProviderInitial(modelId: string): string {
   return slash > 0 ? modelId.slice(0, slash).charAt(0).toUpperCase() : modelId.charAt(0).toUpperCase()
 }
 
+// Provider SVG logos — auto-discovered from assets/providers/
+const providerSvgModules = import.meta.glob<{ default: string }>('/src/assets/providers/*.svg', { eager: true })
+
+function getProviderLogoUrl(p: AIProvider): string | null {
+  const svgMap: Record<string, string> = {}
+  for (const [path, mod] of Object.entries(providerSvgModules)) {
+    const name = path.replace(/^.*\//, '').replace(/\.svg$/, '')
+    svgMap[name] = mod.default
+  }
+  // Direct id match (built-in providers: openai, anthropic, google)
+  // anthropic maps to claude.svg, google maps to gemini.svg
+  const idAliases: Record<string, string> = { anthropic: 'claude', google: 'gemini' }
+  const idKey = idAliases[p.id] ?? p.id
+  if (svgMap[idKey]) return svgMap[idKey]
+  // Keyword match on name + baseUrl for custom providers
+  const hay = (p.name + ' ' + p.baseUrl).toLowerCase()
+  for (const [name, url] of Object.entries(svgMap)) {
+    if (hay.includes(name)) return url
+  }
+  return null
+}
+
 // Model SVG logos — auto-discovered; adding a new <name>.svg to assets/models/ is enough
 const modelSvgModules = import.meta.glob<{ default: string }>('/src/assets/models/*.svg', { eager: true })
 
@@ -401,18 +423,17 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
           :class="{ selected: selectedId === p.id }"
           @click="selectedId = p.id"
         >
-          <!-- Show actual logo for OpenRouter, otherwise color-dot -->
+          <img
+            v-if="getProviderLogoUrl(p)"
+            :src="getProviderLogoUrl(p)!"
+            class="p-logo-img"
+            :alt="p.name"
+          />
           <span
-            v-if="!isOpenRouter(p)"
+            v-else
             class="p-dot"
             :style="{ background: providerColor(p.id) }"
           >{{ providerInitial(p.name) }}</span>
-          <img
-            v-else
-            :src="openrouterLogoUrl"
-            class="p-logo-img"
-            alt="OpenRouter"
-          />
           <span class="p-name">{{ p.name }}</span>
           <span class="p-status" :class="getConn(p.id) === 'error' ? 'err' : p.enabled ? 'on' : 'off'">
             {{ getConn(p.id) === 'error' ? 'ERR' : p.enabled ? 'ON' : 'OFF' }}
@@ -451,17 +472,17 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
         <!-- Header -->
         <div class="detail-header">
           <div class="detail-title-row">
+            <img
+              v-if="getProviderLogoUrl(selected)"
+              :src="getProviderLogoUrl(selected)!"
+              class="detail-logo-img"
+              :alt="selected.name"
+            />
             <span
-              v-if="!isOpenRouter(selected)"
+              v-else
               class="detail-dot"
               :style="{ background: providerColor(selected.id) }"
             >{{ providerInitial(selected.name) }}</span>
-            <img
-              v-else
-              :src="openrouterLogoUrl"
-              class="detail-logo-img"
-              alt="OpenRouter"
-            />
             <h2 class="detail-name">{{ selected.name }}</h2>
           </div>
           <div class="detail-header-actions">

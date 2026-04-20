@@ -7,6 +7,7 @@ import {
   Bot,
   CloudUpload,
   Info,
+  MessageSquare,
 } from 'lucide-vue-next'
 import { useUiStore } from '../../stores/uiStore'
 
@@ -18,6 +19,7 @@ const sections = [
   { id: 'appearance', icon: Palette,            labelKey: 'settings.sections.appearance' },
   { id: 'language',   icon: Globe,              labelKey: 'settings.sections.language' },
   { id: 'ai',         icon: Bot,               labelKey: 'settings.sections.ai' },
+  { id: 'chat',       icon: MessageSquare,      label: '对话' },
   { id: 'sync',       icon: CloudUpload,        labelKey: 'settings.sections.sync' },
   { id: 'about',      icon: Info,              labelKey: 'settings.sections.about' },
 ]
@@ -44,7 +46,7 @@ function select(id: string) {
         @click="select(section.id)"
       >
         <component :is="section.icon" :size="15" class="item-icon" />
-        <span class="item-label">{{ t(section.labelKey) }}</span>
+        <span class="item-label">{{ section.label ?? t(section.labelKey!) }}</span>
       </div>
     </div>
   </div>

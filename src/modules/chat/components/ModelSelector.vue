@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ChevronDown, Check } from 'lucide-vue-next'
-import { useAiSettingsStore } from '../../../stores/aiSettings'
+import { useAiSettingsStore, type AIProvider } from '../../../stores/aiSettings'
 
 const props = defineProps<{ dropDown?: boolean }>()
 
@@ -28,14 +28,57 @@ function handleOutside(e: MouseEvent) {
 
 onMounted(()  => document.addEventListener('mousedown', handleOutside))
 onUnmounted(() => document.removeEventListener('mousedown', handleOutside))
+
+// ─── Provider icon mapping ────────────────────────────────────────────────────
+
+const PROVIDER_ICONS: Record<string, string> = {
+  openai:      new URL('../../../assets/providers/openai.svg',      import.meta.url).href,
+  anthropic:   new URL('../../../assets/providers/claude.svg',      import.meta.url).href,
+  google:      new URL('../../../assets/providers/gemini.svg',      import.meta.url).href,
+  deepseek:    new URL('../../../assets/providers/deepseek.svg',    import.meta.url).href,
+  ollama:      new URL('../../../assets/providers/ollama.svg',      import.meta.url).href,
+  lmstudio:    new URL('../../../assets/providers/lmstudio.svg',    import.meta.url).href,
+  openrouter:  new URL('../../../assets/providers/openrouter.svg',  import.meta.url).href,
+  siliconflow: new URL('../../../assets/providers/siliconflow.svg', import.meta.url).href,
+  zhipu:       new URL('../../../assets/providers/zhipu.svg',       import.meta.url).href,
+  microsoft:   new URL('../../../assets/providers/microsoft.svg',   import.meta.url).href,
+  nvidia:      new URL('../../../assets/providers/nvidia.svg',      import.meta.url).href,
+}
+
+function providerIcon(p: AIProvider): string | null {
+  // Built-in id match
+  if (PROVIDER_ICONS[p.id]) return PROVIDER_ICONS[p.id]
+  // Name / baseUrl keyword match for custom providers
+  const key = (p.name + ' ' + p.baseUrl).toLowerCase()
+  if (key.includes('deepseek'))    return PROVIDER_ICONS.deepseek
+  if (key.includes('ollama'))      return PROVIDER_ICONS.ollama
+  if (key.includes('lmstudio'))    return PROVIDER_ICONS.lmstudio
+  if (key.includes('openrouter'))  return PROVIDER_ICONS.openrouter
+  if (key.includes('siliconflow')) return PROVIDER_ICONS.siliconflow
+  if (key.includes('zhipu') || key.includes('智谱')) return PROVIDER_ICONS.zhipu
+  if (key.includes('azure') || key.includes('microsoft')) return PROVIDER_ICONS.microsoft
+  if (key.includes('nvidia'))      return PROVIDER_ICONS.nvidia
+  if (key.includes('claude') || key.includes('anthropic')) return PROVIDER_ICONS.anthropic
+  if (key.includes('gemini') || key.includes('google'))    return PROVIDER_ICONS.google
+  if (key.includes('openai') || p.type === 'openai')       return PROVIDER_ICONS.openai
+  return null
+}
 </script>
 
 <template>
   <div ref="root" class="model-selector">
     <button class="selector-btn" @click="open = !open">
-      <span class="provider-dot" :class="activeProvider?.id ?? 'none'" />
-      <span class="model-name">
-        {{ activeModel?.name ?? activeProvider?.name ?? '选择模型' }}
+      <img
+        v-if="activeProvider && providerIcon(activeProvider)"
+        :src="providerIcon(activeProvider)!"
+        class="provider-icon"
+        :alt="activeProvider.name"
+      />
+      <span v-else class="provider-dot-fallback" />
+      <span class="selector-label">
+        <span class="selector-provider">{{ activeProvider?.name ?? '选择模型' }}</span>
+        <span v-if="activeModel" class="selector-sep">·</span>
+        <span v-if="activeModel" class="selector-model">{{ activeModel.name }}</span>
       </span>
       <ChevronDown :size="12" class="chevron" :class="{ rotated: open }" />
     </button>
@@ -47,7 +90,15 @@ onUnmounted(() => document.removeEventListener('mousedown', handleOutside))
         </div>
         <div v-else>
           <div v-for="p in configuredProviders" :key="p.id" class="provider-group">
-            <div class="group-label">{{ p.name }}</div>
+            <div class="group-label">
+              <img
+                v-if="providerIcon(p)"
+                :src="providerIcon(p)!"
+                class="group-label-icon"
+                :alt="p.name"
+              />
+              {{ p.name }}
+            </div>
             <button
               v-for="m in p.models"
               :key="m.id"
@@ -98,24 +149,66 @@ function formatCtx(n: number): string {
 
 .selector-btn:hover { background: rgba(0, 0, 0, 0.08); }
 
-.provider-dot {
+.provider-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+.provider-dot-fallback {
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  background: #c7c7cc;
   flex-shrink: 0;
 }
 
-.provider-dot.openai    { background: #10a37f; }
-.provider-dot.anthropic { background: #d4890a; }
-.provider-dot.google    { background: #4285f4; }
-.provider-dot.custom    { background: #8e8e93; }
-.provider-dot.none      { background: #c7c7cc; }
+.group-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #8e8e93;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 10px 2px;
+}
 
-.model-name {
-  max-width: 160px;
+.group-label-icon {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.selector-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 200px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.selector-provider {
+  font-weight: 600;
+  color: #1c1c1e;
+  flex-shrink: 0;
+}
+
+.selector-sep {
+  color: #c7c7cc;
+  flex-shrink: 0;
+}
+
+.selector-model {
+  color: #3c3c43;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .chevron { color: #8e8e93; transition: transform 0.15s; }
@@ -151,14 +244,6 @@ function formatCtx(n: number): string {
 
 .provider-group { margin-bottom: 4px; }
 
-.group-label {
-  font-size: 10px;
-  font-weight: 600;
-  color: #8e8e93;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding: 4px 10px 2px;
-}
 
 .model-item {
   display: flex;

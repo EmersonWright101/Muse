@@ -5,6 +5,7 @@ import GeneralSettings from './tabs/GeneralSettings.vue'
 import AISettings      from './tabs/AISettings.vue'
 import SyncSettings    from './tabs/SyncSettings.vue'
 import AboutSettings   from './tabs/AboutSettings.vue'
+import ChatSettings    from './tabs/ChatSettings.vue'
 
 const ui = useUiStore()
 
@@ -16,6 +17,7 @@ const sectionComponents: Record<string, unknown> = {
   appearance: PlaceholderTab,
   language:   GeneralSettings,   // redirect language to general (has lang picker)
   ai:         AISettings,
+  chat:       ChatSettings,
   sync:       SyncSettings,
   about:      AboutSettings,
 }

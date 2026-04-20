@@ -4,10 +4,14 @@
  * Manages conversation list (metadata) and the currently active conversation.
  * Full conversation data is persisted to disk via storage.ts.
  * AI streaming is handled here for all supported providers.
+ *
+ * Multi-conversation streaming: multiple conversations can stream simultaneously
+ * in the background. streamingConvIds tracks all active streams; isStreaming is
+ * a computed that reflects only the currently-visible conversation.
  */
 
 import { defineStore } from 'pinia'
-import { ref, reactive } from 'vue'
+import { ref, reactive, computed } from 'vue'
 import {
   listConversations,
   loadConversation,
@@ -24,6 +28,7 @@ import {
 } from '../utils/storage'
 import { useAiSettingsStore }    from './aiSettings'
 import { useAssistantsStore }   from './assistants'
+import { useChatSettingsStore, DEFAULT_TITLE_PROMPT } from './chatSettings'
 
 export type { ConversationMeta, Conversation, ChatMessage, AttachmentMeta, MessageVariant }
 
@@ -37,6 +42,20 @@ interface StreamChunkHandler {
   onMediaOutput?:    (mimeType: string, data: string, isUrl?: boolean) => void
 }
 
+function isOpenRouter(baseUrl: string): boolean {
+  return baseUrl.includes('openrouter.ai')
+}
+
+function handleMediaUrl(url: string, handler: StreamChunkHandler) {
+  if (!handler.onMediaOutput) return
+  if (url.startsWith('data:')) {
+    const comma = url.indexOf(',')
+    if (comma > 0) handler.onMediaOutput(url.slice(5, comma).replace(';base64', ''), url.slice(comma + 1))
+  } else {
+    handler.onMediaOutput('image/png', url, true)
+  }
+}
+
 async function streamOpenAI(
   baseUrl: string, apiKey: string, model: string,
   messages: { role: string; content: unknown }[],
@@ -44,12 +63,18 @@ async function streamOpenAI(
   signal: AbortSignal,
   systemPrompt?: string,
   reasoningEffort?: 'low' | 'medium' | 'high',
+  modalities?: string[],
+  temperature?: number,
+  maxTokens?: number,
 ) {
   const allMessages = systemPrompt
     ? [{ role: 'system', content: systemPrompt }, ...messages]
     : messages
   const reqBody: Record<string, unknown> = { model, messages: allMessages, stream: true, stream_options: { include_usage: true } }
   if (reasoningEffort) reqBody.reasoning_effort = reasoningEffort
+  if (modalities?.length) reqBody.modalities = modalities
+  if (temperature !== undefined) reqBody.temperature = temperature
+  if (maxTokens   !== undefined) reqBody.max_tokens  = maxTokens
   const resp = await fetch(`${baseUrl}/chat/completions`, {
     method:  'POST',
     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -78,6 +103,15 @@ async function streamOpenAI(
       if (data === '[DONE]') { handler.onDone(usage); return }
       try {
         const parsed  = JSON.parse(data)
+
+        // OpenRouter image generation: images arrive in choices[0].delta.images
+        const deltaImages = parsed.choices?.[0]?.delta?.images
+        if (deltaImages && handler.onMediaOutput) {
+          for (const img of deltaImages as Array<{ image_url?: { url?: string } }>) {
+            if (img.image_url?.url) handleMediaUrl(img.image_url.url, handler)
+          }
+        }
+
         const rawContent = parsed.choices?.[0]?.delta?.content
         if (rawContent) {
           if (typeof rawContent === 'string') {
@@ -92,13 +126,7 @@ async function streamOpenAI(
               if (blk.text) {
                 handler.onToken(blk.text)
               } else if (blk.image_url?.url && handler.onMediaOutput) {
-                const u = blk.image_url.url
-                if (u.startsWith('data:')) {
-                  const comma = u.indexOf(',')
-                  handler.onMediaOutput(u.slice(5, comma).replace(';base64', ''), u.slice(comma + 1))
-                } else {
-                  handler.onMediaOutput('image/png', u, true)
-                }
+                handleMediaUrl(blk.image_url.url, handler)
               }
             }
           }
@@ -124,9 +152,12 @@ async function streamAnthropic(
   signal: AbortSignal,
   systemPrompt?: string,
   thinkingBudget?: number,
+  temperature?: number,
+  maxTokens?: number,
 ) {
-  const body: Record<string, unknown> = { model, messages, max_tokens: 8192, stream: true }
+  const body: Record<string, unknown> = { model, messages, max_tokens: maxTokens ?? 8192, stream: true }
   if (systemPrompt) body.system = systemPrompt
+  if (temperature !== undefined) body.temperature = temperature
   if (thinkingBudget) {
     body.thinking    = { type: 'enabled', budget_tokens: thinkingBudget }
     body.max_tokens  = Math.max(16384, thinkingBudget + 4096)
@@ -188,6 +219,8 @@ async function streamGoogle(
   handler: StreamChunkHandler,
   signal: AbortSignal,
   systemPrompt?: string,
+  temperature?: number,
+  maxTokens?: number,
 ) {
   // Convert to Gemini format — content may already be a parts array (from buildPayload)
   const geminiMessages = messages.map(m => ({
@@ -198,6 +231,12 @@ async function streamGoogle(
   }))
   const reqBody: Record<string, unknown> = { contents: geminiMessages }
   if (systemPrompt) reqBody.systemInstruction = { parts: [{ text: systemPrompt }] }
+  if (temperature !== undefined || maxTokens !== undefined) {
+    const cfg: Record<string, unknown> = {}
+    if (temperature !== undefined) cfg.temperature     = temperature
+    if (maxTokens   !== undefined) cfg.maxOutputTokens = maxTokens
+    reqBody.generationConfig = cfg
+  }
   const resp = await fetch(
     `${baseUrl}/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`,
     {
@@ -255,7 +294,9 @@ const PDF_NATIVE_PROVIDERS = new Set(['anthropic', 'google'])
 function buildPayload(
   messages: ChatMessage[],
   providerType: string,
+  baseUrl?: string,
 ): { role: string; content: unknown }[] {
+  const openRouter = baseUrl ? isOpenRouter(baseUrl) : false
   return messages
     .filter(m => !m.error)
     .map(m => {
@@ -299,8 +340,7 @@ function buildPayload(
         return { role: m.role, content: m.content }
       }
 
-      // OpenAI-compatible / OpenRouter: PDFs → extracted text; images → image_url
-      // (matches Cherry Studio's pdfCompatibilityPlugin fallback for non-native providers)
+      // OpenAI-compatible: images → image_url; PDFs → native file block (OpenRouter) or extracted text (others)
       if (pdfs.length > 0 || images.length > 0) {
         const contentParts: unknown[] = []
         for (const img of images) {
@@ -309,6 +349,21 @@ function buildPayload(
             image_url: { url: `data:${img.mimeType};base64,${img.data}` },
           })
         }
+        if (openRouter) {
+          // OpenRouter supports native PDF via inline file block — underlying models read it directly
+          for (const pdf of pdfs) {
+            contentParts.push({
+              type: 'file',
+              file: {
+                filename:  pdf.name || 'document.pdf',
+                file_data: `data:application/pdf;base64,${pdf.data}`,
+              },
+            })
+          }
+          if (m.content) contentParts.push({ type: 'text', text: m.content })
+          return { role: m.role, content: contentParts }
+        }
+        // Fallback for other OpenAI-compatible providers: extract PDF text
         const pdfTexts = pdfs.map(
           pdf => `${pdf.name}\n${pdf.extractedText || '（无法提取文字内容，该 PDF 可能为扫描件）'}`,
         )
@@ -334,7 +389,9 @@ export const useChatStore = defineStore('chat', () => {
   const conversations      = ref<ConversationMeta[]>([])
   const activeConvId       = ref<string | null>(null)
   const activeConv         = ref<Conversation | null>(null)
-  const isStreaming        = ref(false)
+  // Per-conversation streaming tracker; isStreaming reflects the active conversation only
+  const streamingConvIds   = reactive<Set<string>>(new Set())
+  const isStreaming        = computed(() => !!activeConvId.value && streamingConvIds.has(activeConvId.value))
   const isLoading          = ref(false)
   const error              = ref<string | null>(null)
   const selectedConvIds    = reactive<Set<string>>(new Set())
@@ -346,7 +403,8 @@ export const useChatStore = defineStore('chat', () => {
   const useReasoning       = ref(false)
   const reasoningLevel     = ref<'low' | 'medium' | 'high'>('medium')
 
-  let _abortController: AbortController | null = null
+  // One AbortController per in-flight conversation stream
+  const _abortControllers = new Map<string, AbortController>()
 
   // ─── Load conversation list ─────────────────────────────────────────────
 
@@ -363,6 +421,14 @@ export const useChatStore = defineStore('chat', () => {
     if (conv) {
       activeConv.value   = conv
       activeConvId.value = id
+      // Restore streaming UI state if this conversation is still streaming
+      if (streamingConvIds.has(id)) {
+        const lastAssistant = [...conv.messages].reverse().find(m => m.role === 'assistant' && !m.error)
+        streamingMsgId.value = lastAssistant?.id ?? null
+      } else {
+        streamingMsgId.value = null
+        streamingText.value  = ''
+      }
     }
     isLoading.value = false
   }
@@ -386,21 +452,78 @@ export const useChatStore = defineStore('chat', () => {
     }
     activeConv.value   = conv
     activeConvId.value = conv.id
+    streamingMsgId.value = null
+    streamingText.value  = ''
     // Persist immediately so the conversation appears in the list (and in filtered views)
     saveConversation(conv).then(() => loadList())
     return conv
+  }
+
+  // ─── AI title generation ────────────────────────────────────────────────
+
+  async function generateTitle(conv: Conversation) {
+    const chatSettings = useChatSettingsStore()
+    const aiStore      = useAiSettingsStore()
+    const pid = chatSettings.titleGenProviderId
+    const mid = chatSettings.titleGenModelId
+    if (!pid || !mid) return
+
+    const provider = aiStore.providers.find(p => p.id === pid)
+    if (!provider?.apiKey) return
+
+    const userMsg = conv.messages.find(m => m.role === 'user' && m.content)
+    const aiMsg   = conv.messages.filter(m => m.role === 'assistant' && m.content && !m.error).at(-1)
+    if (!userMsg || !aiMsg) return
+
+    const promptTpl = chatSettings.titleGenPrompt || DEFAULT_TITLE_PROMPT
+    const prompt    = promptTpl
+      .replace('{user}',     userMsg.content.slice(0, 300))
+      .replace('{response}', aiMsg.content.slice(0, 300))
+
+    let title = ''
+    const ac  = new AbortController()
+
+    const handler: StreamChunkHandler = {
+      onToken(token) { title += token },
+      async onDone() {
+        // Strip surrounding quotes/brackets that models sometimes add
+        const cleaned = title.trim()
+          .replace(/^["'「」『』【】《》""'']+|["'「」『』【】《》""'']+$/g, '')
+          .slice(0, 50)
+        if (cleaned) {
+          conv.title          = cleaned
+          conv.titleGenerated = true
+          await saveConversation(conv)
+          await loadList()
+        }
+      },
+      onError() { /* silently ignore title generation errors */ },
+    }
+
+    try {
+      const msgs = [{ role: 'user', content: prompt }]
+      if (provider.type === 'anthropic') {
+        await streamAnthropic(provider.baseUrl, provider.apiKey, mid, msgs, handler, ac.signal)
+      } else if (provider.type === 'google') {
+        await streamGoogle(provider.baseUrl, provider.apiKey, mid, msgs, handler, ac.signal)
+      } else {
+        await streamOpenAI(provider.baseUrl, provider.apiKey, mid, msgs, handler, ac.signal)
+      }
+    } catch { /* ignore */ }
   }
 
   // ─── Send message (with streaming) ─────────────────────────────────────
 
   async function sendMessage(userContent: string, attachments?: AttachmentMeta[]) {
     if (!userContent.trim() && !attachments?.length) return
-    if (isStreaming.value) return
 
     const aiStore = useAiSettingsStore()
 
     if (!activeConv.value) newConversation()
     const conv = activeConv.value!
+
+    // Block only if THIS conversation is already streaming
+    if (streamingConvIds.has(conv.id)) return
 
     // Update provider/model if changed
     const pid   = aiStore.activeProviderId
@@ -418,13 +541,6 @@ export const useChatStore = defineStore('chat', () => {
     }
     conv.messages.push(userMsg)
 
-    // Auto-title from first user message
-    if (conv.messages.filter(m => m.role === 'user').length === 1) {
-      conv.title = userContent.slice(0, 30).replace(/\n/g, ' ')
-        || attachments?.find(a => a.mimeType === 'application/pdf')?.name
-        || '新对话'
-    }
-
     // Add empty assistant message — wrap in reactive() so property mutations
     // (content updates during streaming) are tracked by Vue immediately.
     const assistantMsg = reactive<ChatMessage>({
@@ -438,11 +554,17 @@ export const useChatStore = defineStore('chat', () => {
     conv.messages.push(assistantMsg)
     conv.updatedAt = new Date().toISOString()
 
-    isStreaming.value    = true
-    streamingText.value  = ''
-    streamingMsgId.value = assistantMsg.id
-    error.value          = null
-    _abortController     = new AbortController()
+    // Mark this conversation as streaming
+    streamingConvIds.add(conv.id)
+    // Update UI streaming refs only when this is the visible conversation
+    if (activeConvId.value === conv.id) {
+      streamingText.value  = ''
+      streamingMsgId.value = assistantMsg.id
+    }
+    error.value = null
+
+    const ac = new AbortController()
+    _abortControllers.set(conv.id, ac)
 
     await saveConversation(conv)
     await loadList()
@@ -451,7 +573,12 @@ export const useChatStore = defineStore('chat', () => {
     if (!provider || !provider.apiKey) {
       assistantMsg.content = '请先在设置中配置 AI 供应商的 API Key。'
       assistantMsg.error   = true
-      isStreaming.value    = false
+      streamingConvIds.delete(conv.id)
+      _abortControllers.delete(conv.id)
+      if (activeConvId.value === conv.id) {
+        streamingMsgId.value = null
+        streamingText.value  = ''
+      }
       await saveConversation(conv)
       await loadList()
       return
@@ -463,7 +590,7 @@ export const useChatStore = defineStore('chat', () => {
       const cutoffIdx = msgsForApi.findIndex(m => m.id === conv.contextCutoffMsgId)
       if (cutoffIdx >= 0) msgsForApi = msgsForApi.slice(cutoffIdx + 1)
     }
-    const payload   = buildPayload(msgsForApi, provider.type)
+    const payload   = buildPayload(msgsForApi, provider.type, provider.baseUrl)
     const startedAt = Date.now()
 
     const assistantsStore = useAssistantsStore()
@@ -473,15 +600,26 @@ export const useChatStore = defineStore('chat', () => {
     const systemPrompt = assistant?.systemPrompt || undefined
 
     const budgetMap = { low: 1024, medium: 8000, high: 32000 } as const
+    const chatSettings = useChatSettingsStore()
+    const temperature  = chatSettings.temperature
+    const maxTokens    = chatSettings.maxTokens
+
+    // Local accumulators — avoids shared ref contamination when multiple convs stream simultaneously
+    let localText      = ''
+    let localReasoning = ''
+
+    const shouldGenTitle = !conv.titleGenerated
 
     const handler: StreamChunkHandler = {
       onToken(token) {
-        streamingText.value  += token
-        assistantMsg.content  = streamingText.value
+        localText            += token
+        assistantMsg.content  = localText
+        // Only push to the shared streamingText ref when this conv is visible (drives scroll)
+        if (activeConvId.value === conv.id) streamingText.value = localText
       },
       onReasoningToken(token) {
-        streamingReasoning.value += token
-        assistantMsg.reasoning    = streamingReasoning.value
+        localReasoning         += token
+        assistantMsg.reasoning  = localReasoning
       },
       onMediaOutput(mimeType, data, isUrl) {
         if (!assistantMsg.mediaOutputs) assistantMsg.mediaOutputs = []
@@ -489,14 +627,14 @@ export const useChatStore = defineStore('chat', () => {
       },
       async onDone(usage) {
         // Fallback: if full accumulated text is a data URL or image URL, convert to media output
-        const txt = streamingText.value.trim()
+        const txt = localText.trim()
         if (txt.startsWith('data:image/') || txt.startsWith('data:video/')) {
           const comma = txt.indexOf(',')
           if (comma > 0) {
             if (!assistantMsg.mediaOutputs) assistantMsg.mediaOutputs = []
             assistantMsg.mediaOutputs.push({ mimeType: txt.slice(5, comma).replace(';base64', ''), data: txt.slice(comma + 1) })
             assistantMsg.content = ''
-            streamingText.value  = ''
+            localText            = ''
           }
         } else {
           const modelInfo = provider?.models.find(m => m.id === mid)
@@ -504,25 +642,33 @@ export const useChatStore = defineStore('chat', () => {
             if (!assistantMsg.mediaOutputs) assistantMsg.mediaOutputs = []
             assistantMsg.mediaOutputs.push({ mimeType: 'image/png', url: txt })
             assistantMsg.content = ''
-            streamingText.value  = ''
+            localText            = ''
           }
         }
-        assistantMsg.usage       = { ...usage, durationMs: Date.now() - startedAt }
-        isStreaming.value        = false
-        streamingMsgId.value     = null
-        streamingText.value      = ''
-        streamingReasoning.value = ''
+        assistantMsg.usage = { ...usage, durationMs: Date.now() - startedAt }
+        streamingConvIds.delete(conv.id)
+        _abortControllers.delete(conv.id)
+        if (activeConvId.value === conv.id) {
+          streamingMsgId.value     = null
+          streamingText.value      = ''
+          streamingReasoning.value = ''
+        }
         conv.updatedAt = new Date().toISOString()
         await saveConversation(conv)
         await loadList()
+        // Generate AI title after the first completed assistant reply
+        if (shouldGenTitle) generateTitle(conv).catch(() => {})
       },
       async onError(err) {
-        assistantMsg.content     = `Error: ${err}`
-        assistantMsg.error       = true
-        isStreaming.value        = false
-        streamingMsgId.value     = null
-        streamingText.value      = ''
-        streamingReasoning.value = ''
+        assistantMsg.content = `Error: ${err}`
+        assistantMsg.error   = true
+        streamingConvIds.delete(conv.id)
+        _abortControllers.delete(conv.id)
+        if (activeConvId.value === conv.id) {
+          streamingMsgId.value     = null
+          streamingText.value      = ''
+          streamingReasoning.value = ''
+        }
         await saveConversation(conv)
         await loadList()
       },
@@ -531,22 +677,33 @@ export const useChatStore = defineStore('chat', () => {
     try {
       if (provider.type === 'anthropic') {
         const budget = useReasoning.value ? budgetMap[reasoningLevel.value] : undefined
-        await streamAnthropic(provider.baseUrl, provider.apiKey, mid, payload, handler, _abortController.signal, systemPrompt, budget)
+        await streamAnthropic(provider.baseUrl, provider.apiKey, mid, payload, handler, ac.signal, systemPrompt, budget, temperature, maxTokens)
       } else if (provider.type === 'google') {
-        await streamGoogle(provider.baseUrl, provider.apiKey, mid, payload, handler, _abortController.signal, systemPrompt)
+        await streamGoogle(provider.baseUrl, provider.apiKey, mid, payload, handler, ac.signal, systemPrompt, temperature, maxTokens)
       } else {
         // openai / custom — pass reasoning_effort for o-series and compatible providers
         const effort = useReasoning.value ? reasoningLevel.value : undefined
-        await streamOpenAI(provider.baseUrl, provider.apiKey, mid, payload, handler, _abortController.signal, systemPrompt, effort)
+        // OpenRouter image-output models require the modalities parameter
+        let modalities: string[] | undefined
+        if (isOpenRouter(provider.baseUrl)) {
+          const modelInfo = provider.models.find(m => m.id === mid)
+          if (modelInfo?.imageOutput) {
+            modalities = modelInfo.multimodal ? ['image', 'text'] : ['image']
+          }
+        }
+        await streamOpenAI(provider.baseUrl, provider.apiKey, mid, payload, handler, ac.signal, systemPrompt, effort, modalities, temperature, maxTokens)
       }
     } catch (e: unknown) {
       if ((e as Error).name !== 'AbortError') {
         handler.onError(e instanceof Error ? e.message : String(e))
       } else {
-        isStreaming.value        = false
-        streamingMsgId.value     = null
-        streamingText.value      = ''
-        streamingReasoning.value = ''
+        streamingConvIds.delete(conv.id)
+        _abortControllers.delete(conv.id)
+        if (activeConvId.value === conv.id) {
+          streamingMsgId.value     = null
+          streamingText.value      = ''
+          streamingReasoning.value = ''
+        }
       }
     }
   }
@@ -604,17 +761,16 @@ export const useChatStore = defineStore('chat', () => {
     const msgsForApi = conv.messages.slice(0, msgIdx)
     const payload    = buildPayload(msgsForApi, provider.type)
 
-    // Push a plain object — msg is already reactive (part of activeConv),
-    // so mutations via msg.variants[vi] go through the reactive proxy safely.
     const msg = conv.messages[msgIdx]
     if (!msg.variants) msg.variants = []
     msg.variants.push({ id: newId(), content: '', model: modelId, providerId })
     const vi = msg.variants.length - 1
     msg.activeVariantIdx = msg.variants.length  // switch to new variant right away
 
-    isStreaming.value           = true
-    streamingVariantMsgId.value = messageId
-    _abortController            = new AbortController()
+    streamingConvIds.add(conv.id)
+    if (activeConvId.value === conv.id) streamingVariantMsgId.value = messageId
+    const ac = new AbortController()
+    _abortControllers.set(conv.id, ac)
 
     const startedAt = Date.now()
 
@@ -636,40 +792,44 @@ export const useChatStore = defineStore('chat', () => {
         v.mediaOutputs.push(isUrl ? { mimeType, url: data } : { mimeType, data })
       },
       async onDone(usage) {
-        msg.variants![vi].usage     = { ...usage, durationMs: Date.now() - startedAt }
-        isStreaming.value           = false
-        streamingVariantMsgId.value = null
+        msg.variants![vi].usage = { ...usage, durationMs: Date.now() - startedAt }
+        streamingConvIds.delete(conv.id)
+        _abortControllers.delete(conv.id)
+        if (activeConvId.value === conv.id) streamingVariantMsgId.value = null
         conv.updatedAt = new Date().toISOString()
         await saveConversation(conv)
         await loadList()
       },
       async onError(err) {
-        msg.variants![vi].content   = `Error: ${err}`
-        msg.variants![vi].error     = true
-        isStreaming.value           = false
-        streamingVariantMsgId.value = null
+        msg.variants![vi].content = `Error: ${err}`
+        msg.variants![vi].error   = true
+        streamingConvIds.delete(conv.id)
+        _abortControllers.delete(conv.id)
+        if (activeConvId.value === conv.id) streamingVariantMsgId.value = null
         await saveConversation(conv)
         await loadList()
       },
     }
 
     try {
-      const budgetMap = { low: 1024, medium: 8000, high: 32000 } as const
+      const budgetMap    = { low: 1024, medium: 8000, high: 32000 } as const
+      const chatSettings = useChatSettingsStore()
       if (provider.type === 'anthropic') {
         const budget = useReasoning.value ? budgetMap[reasoningLevel.value] : undefined
-        await streamAnthropic(provider.baseUrl, provider.apiKey, modelId, payload, handler, _abortController.signal, systemPrompt, budget)
+        await streamAnthropic(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, budget, chatSettings.temperature, chatSettings.maxTokens)
       } else if (provider.type === 'google') {
-        await streamGoogle(provider.baseUrl, provider.apiKey, modelId, payload, handler, _abortController.signal, systemPrompt)
+        await streamGoogle(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, chatSettings.temperature, chatSettings.maxTokens)
       } else {
         const effort = useReasoning.value ? reasoningLevel.value : undefined
-        await streamOpenAI(provider.baseUrl, provider.apiKey, modelId, payload, handler, _abortController.signal, systemPrompt, effort)
+        await streamOpenAI(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, effort, undefined, chatSettings.temperature, chatSettings.maxTokens)
       }
     } catch (e: unknown) {
       if ((e as Error).name !== 'AbortError') {
         handler.onError(e instanceof Error ? e.message : String(e))
       } else {
-        isStreaming.value           = false
-        streamingVariantMsgId.value = null
+        streamingConvIds.delete(conv.id)
+        _abortControllers.delete(conv.id)
+        if (activeConvId.value === conv.id) streamingVariantMsgId.value = null
       }
     }
   }
@@ -702,13 +862,20 @@ export const useChatStore = defineStore('chat', () => {
   // ─── Stop streaming ─────────────────────────────────────────────────────
 
   function stopStreaming() {
-    _abortController?.abort()
-    isStreaming.value = false
+    const cid = activeConvId.value
+    if (cid) {
+      _abortControllers.get(cid)?.abort()
+      _abortControllers.delete(cid)
+    }
   }
 
   // ─── Delete ─────────────────────────────────────────────────────────────
 
   async function deleteOne(id: string) {
+    // Abort any in-flight stream before deleting
+    _abortControllers.get(id)?.abort()
+    _abortControllers.delete(id)
+    streamingConvIds.delete(id)
     await deleteConversation(id)
     if (activeConvId.value === id) {
       activeConv.value   = null
@@ -720,6 +887,11 @@ export const useChatStore = defineStore('chat', () => {
 
   async function deleteBatch() {
     const ids = [...selectedConvIds]
+    for (const id of ids) {
+      _abortControllers.get(id)?.abort()
+      _abortControllers.delete(id)
+      streamingConvIds.delete(id)
+    }
     await deleteConversations(ids)
     if (activeConvId.value && selectedConvIds.has(activeConvId.value)) {
       activeConv.value   = null
@@ -787,7 +959,7 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     conversations, activeConvId, activeConv, isStreaming, isLoading,
-    error, selectedConvIds, batchMode,
+    error, selectedConvIds, batchMode, streamingConvIds,
     loadList, openConversation, newConversation, sendMessage, stopStreaming,
     editAndResend, editMessage, regenerate,
     deleteOne, deleteBatch, toggleBatchMode, toggleSelect, selectAll, clearSelection,

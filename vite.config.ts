@@ -14,7 +14,7 @@ export default defineConfig(async () => ({
         manualChunks: {
           'vendor-vue':    ['vue', 'vue-router', 'pinia', 'vue-i18n'],
           'vendor-tauri':  ['@tauri-apps/api', '@tauri-apps/plugin-fs', '@tauri-apps/plugin-http', '@tauri-apps/plugin-opener', '@tauri-apps/plugin-updater', '@tauri-apps/plugin-process'],
-          'vendor-render': ['marked', 'dompurify', 'highlight.js'],
+          'vendor-render': ['marked', 'dompurify'],
           'vendor-pdf':    ['pdfjs-dist'],
         },
       },

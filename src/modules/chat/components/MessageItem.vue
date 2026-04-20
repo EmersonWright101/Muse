@@ -1,7 +1,64 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { marked, type Tokens } from 'marked'
-import hljs from 'highlight.js'
+import hljs from 'highlight.js/lib/core'
+import javascript from 'highlight.js/lib/languages/javascript'
+import typescript from 'highlight.js/lib/languages/typescript'
+import python from 'highlight.js/lib/languages/python'
+import java from 'highlight.js/lib/languages/java'
+import go from 'highlight.js/lib/languages/go'
+import rust from 'highlight.js/lib/languages/rust'
+import cpp from 'highlight.js/lib/languages/cpp'
+import c from 'highlight.js/lib/languages/c'
+import csharp from 'highlight.js/lib/languages/csharp'
+import bash from 'highlight.js/lib/languages/bash'
+import shell from 'highlight.js/lib/languages/shell'
+import json from 'highlight.js/lib/languages/json'
+import xml from 'highlight.js/lib/languages/xml'
+import css from 'highlight.js/lib/languages/css'
+import sql from 'highlight.js/lib/languages/sql'
+import markdown from 'highlight.js/lib/languages/markdown'
+import yaml from 'highlight.js/lib/languages/yaml'
+import plaintext from 'highlight.js/lib/languages/plaintext'
+import kotlin from 'highlight.js/lib/languages/kotlin'
+import swift from 'highlight.js/lib/languages/swift'
+import ruby from 'highlight.js/lib/languages/ruby'
+import php from 'highlight.js/lib/languages/php'
+import r from 'highlight.js/lib/languages/r'
+
+hljs.registerLanguage('javascript', javascript)
+hljs.registerLanguage('js', javascript)
+hljs.registerLanguage('typescript', typescript)
+hljs.registerLanguage('ts', typescript)
+hljs.registerLanguage('python', python)
+hljs.registerLanguage('py', python)
+hljs.registerLanguage('java', java)
+hljs.registerLanguage('go', go)
+hljs.registerLanguage('rust', rust)
+hljs.registerLanguage('cpp', cpp)
+hljs.registerLanguage('c++', cpp)
+hljs.registerLanguage('c', c)
+hljs.registerLanguage('csharp', csharp)
+hljs.registerLanguage('cs', csharp)
+hljs.registerLanguage('bash', bash)
+hljs.registerLanguage('sh', bash)
+hljs.registerLanguage('shell', shell)
+hljs.registerLanguage('json', json)
+hljs.registerLanguage('xml', xml)
+hljs.registerLanguage('html', xml)
+hljs.registerLanguage('css', css)
+hljs.registerLanguage('sql', sql)
+hljs.registerLanguage('markdown', markdown)
+hljs.registerLanguage('md', markdown)
+hljs.registerLanguage('yaml', yaml)
+hljs.registerLanguage('yml', yaml)
+hljs.registerLanguage('plaintext', plaintext)
+hljs.registerLanguage('kotlin', kotlin)
+hljs.registerLanguage('swift', swift)
+hljs.registerLanguage('ruby', ruby)
+hljs.registerLanguage('rb', ruby)
+hljs.registerLanguage('php', php)
+hljs.registerLanguage('r', r)
 import DOMPurify from 'dompurify'
 import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Bot, AtSign, Download, Clock } from 'lucide-vue-next'
 import type { ChatMessage } from '../../../stores/chat'
@@ -93,8 +150,7 @@ const isUser = computed(() => props.message.role === 'user')
 // Auto-discover model SVGs from assets/models/*.svg via Vite glob.
 // Each module's .default is the resolved asset URL (same as a plain SVG import).
 // Adding a new <name>.svg to that folder is all that's needed to support a new model.
-const modelSvgModules    = import.meta.glob<{ default: string }>('/src/assets/models/*.svg',    { eager: true })
-const providerSvgModules = import.meta.glob<{ default: string }>('/src/assets/providers/*.svg', { eager: true })
+const modelSvgModules = import.meta.glob<{ default: string }>('/src/assets/models/*.svg', { eager: true })
 
 function buildSvgMap(modules: Record<string, { default: string }>): Record<string, string> {
   const map: Record<string, string> = {}
@@ -114,18 +170,6 @@ function lookupLogoUrl(model: string, providerId: string): string | null {
   return null
 }
 
-// Helper: look up provider icon by id + name + baseUrl
-function lookupProviderIcon(providerId: string): string | null {
-  const p = ai.providers.find(pr => pr.id === providerId)
-  const svgMap = buildSvgMap(providerSvgModules)
-  const idAliases: Record<string, string> = { anthropic: 'claude', google: 'gemini' }
-  const idKey = idAliases[providerId] ?? providerId
-  if (svgMap[idKey]) return svgMap[idKey]
-  if (!p) return null
-  const hay = (p.name + ' ' + p.baseUrl).toLowerCase()
-  for (const [name, url] of Object.entries(svgMap)) { if (hay.includes(name)) return url }
-  return null
-}
 
 const modelLogoUrl = computed<string | null>(() =>
   lookupLogoUrl(displayedModel.value, displayedProviderId.value)

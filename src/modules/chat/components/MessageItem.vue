@@ -253,6 +253,36 @@ function openLightboxUrl(url: string) {
 const saveToast = ref('')
 let _saveToastTimer: ReturnType<typeof setTimeout> | null = null
 
+async function copyImageToClipboard(src: string) {
+  try {
+    let blob: Blob
+    if (src.startsWith('data:')) {
+      const [header, b64] = src.split(',')
+      const mime = header.match(/:(.*?);/)?.[1] ?? 'image/png'
+      const bin = atob(b64)
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      blob = new Blob([bytes], { type: mime })
+    } else {
+      blob = await fetch(src).then(r => r.blob())
+    }
+    // Always write as image/png — required by Clipboard API
+    let pngBlob = blob
+    if (blob.type !== 'image/png') {
+      const bmp = await createImageBitmap(blob)
+      const canvas = document.createElement('canvas')
+      canvas.width = bmp.width
+      canvas.height = bmp.height
+      canvas.getContext('2d')!.drawImage(bmp, 0, 0)
+      pngBlob = await new Promise<Blob>(res => canvas.toBlob(b => res(b!), 'image/png'))
+    }
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })])
+    showSaveToast('图片已复制到剪贴板')
+  } catch {
+    showSaveToast('复制失败，请尝试下载')
+  }
+}
+
 async function downloadImage(src: string, filename = 'muse-image.png') {
   // Convert src to Uint8Array
   let bytes: Uint8Array
@@ -306,6 +336,9 @@ function showSaveToast(msg: string) {
     <div v-if="lightboxSrc" class="lightbox-overlay" @click="lightboxSrc = null">
       <img :src="lightboxSrc" class="lightbox-img" @click.stop />
       <button class="lightbox-close" @click="lightboxSrc = null">✕</button>
+      <button class="lightbox-copy" @click.stop="copyImageToClipboard(lightboxSrc!)">
+        <Copy :size="18" />
+      </button>
       <button class="lightbox-download" @click.stop="downloadImage(lightboxSrc!)">
         <Download :size="18" />
       </button>
@@ -410,6 +443,13 @@ function showSaveToast(msg: string) {
               :alt="`生成图片 ${idx + 1}`"
               @click="out.url ? openLightboxUrl(out.url) : openLightbox(out.mimeType, out.data!)"
             />
+            <button
+              class="media-copy-btn"
+              title="复制图片"
+              @click.stop="copyImageToClipboard(out.url ?? `data:${out.mimeType};base64,${out.data}`)"
+            >
+              <Copy :size="15" />
+            </button>
             <button
               class="media-download-btn"
               title="下载原图"
@@ -1057,6 +1097,24 @@ function showSaveToast(msg: string) {
 
 .lightbox-close:hover { background: rgba(255, 255, 255, 0.25); }
 
+.lightbox-copy {
+  position: absolute;
+  top: 20px;
+  right: 116px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s;
+}
+.lightbox-copy:hover { background: rgba(255, 255, 255, 0.25); }
+
 .lightbox-download {
   position: absolute;
   top: 20px;
@@ -1095,7 +1153,29 @@ function showSaveToast(msg: string) {
   position: relative;
   display: inline-block;
 }
-.media-img-wrap:hover .media-download-btn { opacity: 1; }
+.media-img-wrap:hover .media-download-btn,
+.media-img-wrap:hover .media-copy-btn { opacity: 1; }
+
+.media-copy-btn {
+  position: absolute;
+  bottom: 8px;
+  right: 46px;
+  opacity: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s, background 0.12s;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.media-copy-btn:hover { background: rgba(0, 0, 0, 0.75); }
 
 .media-download-btn {
   position: absolute;

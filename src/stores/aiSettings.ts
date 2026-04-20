@@ -59,7 +59,7 @@ export function inferModelCaps(modelId: string, openRouterModality?: string): Pa
 
 export interface AIProvider {
   id:              string;
-  type:            'openai' | 'anthropic' | 'google' | 'custom';
+  type:            'openai' | 'anthropic' | 'google' | 'custom' | 'ollama';
   name:            string;
   apiKey:          string;   // plaintext in memory only; stored encrypted
   baseUrl:         string;
@@ -189,7 +189,7 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     if (p) p.selectedModelId = modelId
   }
 
-  function updateProvider(id: string, patch: Partial<Pick<AIProvider, 'apiKey' | 'baseUrl' | 'enabled' | 'name'>>) {
+  function updateProvider(id: string, patch: Partial<Pick<AIProvider, 'apiKey' | 'baseUrl' | 'enabled' | 'name' | 'type'>>) {
     const p = providers.value.find(p => p.id === id)
     if (p) Object.assign(p, patch, { updatedAt: new Date().toISOString() })
     persist()

@@ -931,7 +931,7 @@ function showSaveToast(msg: string) {
   white-space: pre-wrap;
   word-break: break-word;
   border-top: 1px solid rgba(34, 63, 121, 0.08);
-  max-height: 400px;
+  max-height: 200px;
   overflow-y: auto;
 }
 

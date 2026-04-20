@@ -57,7 +57,7 @@ function providerIcon(p: AIProvider): string | null {
   if (key.includes('siliconflow')) return PROVIDER_ICONS.siliconflow
   if (key.includes('zhipu') || key.includes('智谱')) return PROVIDER_ICONS.zhipu
   if (key.includes('azure') || key.includes('microsoft')) return PROVIDER_ICONS.microsoft
-  if (key.includes('nvidia'))      return PROVIDER_ICONS.nvidia
+  if (key.includes('nvidia') || key.includes('dgx')) return PROVIDER_ICONS.nvidia
   if (key.includes('claude') || key.includes('anthropic')) return PROVIDER_ICONS.anthropic
   if (key.includes('gemini') || key.includes('google'))    return PROVIDER_ICONS.google
   if (key.includes('openai') || p.type === 'openai')       return PROVIDER_ICONS.openai

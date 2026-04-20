@@ -52,6 +52,11 @@ function assistantColor(id: string): string {
   return assistants.assistants.find(a => a.id === id)?.color ?? '#aeaeb2'
 }
 
+function assistantShortName(id: string): string {
+  const name = assistants.assistants.find(a => a.id === id)?.name ?? ''
+  return name.length > 5 ? name.slice(0, 5) : name
+}
+
 // ─── Rename ───────────────────────────────────────────────────────────────────
 
 const renamingId  = ref<string | null>(null)
@@ -274,12 +279,12 @@ async function removeAssistant(id: string) {
           <Pin :size="9" />
         </div>
 
-        <!-- Assistant color dot (shown in "全部" view) -->
-        <div
+        <!-- Assistant name tag (shown in "全部" view) -->
+        <span
           v-else-if="!chat.batchMode && conv.assistantId && filterAssistantId === null"
-          class="assistant-indicator"
+          class="assistant-tag"
           :style="{ background: assistantColor(conv.assistantId) }"
-        />
+        >{{ assistantShortName(conv.assistantId) }}</span>
 
         <!-- Streaming indicator dot -->
         <div v-if="chat.streamingConvIds.has(conv.id)" class="streaming-dot" />
@@ -388,7 +393,7 @@ async function removeAssistant(id: string) {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: rgba(235, 235, 235, 0.85);
+  background: rgba(228, 228, 232, 0.88);
   backdrop-filter: blur(40px) saturate(1.8);
   -webkit-backdrop-filter: blur(40px) saturate(1.8);
   border-radius: 12px;
@@ -702,12 +707,16 @@ async function removeAssistant(id: string) {
   align-items: center;
 }
 
-.assistant-indicator {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
+.assistant-tag {
   flex-shrink: 0;
-  margin-left: 2px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  color: white;
+  white-space: nowrap;
+  letter-spacing: 0.01em;
+  line-height: 16px;
 }
 
 .item-content {

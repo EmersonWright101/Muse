@@ -62,7 +62,8 @@ function scrollToBottom(force = false) {
 }
 
 watch(() => messages.value.length, () => scrollToBottom())
-watch(() => chat.streamingText, () => scrollToBottom(true))
+watch(() => chat.streamingText,      () => scrollToBottom(true))
+watch(() => chat.streamingReasoning, () => scrollToBottom(true))
 
 onMounted(() => scrollToBottom(true))
 

@@ -71,7 +71,14 @@ async function streamOpenAI(
     ? [{ role: 'system', content: systemPrompt }, ...messages]
     : messages
   const reqBody: Record<string, unknown> = { model, messages: allMessages, stream: true, stream_options: { include_usage: true } }
-  if (reasoningEffort) reqBody.reasoning_effort = reasoningEffort
+  if (reasoningEffort) {
+    if (isOpenRouter(baseUrl)) {
+      // OpenRouter uses { reasoning: { effort } } instead of reasoning_effort
+      reqBody.reasoning = { effort: reasoningEffort, exclude: false }
+    } else {
+      reqBody.reasoning_effort = reasoningEffort
+    }
+  }
   if (modalities?.length) reqBody.modalities = modalities
   if (temperature !== undefined) reqBody.temperature = temperature
   if (maxTokens   !== undefined) reqBody.max_tokens  = maxTokens
@@ -131,7 +138,9 @@ async function streamOpenAI(
             }
           }
         }
-        const reasoningContent = parsed.choices?.[0]?.delta?.reasoning_content
+        // OpenRouter uses delta.reasoning; DeepSeek uses delta.reasoning_content
+        const reasoningContent = parsed.choices?.[0]?.delta?.reasoning
+          ?? parsed.choices?.[0]?.delta?.reasoning_content
         if (reasoningContent && handler.onReasoningToken) handler.onReasoningToken(reasoningContent)
         if (parsed.usage) {
           usage.inputTokens  = parsed.usage.prompt_tokens
@@ -283,6 +292,73 @@ async function streamGoogle(
     }
   }
   handler.onDone(usage)
+}
+
+// Ollama native API: POST /api/chat, no auth, newline-delimited JSON stream
+async function streamOllama(
+  baseUrl: string,
+  model: string,
+  messages: { role: string; content: unknown }[],
+  handler: StreamChunkHandler,
+  signal: AbortSignal,
+  systemPrompt?: string,
+  temperature?: number,
+  maxTokens?: number,
+) {
+  const allMessages = systemPrompt
+    ? [{ role: 'system', content: systemPrompt }, ...messages]
+    : messages
+  const reqBody: Record<string, unknown> = { model, messages: allMessages, stream: true }
+  const options: Record<string, unknown> = {}
+  if (temperature !== undefined) options.temperature = temperature
+  if (maxTokens   !== undefined) options.num_predict = maxTokens
+  if (Object.keys(options).length) reqBody.options = options
+
+  const resp = await fetch(`${baseUrl}/api/chat`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(reqBody),
+    signal,
+  })
+  if (resp.status === 404) {
+    // Fall back to OpenAI-compatible endpoint (e.g. DGX-Spark / Ollama proxies that
+    // expose /v1/chat/completions but not the native /api/chat route)
+    await streamOpenAI(`${baseUrl}/v1`, '', model, allMessages, handler, signal, undefined, undefined, undefined, temperature, maxTokens)
+    return
+  }
+  if (!resp.ok) {
+    const err = await resp.text()
+    handler.onError(`Ollama error ${resp.status}: ${err}`)
+    return
+  }
+  const reader  = resp.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const parsed = JSON.parse(line)
+        // Thinking models (e.g. qwen3:thinking) return reasoning in message.thinking
+        if (parsed.message?.thinking && handler.onReasoningToken) {
+          handler.onReasoningToken(parsed.message.thinking)
+        }
+        if (parsed.message?.content) {
+          handler.onToken(parsed.message.content)
+        }
+        if (parsed.done) {
+          handler.onDone({})
+          return
+        }
+      } catch { /* skip malformed */ }
+    }
+  }
+  handler.onDone({})
 }
 
 // ─── PDF provider routing (mirrors Cherry Studio's PDF_NATIVE_PROVIDER_TYPES) ─
@@ -469,7 +545,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!pid || !mid) return
 
     const provider = aiStore.providers.find(p => p.id === pid)
-    if (!provider?.apiKey) return
+    if (!provider || (!provider.apiKey && provider.type !== 'ollama')) return
 
     const userMsg = conv.messages.find(m => m.role === 'user' && m.content)
     const aiMsg   = conv.messages.filter(m => m.role === 'assistant' && m.content && !m.error).at(-1)
@@ -506,6 +582,8 @@ export const useChatStore = defineStore('chat', () => {
         await streamAnthropic(provider.baseUrl, provider.apiKey, mid, msgs, handler, ac.signal)
       } else if (provider.type === 'google') {
         await streamGoogle(provider.baseUrl, provider.apiKey, mid, msgs, handler, ac.signal)
+      } else if (provider.type === 'ollama') {
+        await streamOllama(provider.baseUrl, mid, msgs, handler, ac.signal)
       } else {
         await streamOpenAI(provider.baseUrl, provider.apiKey, mid, msgs, handler, ac.signal)
       }
@@ -570,7 +648,7 @@ export const useChatStore = defineStore('chat', () => {
     await loadList()
 
     const provider = aiStore.providers.find(p => p.id === pid)
-    if (!provider || !provider.apiKey) {
+    if (!provider || (!provider.apiKey && provider.type !== 'ollama')) {
       assistantMsg.content = '请先在设置中配置 AI 供应商的 API Key。'
       assistantMsg.error   = true
       streamingConvIds.delete(conv.id)
@@ -620,6 +698,7 @@ export const useChatStore = defineStore('chat', () => {
       onReasoningToken(token) {
         localReasoning         += token
         assistantMsg.reasoning  = localReasoning
+        if (activeConvId.value === conv.id) streamingReasoning.value = localReasoning
       },
       onMediaOutput(mimeType, data, isUrl) {
         if (!assistantMsg.mediaOutputs) assistantMsg.mediaOutputs = []
@@ -680,6 +759,8 @@ export const useChatStore = defineStore('chat', () => {
         await streamAnthropic(provider.baseUrl, provider.apiKey, mid, payload, handler, ac.signal, systemPrompt, budget, temperature, maxTokens)
       } else if (provider.type === 'google') {
         await streamGoogle(provider.baseUrl, provider.apiKey, mid, payload, handler, ac.signal, systemPrompt, temperature, maxTokens)
+      } else if (provider.type === 'ollama') {
+        await streamOllama(provider.baseUrl, mid, payload, handler, ac.signal, systemPrompt, temperature, maxTokens)
       } else {
         // openai / custom — pass reasoning_effort for o-series and compatible providers
         const effort = useReasoning.value ? reasoningLevel.value : undefined
@@ -755,7 +836,7 @@ export const useChatStore = defineStore('chat', () => {
 
     const aiStore  = useAiSettingsStore()
     const provider = aiStore.providers.find(p => p.id === providerId)
-    if (!provider || !provider.apiKey) return
+    if (!provider || (!provider.apiKey && provider.type !== 'ollama')) return
 
     // Context = everything before this assistant message
     const msgsForApi = conv.messages.slice(0, msgIdx)
@@ -819,6 +900,8 @@ export const useChatStore = defineStore('chat', () => {
         await streamAnthropic(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, budget, chatSettings.temperature, chatSettings.maxTokens)
       } else if (provider.type === 'google') {
         await streamGoogle(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, chatSettings.temperature, chatSettings.maxTokens)
+      } else if (provider.type === 'ollama') {
+        await streamOllama(provider.baseUrl, modelId, payload, handler, ac.signal, systemPrompt, chatSettings.temperature, chatSettings.maxTokens)
       } else {
         const effort = useReasoning.value ? reasoningLevel.value : undefined
         await streamOpenAI(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, effort, undefined, chatSettings.temperature, chatSettings.maxTokens)
@@ -963,7 +1046,7 @@ export const useChatStore = defineStore('chat', () => {
     loadList, openConversation, newConversation, sendMessage, stopStreaming,
     editAndResend, editMessage, regenerate,
     deleteOne, deleteBatch, toggleBatchMode, toggleSelect, selectAll, clearSelection,
-    togglePin, renameConversation, streamingText, streamingMsgId,
+    togglePin, renameConversation, streamingText, streamingReasoning, streamingMsgId,
     clearContext, removeContextCutoff,
     useReasoning, reasoningLevel, setReasoning, setReasoningLevel,
     regenerateWithModel, setActiveVariant, streamingVariantMsgId,

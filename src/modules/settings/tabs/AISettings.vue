@@ -156,17 +156,27 @@ function persistConnOk(id: string) {
 
 async function testConnection() {
   if (!selected.value) return
-  const { id, apiKey, baseUrl } = selected.value
-  if (!apiKey || !baseUrl) { connStatus.value[id] = 'error'; connMessage.value[id] = '请先配置 API 密钥和地址'; return }
+  const { id, type, apiKey, baseUrl } = selected.value
+  if (!baseUrl) { connStatus.value[id] = 'error'; connMessage.value[id] = '请先配置 API 地址'; return }
   connStatus.value[id]  = 'testing'
   connMessage.value[id] = ''
   try {
-    const resp = await fetch(`${baseUrl}/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    const data = await resp.json()
-    const list: Array<{ id: string }> = data.data ?? data.models ?? []
+    let list: unknown[]
+    if (type === 'ollama') {
+      // Ollama uses /api/tags and needs no API key
+      const resp = await fetch(`${baseUrl}/api/tags`)
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const data = await resp.json()
+      list = data.models ?? []
+    } else {
+      if (!apiKey) { connStatus.value[id] = 'error'; connMessage.value[id] = '请先配置 API 密钥'; return }
+      const resp = await fetch(`${baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const data = await resp.json()
+      list = data.data ?? data.models ?? []
+    }
     connStatus.value[id]  = 'ok'
     connMessage.value[id] = `连接成功，获取到 ${list.length} 个模型`
     persistConnOk(id)
@@ -297,17 +307,30 @@ function confirmPickerSelection() {
 
 async function fetchModels() {
   if (!selected.value) return
-  const { apiKey, baseUrl } = selected.value
-  if (!apiKey || !baseUrl) { fetchModelError.value = '需要先配置 API 密钥和地址'; return }
+  const { type, apiKey, baseUrl } = selected.value
+  if (!baseUrl) { fetchModelError.value = '需要先配置 API 地址'; return }
   fetchingModels.value  = true
   fetchModelError.value = ''
   try {
-    const resp = await fetch(`${baseUrl}/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    const data = await resp.json()
-    const list: PickerModel[] = data.data ?? data.models ?? []
+    let list: PickerModel[]
+    if (type === 'ollama') {
+      // Ollama: GET /api/tags, no auth, response { models: [{ name, model, size, ... }] }
+      const resp = await fetch(`${baseUrl}/api/tags`)
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const data = await resp.json()
+      list = (data.models ?? []).map((m: { name?: string; model?: string }) => ({
+        id:   m.name ?? m.model ?? '',
+        name: m.name ?? m.model ?? '',
+      }))
+    } else {
+      if (!apiKey) { fetchModelError.value = '需要先配置 API 密钥'; return }
+      const resp = await fetch(`${baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const data = await resp.json()
+      list = data.data ?? data.models ?? []
+    }
     if (list.length === 0) { fetchModelError.value = '未返回任何模型'; return }
     pickerModels.value   = list
     pickerSelected.value = new Set(list.filter(m => selected.value!.models.find(x => x.id === m.id)).map(m => m.id))
@@ -378,8 +401,9 @@ function getProviderLogoUrl(p: AIProvider): string | null {
   const idAliases: Record<string, string> = { anthropic: 'claude', google: 'gemini' }
   const idKey = idAliases[p.id] ?? p.id
   if (svgMap[idKey]) return svgMap[idKey]
-  // Keyword match on name + baseUrl for custom providers
+  // Explicit keyword aliases not derivable from filename
   const hay = (p.name + ' ' + p.baseUrl).toLowerCase()
+  if (hay.includes('dgx') || hay.includes('nvidia')) return svgMap['nvidia'] ?? null
   for (const [name, url] of Object.entries(svgMap)) {
     if (hay.includes(name)) return url
   }
@@ -572,6 +596,19 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
             placeholder="https://api.example.com/v1"
             @change="ai.updateProvider(selected.id, { baseUrl: ($event.target as HTMLInputElement).value.trim() })"
           />
+        </div>
+
+        <!-- Provider Type (non-built-in only) -->
+        <div v-if="!selected.builtIn" class="detail-section">
+          <div class="section-label">服务类型</div>
+          <select
+            class="text-input"
+            :value="selected.type"
+            @change="ai.updateProvider(selected.id, { type: ($event.target as HTMLSelectElement).value as AIProvider['type'] })"
+          >
+            <option value="custom">OpenAI 兼容</option>
+            <option value="ollama">Ollama</option>
+          </select>
         </div>
 
         <!-- Models section -->

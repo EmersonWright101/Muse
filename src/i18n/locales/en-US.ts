@@ -3,9 +3,10 @@ export default {
     name: 'Muse',
   },
   nav: {
-    chat:     'Chat',
-    travel:   'Travel',
-    settings: 'Settings',
+    chat:        'Chat',
+    travel:      'Travel',
+    statistics:  'Statistics',
+    settings:    'Settings',
   },
   chat: {
     title:       'Chat',
@@ -32,6 +33,17 @@ export default {
       sync:          'Sync',
       privacy:       'Privacy & Security',
       about:         'About',
+    },
+  },
+  statistics: {
+    title: 'Statistics',
+    sections: {
+      overview: 'Overview',
+      aiUsage:  'AI Usage',
+      tokens:   'Token Usage',
+      traffic:  'Traffic',
+      cost:     'Cost',
+      ranking:  'Ranking',
     },
   },
   common: {

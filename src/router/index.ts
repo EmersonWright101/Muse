@@ -22,6 +22,13 @@ const router = createRouter({
       },
     },
     {
+      path: '/statistics',
+      components: {
+        sidebar: () => import('../modules/statistics/StatisticsSidebar.vue'),
+        main: () => import('../modules/statistics/StatisticsMain.vue'),
+      },
+    },
+    {
       path: '/settings',
       components: {
         sidebar: () => import('../modules/settings/SettingsSidebar.vue'),

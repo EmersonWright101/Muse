@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, MapPin, Settings } from 'lucide-vue-next'
+import { MessageSquare, MapPin, BarChart3, Settings } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
 const route = useRoute()
@@ -67,8 +67,16 @@ async function onHeaderMouseDown(e: MouseEvent) {
       </router-link>
     </nav>
 
-    <!-- Bottom: settings -->
+    <!-- Bottom: statistics + settings -->
     <div class="sidebar-bottom">
+      <router-link
+        to="/statistics"
+        class="nav-item"
+        :class="{ active: isActive('/statistics') }"
+        :title="t('nav.statistics')"
+      >
+        <BarChart3 :size="21" />
+      </router-link>
       <router-link
         to="/settings"
         class="nav-item"

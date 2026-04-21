@@ -10,5 +10,23 @@ export const useUiStore = defineStore('ui', () => {
     settingsSection.value = id
   }
 
-  return { settingsSection, setSettingsSection }
+  // Active section in Statistics sidebar
+  const statsSection = ref<string>('ai_usage')
+
+  function setStatsSection(id: string) {
+    statsSection.value = id
+  }
+
+  // Active sub-tab inside AI Usage section
+  const aiUsageSubSection = ref<string>('tokens')
+
+  function setAiUsageSubSection(id: string) {
+    aiUsageSubSection.value = id
+  }
+
+  return {
+    settingsSection, setSettingsSection,
+    statsSection, setStatsSection,
+    aiUsageSubSection, setAiUsageSubSection,
+  }
 })

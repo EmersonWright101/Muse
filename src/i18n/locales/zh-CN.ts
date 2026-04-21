@@ -3,9 +3,10 @@ export default {
     name: 'Muse',
   },
   nav: {
-    chat:     '对话',
-    travel:   '旅行',
-    settings: '设置',
+    chat:        '对话',
+    travel:      '旅行',
+    statistics:  '统计',
+    settings:    '设置',
   },
   chat: {
     title:       '对话',
@@ -32,6 +33,17 @@ export default {
       sync:         '同步',
       privacy:      '隐私与安全',
       about:        '关于',
+    },
+  },
+  statistics: {
+    title: '统计',
+    sections: {
+      overview: '概览',
+      aiUsage:  'AI 用量',
+      tokens:   'Token 用量',
+      traffic:  '流量',
+      cost:     '花费',
+      ranking:  '排行榜',
     },
   },
   common: {

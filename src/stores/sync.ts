@@ -33,6 +33,15 @@
  *   aiSettings    : LS_MODIFIED_AT_KEY   (written by aiSettings store)
  *   assistants    : 'muse-ts-assistants'  (written by storage.saveAssistant / deleteAssistant)
  *   conversations : 'muse-ts-conversations' (written by storage.saveConversation / deleteConversation)
+ *
+ * ── Incremental sync ─────────────────────────────────────────────────────────
+ *   - Per-module: entire module skipped when neither side changed (manifest-based).
+ *   - Conversations: each conversation is its own .enc file; only changed ones are
+ *     transferred. Index is only re-uploaded when local state actually changed.
+ *   - ensureRemoteDirs: MKCOL calls are skipped after the first successful sync
+ *     this session (session flag _dirsVerified).
+ *   - Tombstones: remote .enc files are only deleted for NEW tombstones (not
+ *     previously seen ones), avoiding redundant DELETE requests every sync.
  */
 
 import { reactive, watch } from 'vue'
@@ -52,6 +61,8 @@ import {
   getDeletedProviders, applyRemoteDeletedProviders,
   type AIProvider,
 } from './aiSettings'
+import { useAssistantsStore } from './assistants'
+import { useChatStore } from './chat'
 
 const SYNC_CONFIG_LS_KEY = 'muse-webdav-sync-config'
 const SYNC_RECORD_LS_KEY = 'muse-sync-record'
@@ -200,6 +211,8 @@ export const useSyncStore = defineStore('sync', () => {
 
   let _syncInProgress = false
   let _autoSyncTimer: ReturnType<typeof setInterval> | null = null
+  // Skip MKCOL calls after first successful directory creation this session
+  let _dirsVerified = false
 
   watch(() => ({ ...config }), v => localStorage.setItem(SYNC_CONFIG_LS_KEY, JSON.stringify(v)))
 
@@ -215,11 +228,13 @@ export const useSyncStore = defineStore('sync', () => {
   }
 
   async function ensureRemoteDirs() {
+    if (_dirsVerified) return
     const base = config.remotePath.replace(/^\/+|\/+$/g, '')
     await webdavMkcol(dav(), `/${base}/`)
     await webdavMkcol(dav(), `/${base}/settings/`)
     await webdavMkcol(dav(), `/${base}/assistants/`)
     await webdavMkcol(dav(), `/${base}/conversations/`)
+    _dirsVerified = true
   }
 
   async function getEncrypted<T>(path: string, fallback: T): Promise<T> {
@@ -233,7 +248,9 @@ export const useSyncStore = defineStore('sync', () => {
   }
 
   async function putEncrypted(path: string, data: unknown) {
-    await webdavPut(dav(), path, await encryptData(JSON.stringify(data), config.password))
+    const body = await encryptData(JSON.stringify(data), config.password)
+    const res  = await webdavPut(dav(), path, body)
+    if (!res.ok) throw new Error(`上传失败 ${path}：HTTP ${res.status}`)
   }
 
   // ─── Manifest ────────────────────────────────────────────────────────────
@@ -257,7 +274,12 @@ export const useSyncStore = defineStore('sync', () => {
 
   // ─── Module: AI Settings ─────────────────────────────────────────────────
 
-  async function syncAiSettings() {
+  /**
+   * @param localChanged  true when local data was modified since the last sync.
+   *                      When false (pull-only), we skip the remote write to avoid
+   *                      needlessly re-uploading data that the remote already has.
+   */
+  async function syncAiSettings(localChanged: boolean) {
     status.progress = '同步 AI 设置…'
     const aiStore   = useAiSettingsStore()
     const localTs   = localModuleTs(MOD_AI)
@@ -284,7 +306,8 @@ export const useSyncStore = defineStore('sync', () => {
     const remoteData = await getEncrypted<typeof localData | null>(path, null)
 
     if (!remoteData) {
-      await putEncrypted(path, localData)
+      // First ever sync — only upload if local has user-configured data.
+      if (localChanged) await putEncrypted(path, localData)
       return
     }
 
@@ -321,6 +344,9 @@ export const useSyncStore = defineStore('sync', () => {
       aiStore.setActiveProvider(remoteData.activeProviderId)
     }
 
+    // Only push to remote if local had changes worth uploading
+    if (!localChanged) return
+
     // Build merged provider list — exclude tombstoned providers
     const mergedProviders = aiStore.providers.map(toRemote)
     for (const [id, rp_] of remoteMap) {
@@ -344,10 +370,13 @@ export const useSyncStore = defineStore('sync', () => {
     deletedAssistants: Record<string, string>;
   }
 
-  async function syncAssistants() {
+  /**
+   * @param localChanged  when false, skips the remote write (pull-only sync).
+   */
+  async function syncAssistants(localChanged: boolean) {
     status.progress = '同步助手配置…'
-    const localList    = await listAssistants()
-    const path         = rp('assistants/list.enc')
+    const localList = await listAssistants()
+    const path      = rp('assistants/list.enc')
 
     // Support old format (bare array) and new format (payload object)
     const raw = await getEncrypted<AssistantsPayload | Assistant[]>(path, { list: [], deletedAssistants: {} })
@@ -388,6 +417,12 @@ export const useSyncStore = defineStore('sync', () => {
       if (isDeleted(local)) await deleteAssistant(local.id)
     }
 
+    // Reload assistants store so the UI reflects synced data immediately
+    await useAssistantsStore().load()
+
+    // Only push to remote if local had changes
+    if (!localChanged) return
+
     await putEncrypted(path, { list: mergedList, deletedAssistants: mergedDeleted } satisfies AssistantsPayload)
   }
 
@@ -398,7 +433,11 @@ export const useSyncStore = defineStore('sync', () => {
     deletedConversations: Record<string, string>;
   }
 
-  async function syncConversations() {
+  /**
+   * @param localChanged  when false, individual conversation files and the index
+   *                      are only uploaded if they were merged with new remote data.
+   */
+  async function syncConversations(localChanged: boolean) {
     status.progress = '同步对话历史…'
 
     const localList = await listConversations()
@@ -422,13 +461,22 @@ export const useSyncStore = defineStore('sync', () => {
     const remoteList = remotePayload.list
     const localIds   = new Set(localList.map(c => c.id))
     const remoteIds  = new Set(remoteList.map(c => c.id))
+    // Tombstones already recorded on remote — used to avoid redundant DELETE calls
+    const remoteTombstones = new Set(Object.keys(remotePayload.deletedConversations ?? {}))
 
-    // ① Apply tombstones: delete locally + delete remote .enc file
+    // Track whether the remote index or .enc files were actually modified
+    let indexChanged = false
+
+    // ① Apply tombstones: delete locally + delete remote .enc file (NEW tombstones only)
     for (const meta of localList) {
       if (isDeleted(meta.id, meta.updatedAt)) await deleteConversation(meta.id)
     }
     for (const [id] of Object.entries(mergedDeleted)) {
-      await webdavDelete(dav(), rp(`conversations/${id}.enc`))
+      // Only send DELETE if this tombstone is new (not already on remote)
+      if (!remoteTombstones.has(id)) {
+        await webdavDelete(dav(), rp(`conversations/${id}.enc`))
+        indexChanged = true
+      }
     }
 
     // ② Download conversations that only exist on remote (and are not tombstoned)
@@ -444,12 +492,16 @@ export const useSyncStore = defineStore('sync', () => {
     }
 
     // ③ Upload conversations that only exist locally (and are not tombstoned)
-    for (const meta of localList) {
-      if (remoteIds.has(meta.id)) continue
-      if (isDeleted(meta.id, meta.updatedAt)) continue
-      const conv = await loadConversation(meta.id)
-      if (!conv) continue
-      await putEncrypted(rp(`conversations/${meta.id}.enc`), conv)
+    //    Only runs when local has changes to push.
+    if (localChanged) {
+      for (const meta of localList) {
+        if (remoteIds.has(meta.id)) continue
+        if (isDeleted(meta.id, meta.updatedAt)) continue
+        const conv = await loadConversation(meta.id)
+        if (!conv) continue
+        await putEncrypted(rp(`conversations/${meta.id}.enc`), conv)
+        indexChanged = true
+      }
     }
 
     // ④ Merge conversations that exist on both sides but differ (skip tombstoned)
@@ -465,8 +517,9 @@ export const useSyncStore = defineStore('sync', () => {
       const remoteResp = await webdavGet(dav(), convPath)
 
       if (!remoteResp.ok) {
-        if (localMeta.updatedAt > remoteMeta.updatedAt) {
+        if (localChanged && localMeta.updatedAt > remoteMeta.updatedAt) {
           await putEncrypted(convPath, localConv)
+          indexChanged = true
         }
         continue
       }
@@ -475,17 +528,27 @@ export const useSyncStore = defineStore('sync', () => {
         const remoteConv = JSON.parse(
           await decryptData(remoteResp.body, config.password),
         ) as Conversation
-        const { merged, localChanged, remoteChanged } = mergeConversation(localConv, remoteConv)
-        if (localChanged)  await saveConversation(merged)
-        if (remoteChanged) await putEncrypted(convPath, merged)
+        const { merged, localChanged: convLocalChanged, remoteChanged: convRemoteChanged } = mergeConversation(localConv, remoteConv)
+        if (convLocalChanged)  await saveConversation(merged)
+        if (convRemoteChanged && localChanged) {
+          await putEncrypted(convPath, merged)
+          indexChanged = true
+        }
       } catch {
-        if (localMeta.updatedAt > remoteMeta.updatedAt) {
+        if (localChanged && localMeta.updatedAt > remoteMeta.updatedAt) {
           await putEncrypted(convPath, localConv)
+          indexChanged = true
         }
       }
     }
 
-    // ⑤ Prune tombstones older than 6 months, then upload refreshed index
+    // Reload conversations list in UI so newly synced conversations appear immediately
+    await useChatStore().loadList()
+
+    // ⑤ Only upload index if local changes were pushed or tombstones were propagated
+    if (!localChanged && !indexChanged) return
+
+    // Prune tombstones older than 6 months, then upload refreshed index
     const sixMonthsAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString()
     for (const [id, ts] of Object.entries(mergedDeleted)) {
       if (ts < sixMonthsAgo) delete mergedDeleted[id]
@@ -529,13 +592,15 @@ export const useSyncStore = defineStore('sync', () => {
       const remoteManifest = await fetchManifest()
       const record         = loadSyncRecord()
 
-      // ② Decide which modules need syncing
-      const toSync = ALL_MODS.filter(mod => {
+      // ② Decide which modules need syncing and whether local has changes to push
+      type ModSyncInfo = { mod: ModuleId; localChanged: boolean }
+      const toSync: ModSyncInfo[] = ALL_MODS.flatMap(mod => {
         const remoteModTs  = remoteManifest.modules[mod] ?? new Date(0).toISOString()
         const lastRemoteTs = record.remoteTs[mod]        ?? new Date(0).toISOString()
         const localChanged  = localModuleTs(mod) > record.syncedAt
         const remoteChanged = remoteModTs > lastRemoteTs
-        return localChanged || remoteChanged
+        if (!localChanged && !remoteChanged) return []
+        return [{ mod, localChanged }]
       })
 
       if (toSync.length === 0) {
@@ -554,17 +619,21 @@ export const useSyncStore = defineStore('sync', () => {
       const newRemoteTs: Partial<Record<ModuleId, string>> = { ...remoteManifest.modules }
       const now = new Date().toISOString()
 
-      for (const mod of toSync) {
-        if (mod === MOD_AI)   await syncAiSettings()
-        if (mod === MOD_AST)  await syncAssistants()
-        if (mod === MOD_CONV) await syncConversations()
+      for (const { mod, localChanged } of toSync) {
+        if (mod === MOD_AI)   await syncAiSettings(localChanged)
+        if (mod === MOD_AST)  await syncAssistants(localChanged)
+        if (mod === MOD_CONV) await syncConversations(localChanged)
         newRemoteTs[mod] = now
       }
 
       // ⑤ Write updated manifest so other devices see the new timestamps
       await pushManifest(newRemoteTs)
 
-      // ⑥ Persist local sync record
+      // ⑥ Wait for any debounced store persists (e.g. aiSettings 300ms debounce)
+      //    before capturing syncedAt, so the timestamps are ordered correctly.
+      await new Promise(r => setTimeout(r, 350))
+
+      // ⑦ Persist local sync record
       const syncedAt = new Date().toISOString()
       saveSyncRecord({ syncedAt, remoteTs: newRemoteTs as Record<ModuleId, string> })
 

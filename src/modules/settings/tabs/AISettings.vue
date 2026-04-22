@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Eye, EyeOff, Plus, Trash2, Check, X, ChevronRight, RefreshCw, Search, SlidersHorizontal } from 'lucide-vue-next'
+import { Eye, EyeOff, Plus, Trash2, Check, X, ChevronRight, RefreshCw, Search, SlidersHorizontal, Pencil } from 'lucide-vue-next'
 import { useAiSettingsStore, inferModelCaps, type AIProvider } from '../../../stores/aiSettings'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import openrouterLogoUrl from '../../../assets/providers/openrouter.svg'
@@ -133,6 +133,42 @@ function cancelAddModel() {
 
 watch(selectedId, () => { showAddModel.value = false; fetchModelError.value = '' })
 
+// ─── Inline model editing ─────────────────────────────────────────────────────
+
+import type { AIModel } from '../../../stores/aiSettings'
+
+const editingModelId = ref<string | null>(null)
+const editDraft = ref<Partial<AIModel>>({})
+
+function startEditModel(m: AIModel) {
+  editingModelId.value = m.id
+  editDraft.value = {
+    reasoning: m.reasoning ?? false,
+    multimodal: m.multimodal ?? false,
+    imageOutput: m.imageOutput ?? false,
+    audio: m.audio ?? false,
+    video: m.video ?? false,
+    inputPrice: m.inputPrice ?? undefined,
+    outputPrice: m.outputPrice ?? undefined,
+    priceCurrency: m.priceCurrency ?? 'usd',
+    contextLength: m.contextLength ?? undefined,
+  }
+}
+
+function saveEditModel(m: AIModel) {
+  if (!selected.value) return
+  const model = selected.value.models.find(x => x.id === m.id)
+  if (!model) return
+  Object.assign(model, editDraft.value)
+  ai.persist()
+  editingModelId.value = null
+}
+
+function cancelEditModel() {
+  editingModelId.value = null
+  editDraft.value = {}
+}
+
 // ─── Connection test & model fetch ───────────────────────────────────────────
 
 type ConnStatus = 'idle' | 'testing' | 'ok' | 'error'
@@ -205,6 +241,7 @@ interface PickerCaps {
   reasoning:   boolean
   vision:      boolean
   imageOutput: boolean
+  video:       boolean
   embedding:   boolean
   reranking:   boolean
 }
@@ -217,6 +254,7 @@ function getPickerCaps(m: PickerModel): PickerCaps {
     reasoning:   inferred.reasoning   ?? false,
     vision:      inferred.multimodal  ?? false,
     imageOutput: inferred.imageOutput ?? false,
+    video:       inferred.video       ?? false,
     embedding:   mod.includes('embed') || /embed/.test(id),
     reranking:   /rerank/.test(id),
   }
@@ -226,7 +264,7 @@ const showModelPicker = ref(false)
 const pickerModels    = ref<PickerModel[]>([])
 const pickerSearch    = ref('')
 const pickerSelected  = ref<Set<string>>(new Set())
-const pickerTab       = ref<'all' | 'reasoning' | 'vision' | 'imageOutput' | 'embedding' | 'reranking'>('all')
+const pickerTab       = ref<'all' | 'reasoning' | 'vision' | 'imageOutput' | 'video' | 'embedding' | 'reranking'>('all')
 
 // Group OpenRouter-style "provider/model-name" by their prefix
 const pickerGroups = computed(() => {
@@ -259,6 +297,7 @@ const pickerTabs = computed(() => {
     reasoning:   pickerModels.value.filter(m => getPickerCaps(m).reasoning).length,
     vision:      pickerModels.value.filter(m => getPickerCaps(m).vision).length,
     imageOutput: pickerModels.value.filter(m => getPickerCaps(m).imageOutput).length,
+    video:       pickerModels.value.filter(m => getPickerCaps(m).video).length,
     embedding:   pickerModels.value.filter(m => getPickerCaps(m).embedding).length,
     reranking:   pickerModels.value.filter(m => getPickerCaps(m).reranking).length,
   }
@@ -267,6 +306,7 @@ const pickerTabs = computed(() => {
     { id: 'reasoning'   as const, label: '推理', count: counts.reasoning },
     { id: 'vision'      as const, label: '视觉', count: counts.vision },
     { id: 'imageOutput' as const, label: '图像', count: counts.imageOutput },
+    { id: 'video'       as const, label: '视频', count: counts.video },
     { id: 'embedding'   as const, label: '嵌入', count: counts.embedding },
     { id: 'reranking'   as const, label: '重排', count: counts.reranking },
   ].filter(t => t.id === 'all' || t.count > 0)
@@ -658,53 +698,146 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
             <div
               v-for="m in selected.models"
               :key="m.id"
-              class="model-row"
+              class="model-row-wrap"
               :class="{ 'model-row-default': selected.selectedModelId === m.id }"
             >
-              <!-- Model logo if SVG exists, otherwise color dot with letter -->
-              <div
-                class="model-row-icon"
-                :style="getModelLogoUrl(m.id, selected.id) ? {} : { background: isOpenRouter(selected) ? providerColor(m.id.split('/')[0] ?? m.id) : providerColor(selected.id) }"
-              >
-                <img
-                  v-if="getModelLogoUrl(m.id, selected.id)"
-                  :src="getModelLogoUrl(m.id, selected.id)!"
-                  class="model-row-logo"
-                  alt=""
-                />
-                <template v-else>
-                  {{ isOpenRouter(selected) ? subProviderInitial(m.id) : providerInitial(selected.name) }}
-                </template>
-              </div>
-
-              <div class="model-row-info">
-                <span class="model-row-name">{{ m.name || m.id }}</span>
-                <span v-if="m.name && m.name !== m.id" class="model-row-id">{{ m.id }}</span>
-              </div>
-
-              <div class="model-row-caps">
-                <span v-if="m.reasoning"   class="m-badge reasoning">推理</span>
-                <span v-if="m.multimodal"  class="m-badge vision">视觉</span>
-                <span v-if="m.imageOutput" class="m-badge image">图像</span>
-                <span v-if="m.contextLength" class="m-ctx">{{ formatCtx(m.contextLength) }}</span>
-              </div>
-
-              <div class="model-row-actions">
-                <button
-                  class="row-action-btn set-default-btn"
-                  :class="{ 'is-default': selected.selectedModelId === m.id }"
-                  @click="ai.setModelForProvider(selected.id, m.id)"
-                  :title="selected.selectedModelId === m.id ? '当前默认' : '设为默认'"
+              <!-- Normal row -->
+              <div class="model-row">
+                <!-- Model logo if SVG exists, otherwise color dot with letter -->
+                <div
+                  class="model-row-icon"
+                  :style="getModelLogoUrl(m.id, selected.id) ? {} : { background: isOpenRouter(selected) ? providerColor(m.id.split('/')[0] ?? m.id) : providerColor(selected.id) }"
                 >
-                  <Check :size="11" />
-                </button>
-                <button
-                  class="row-action-btn remove-btn"
-                  @click.stop="ai.removeCustomModel(selected.id, m.id)"
-                  title="移除模型"
-                >
-                  <X :size="11" />
-                </button>
+                  <img
+                    v-if="getModelLogoUrl(m.id, selected.id)"
+                    :src="getModelLogoUrl(m.id, selected.id)!"
+                    class="model-row-logo"
+                    alt=""
+                  />
+                  <template v-else>
+                    {{ isOpenRouter(selected) ? subProviderInitial(m.id) : providerInitial(selected.name) }}
+                  </template>
+                </div>
+
+                <div class="model-row-info">
+                  <div class="model-row-name-line">
+                    <span class="model-row-name">{{ m.name || m.id }}</span>
+                    <span v-if="m.reasoning"   class="m-badge reasoning">推理</span>
+                    <span v-if="m.multimodal"  class="m-badge vision">视觉</span>
+                    <span v-if="m.imageOutput" class="m-badge image">图像</span>
+                    <span v-if="m.audio"       class="m-badge audio">音频</span>
+                    <span v-if="m.video"       class="m-badge video">视频</span>
+                    <span v-if="m.contextLength" class="m-ctx">{{ formatCtx(m.contextLength) }}</span>
+                  </div>
+                  <span v-if="m.name && m.name !== m.id" class="model-row-id">{{ m.id }}</span>
+                </div>
+
+                <div class="model-row-actions">
+                  <button
+                    v-if="editingModelId !== m.id"
+                    class="row-action-btn edit-btn"
+                    title="编辑模型"
+                    @click="startEditModel(m)"
+                  >
+                    <Pencil :size="11" />
+                  </button>
+                  <button
+                    class="row-action-btn set-default-btn"
+                    :class="{ 'is-default': selected.selectedModelId === m.id }"
+                    @click="ai.setModelForProvider(selected.id, m.id)"
+                    :title="selected.selectedModelId === m.id ? '当前默认' : '设为默认'"
+                  >
+                    <Check :size="11" />
+                  </button>
+                  <button
+                    class="row-action-btn remove-btn"
+                    @click.stop="ai.removeCustomModel(selected.id, m.id)"
+                    title="移除模型"
+                  >
+                    <X :size="11" />
+                  </button>
+                </div>
+              </div>
+
+              <!-- Inline edit panel -->
+              <div v-if="editingModelId === m.id" class="model-edit-panel">
+                <div class="edit-panel-section">
+                  <div class="edit-panel-label">能力</div>
+                  <div class="cap-toggle-group">
+                    <label class="cap-toggle" :class="{ active: editDraft.reasoning }">
+                      <input v-model="editDraft.reasoning" type="checkbox" />
+                      <span>推理</span>
+                    </label>
+                    <label class="cap-toggle" :class="{ active: editDraft.multimodal }">
+                      <input v-model="editDraft.multimodal" type="checkbox" />
+                      <span>视觉</span>
+                    </label>
+                    <label class="cap-toggle" :class="{ active: editDraft.imageOutput }">
+                      <input v-model="editDraft.imageOutput" type="checkbox" />
+                      <span>图像</span>
+                    </label>
+                    <label class="cap-toggle" :class="{ active: editDraft.audio }">
+                      <input v-model="editDraft.audio" type="checkbox" />
+                      <span>音频</span>
+                    </label>
+                    <label class="cap-toggle" :class="{ active: editDraft.video }">
+                      <input v-model="editDraft.video" type="checkbox" />
+                      <span>视频</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="edit-panel-section">
+                  <div class="edit-panel-label">价格</div>
+                  <div class="price-edit-row">
+                    <div class="price-field">
+                      <span class="price-field-label">输入</span>
+                      <input
+                        v-model.number="editDraft.inputPrice"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        class="price-edit-input"
+                        placeholder="0.00"
+                      />
+                    </div>
+                    <div class="price-field">
+                      <span class="price-field-label">输出</span>
+                      <input
+                        v-model.number="editDraft.outputPrice"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        class="price-edit-input"
+                        placeholder="0.00"
+                      />
+                    </div>
+                    <div class="price-field">
+                      <span class="price-field-label">货币</span>
+                      <select v-model="editDraft.priceCurrency" class="price-edit-select">
+                        <option value="usd">USD</option>
+                        <option value="cny">CNY</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="edit-panel-section">
+                  <div class="edit-panel-label">上下文长度</div>
+                  <input
+                    v-model.number="editDraft.contextLength"
+                    type="number"
+                    min="0"
+                    class="price-edit-input"
+                    placeholder="Token 数"
+                    style="width: 140px;"
+                  />
+                </div>
+
+                <div class="edit-panel-actions">
+                  <button class="btn-primary sm" @click="saveEditModel(m)">保存</button>
+                  <button class="btn-ghost sm" @click="cancelEditModel">取消</button>
+                </div>
               </div>
             </div>
 
@@ -804,6 +937,7 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
                 <span v-if="getPickerCaps(m).reasoning"   class="m-badge reasoning">推理</span>
                 <span v-if="getPickerCaps(m).vision"      class="m-badge vision">视觉</span>
                 <span v-if="getPickerCaps(m).imageOutput" class="m-badge image">图像</span>
+                <span v-if="getPickerCaps(m).video"       class="m-badge video">视频</span>
                 <span v-if="getPickerCaps(m).embedding"   class="m-badge embed">嵌入</span>
                 <span v-if="getPickerCaps(m).reranking"   class="m-badge rerank">重排</span>
                 <span v-if="m.context_length" class="picker-ctx">{{ formatCtx(m.context_length) }}</span>
@@ -1350,20 +1484,24 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
   padding: 4px;
 }
 
+.model-row-wrap {
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  transition: background 0.10s;
+}
+
+.model-row-wrap:hover { background: rgba(0,0,0,0.04); }
+
+.model-row-wrap.model-row-default { background: rgba(34, 63, 121, 0.06); }
+
 .model-row {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
   border-radius: 8px;
-  transition: background 0.10s;
   cursor: default;
-}
-
-.model-row:hover { background: rgba(0,0,0,0.04); }
-
-.model-row-default {
-  background: rgba(34, 63, 121, 0.06);
 }
 
 .model-row-icon {
@@ -1391,7 +1529,15 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  gap: 1px;
+  gap: 2px;
+}
+
+.model-row-name-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .model-row-name {
@@ -1414,12 +1560,7 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
   white-space: nowrap;
 }
 
-.model-row-caps {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
+
 
 .m-badge {
   font-size: 9px;
@@ -1432,6 +1573,8 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
 .m-badge.reasoning { background: rgba(88, 86, 214, 0.10); color: #5856d6; }
 .m-badge.vision    { background: rgba(52, 199, 89, 0.10); color: #28a745; }
 .m-badge.image     { background: rgba(255, 149, 0, 0.12); color: #c8710a; }
+.m-badge.audio     { background: rgba(0, 122, 255, 0.10); color: #0062cc; }
+.m-badge.video     { background: rgba(175, 82, 222, 0.10); color: #8e44ad; }
 .m-badge.embed     { background: rgba(0, 122, 255, 0.10); color: #0062cc; }
 .m-badge.rerank    { background: rgba(255, 45, 85, 0.10); color: #c0002f; }
 
@@ -1450,6 +1593,19 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
   gap: 4px;
   flex-shrink: 0;
 }
+
+.edit-btn,
+.set-default-btn,
+.remove-btn {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.model-row-wrap:hover .edit-btn,
+.model-row-wrap:hover .set-default-btn,
+.model-row-wrap:hover .remove-btn {
+  opacity: 1;
+}
+.edit-btn:hover { background: rgba(34, 63, 121, 0.10); color: #223F79; }
 
 .row-action-btn {
   width: 24px;
@@ -1474,6 +1630,120 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
   text-align: center;
   font-size: 12px;
   color: #8e8e93;
+}
+
+/* Inline edit panel */
+.model-edit-panel {
+  padding: 10px 12px 12px;
+  margin: 0 8px 6px;
+  background: white;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.edit-panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.edit-panel-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #8e8e93;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.cap-toggle-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cap-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  background: white;
+  cursor: pointer;
+  font-size: 12px;
+  color: #8e8e93;
+  transition: all 0.12s;
+  user-select: none;
+}
+
+.cap-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.cap-toggle.active {
+  border-color: rgba(34, 63, 121, 0.35);
+  background: rgba(34, 63, 121, 0.06);
+  color: #223F79;
+  font-weight: 500;
+}
+
+.price-edit-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.price-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.price-field-label {
+  font-size: 10px;
+  color: #8e8e93;
+}
+
+.price-edit-input {
+  width: 80px;
+  height: 30px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 7px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: #1c1c1e;
+  background: white;
+  outline: none;
+}
+
+.price-edit-input:focus { border-color: rgba(34, 63, 121, 0.4); }
+
+.price-edit-select {
+  width: 70px;
+  height: 30px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 7px;
+  padding: 0 6px;
+  font-size: 12px;
+  color: #1c1c1e;
+  background: white;
+  outline: none;
+  cursor: pointer;
+}
+
+.price-edit-select:focus { border-color: rgba(34, 63, 121, 0.4); }
+
+.edit-panel-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
 }
 
 /* Empty state */

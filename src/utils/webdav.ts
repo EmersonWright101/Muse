@@ -16,7 +16,10 @@ export interface WebDAVOptions {
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function basicAuth(username: string, password: string): string {
-  return 'Basic ' + btoa(unescape(encodeURIComponent(`${username}:${password}`)));
+  const creds = new TextEncoder().encode(`${username}:${password}`)
+  let binary = ''
+  for (const byte of creds) binary += String.fromCharCode(byte)
+  return 'Basic ' + btoa(binary)
 }
 
 function buildUrl(opts: WebDAVOptions, path: string): string {

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { MapPin, LayoutList } from 'lucide-vue-next'
+import { MapPin, Zap } from 'lucide-vue-next'
 import { useTravelStore } from '../../stores/travel'
 import TravelMap from './components/TravelMap.vue'
+import TravelPowerMap from './components/TravelPowerMap.vue'
 import TravelEditor from './components/TravelEditor.vue'
 
 const { t } = useI18n()
@@ -14,8 +15,8 @@ const hasActive = computed(() => !!store.activeNoteId)
 
 <template>
   <div class="travel-main">
-    <!-- Floating view toggle (visible only in map mode) -->
-    <div v-if="store.viewMode === 'map'" class="floating-toggle">
+    <!-- Floating view toggle (visible only in map/powerMap mode) -->
+    <div v-if="store.viewMode !== 'editor'" class="floating-toggle">
       <button
         class="toggle-btn"
         :class="{ active: store.viewMode === 'map' }"
@@ -26,11 +27,11 @@ const hasActive = computed(() => !!store.activeNoteId)
       </button>
       <button
         class="toggle-btn"
-        :class="{ active: store.viewMode === 'editor' }"
-        @click="store.viewMode = 'editor'"
+        :class="{ active: store.viewMode === 'powerMap' }"
+        @click="store.viewMode = 'powerMap'"
       >
-        <LayoutList :size="14" />
-        {{ t('travel.editorView') }}
+        <Zap :size="14" />
+        {{ t('travel.powerMapView') }}
       </button>
     </div>
 
@@ -41,6 +42,10 @@ const hasActive = computed(() => !!store.activeNoteId)
         :notes="store.notes"
         :active-note-id="store.activeNoteId"
         @select="store.openNote"
+      />
+      <TravelPowerMap
+        v-else-if="store.viewMode === 'powerMap'"
+        :notes="store.notes"
       />
       <div v-else-if="!hasActive" class="placeholder-state">
         <div class="placeholder-icon">

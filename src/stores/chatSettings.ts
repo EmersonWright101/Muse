@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 
 const LS_KEY = 'muse-chat-settings'
+export const LS_MODIFIED_AT_KEY = 'muse-chat-settings-modified-at'
 
 export const DEFAULT_TITLE_PROMPT =
   '请用一句话（不超过15字）概括以下对话的主题，只输出标题本身，不加引号或标点：\n用户：{user}\nAI：{response}'
@@ -27,13 +28,15 @@ export const useChatSettingsStore = defineStore('chatSettings', () => {
   watch(
     [titleGenProviderId, titleGenModelId, titleGenPrompt, temperature, maxTokens],
     () => {
-      localStorage.setItem(LS_KEY, JSON.stringify({
+      const payload = {
         titleGenProviderId: titleGenProviderId.value,
         titleGenModelId:    titleGenModelId.value,
         titleGenPrompt:     titleGenPrompt.value,
         temperature:        temperature.value,
         maxTokens:          maxTokens.value,
-      }))
+      }
+      localStorage.setItem(LS_KEY, JSON.stringify(payload))
+      localStorage.setItem(LS_MODIFIED_AT_KEY, new Date().toISOString())
     },
   )
 

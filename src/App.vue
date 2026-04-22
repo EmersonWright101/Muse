@@ -9,7 +9,7 @@ const showPanel = ref(true)
 const route = useRoute()
 const travel = useTravelStore()
 
-const panelFloats = computed(() => route.path === '/travel' && travel.viewMode === 'map')
+const panelFloats = computed(() => route.path === '/travel' && travel.viewMode !== 'editor')
 </script>
 
 <template>

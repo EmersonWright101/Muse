@@ -57,12 +57,18 @@ import {
 import { encryptData, decryptData }    from '../utils/crypto'
 import { webdavGet, webdavPut, webdavMkcol, webdavPing, webdavDelete } from '../utils/webdav'
 import {
-  useAiSettingsStore, LS_MODIFIED_AT_KEY,
+  useAiSettingsStore, LS_MODIFIED_AT_KEY, DEBOUNCE_MS,
   getDeletedProviders, applyRemoteDeletedProviders,
   type AIProvider,
 } from './aiSettings'
 import { useAssistantsStore } from './assistants'
 import { useChatStore } from './chat'
+import { LS_MODIFIED_AT_KEY as LS_CHAT_SETTINGS_MODIFIED_AT_KEY } from './chatSettings'
+import {
+  listTravelNotes, loadTravelNote, saveTravelNote, deleteTravelNote,
+  getDeletedTravelNotes, applyRemoteDeletedTravelNotes,
+  type TravelNote, type TravelNoteMeta,
+} from '../utils/travelStorage'
 
 const SYNC_CONFIG_LS_KEY = 'muse-webdav-sync-config'
 const SYNC_RECORD_LS_KEY = 'muse-sync-record'
@@ -70,10 +76,12 @@ const SYNC_RECORD_LS_KEY = 'muse-sync-record'
 // ─── Module registry ─────────────────────────────────────────────────────────
 // Add new modules here when you add new app modules.
 
-const MOD_AI   = 'aiSettings'    as const
-const MOD_AST  = 'assistants'    as const
-const MOD_CONV = 'conversations' as const
-const ALL_MODS = [MOD_AI, MOD_AST, MOD_CONV] as const
+const MOD_AI        = 'aiSettings'    as const
+const MOD_AST       = 'assistants'    as const
+const MOD_CONV      = 'conversations' as const
+const MOD_CHAT_SET  = 'chatSettings'  as const
+const MOD_TRAVEL    = 'travelNotes'   as const
+const ALL_MODS = [MOD_AI, MOD_AST, MOD_CONV, MOD_CHAT_SET, MOD_TRAVEL] as const
 type ModuleId  = typeof ALL_MODS[number]
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -139,8 +147,9 @@ function saveSyncRecord(r: LocalSyncRecord) {
 
 /** Last time the given module's data was written locally. */
 function localModuleTs(mod: ModuleId): string {
-  const key = mod === MOD_AI ? LS_MODIFIED_AT_KEY : `muse-ts-${mod}`
-  return localStorage.getItem(key) ?? new Date(0).toISOString()
+  if (mod === MOD_AI)       return localStorage.getItem(LS_MODIFIED_AT_KEY) ?? new Date(0).toISOString()
+  if (mod === MOD_CHAT_SET) return localStorage.getItem(LS_CHAT_SETTINGS_MODIFIED_AT_KEY) ?? new Date(0).toISOString()
+  return localStorage.getItem(`muse-ts-${mod}`) ?? new Date(0).toISOString()
 }
 
 // ─── Merge helpers ────────────────────────────────────────────────────────────
@@ -234,6 +243,7 @@ export const useSyncStore = defineStore('sync', () => {
     await webdavMkcol(dav(), `/${base}/settings/`)
     await webdavMkcol(dav(), `/${base}/assistants/`)
     await webdavMkcol(dav(), `/${base}/conversations/`)
+    await webdavMkcol(dav(), `/${base}/travel/`)
     _dirsVerified = true
   }
 
@@ -562,6 +572,136 @@ export const useSyncStore = defineStore('sync', () => {
     } satisfies ConversationsPayload)
   }
 
+  // ─── Module: Chat Settings ─────────────────────────────────────────────────
+
+  async function syncChatSettings(localChanged: boolean) {
+    status.progress = '同步对话设置…'
+    const path = rp('settings/chat_settings.enc')
+    const raw = localStorage.getItem('muse-chat-settings')
+    const localData = raw ? JSON.parse(raw) : {}
+
+    const remoteData = await getEncrypted<Record<string, unknown> | null>(path, null)
+
+    if (!remoteData) {
+      if (localChanged && Object.keys(localData).length > 0) {
+        await putEncrypted(path, localData)
+      }
+      return
+    }
+
+    // Merge: remote timestamp wins (simple last-write-wins for settings)
+    const localTs = localModuleTs(MOD_CHAT_SET)
+    const remoteTs = (remoteData as Record<string, unknown> & { __syncTs?: string }).__syncTs ?? new Date(0).toISOString()
+
+    if (remoteTs > localTs) {
+      localStorage.setItem('muse-chat-settings', JSON.stringify(remoteData))
+    }
+
+    if (!localChanged) return
+    await putEncrypted(path, { ...localData, __syncTs: new Date().toISOString() })
+  }
+
+  // ─── Module: Travel Notes ──────────────────────────────────────────────────
+
+  interface TravelPayload {
+    list: TravelNoteMeta[];
+    deletedTravelNotes: Record<string, string>;
+  }
+
+  async function syncTravelNotes(localChanged: boolean) {
+    status.progress = '同步旅行日记…'
+    const localList = await listTravelNotes()
+    const idxPath   = rp('travel/index.enc')
+
+    const raw = await getEncrypted<TravelPayload | null>(idxPath, { list: [], deletedTravelNotes: {} })
+    const remotePayload: TravelPayload = raw ?? { list: [], deletedTravelNotes: {} }
+
+    applyRemoteDeletedTravelNotes(remotePayload.deletedTravelNotes ?? {})
+    const mergedDeleted = getDeletedTravelNotes()
+
+    function isDeleted(id: string): boolean {
+      const ts = mergedDeleted[id]
+      if (!ts) return false
+      return true
+    }
+
+    const remoteList = remotePayload.list
+    const localIds   = new Set(localList.map(n => n.id))
+    const remoteIds  = new Set(remoteList.map(n => n.id))
+    const remoteTombstones = new Set(Object.keys(remotePayload.deletedTravelNotes ?? {}))
+
+    let indexChanged = false
+
+    // ① Apply tombstones
+    for (const meta of localList) {
+      if (isDeleted(meta.id)) await deleteTravelNote(meta.id)
+    }
+    for (const [id] of Object.entries(mergedDeleted)) {
+      if (!remoteTombstones.has(id)) {
+        await webdavDelete(dav(), rp(`travel/${id}.enc`))
+        indexChanged = true
+      }
+    }
+
+    // ② Download notes that only exist on remote
+    for (const meta of remoteList) {
+      if (localIds.has(meta.id)) continue
+      if (isDeleted(meta.id)) continue
+      const resp = await webdavGet(dav(), rp(`travel/${meta.id}.enc`))
+      if (!resp.ok) continue
+      try {
+        const note = JSON.parse(await decryptData(resp.body, config.password)) as TravelNote
+        if (!isDeleted(note.id)) await saveTravelNote(note)
+      } catch { /* skip corrupt */ }
+    }
+
+    // ③ Upload notes that only exist locally
+    if (localChanged) {
+      for (const meta of localList) {
+        if (remoteIds.has(meta.id)) continue
+        if (isDeleted(meta.id)) continue
+        const note = await loadTravelNote(meta.id)
+        if (!note) continue
+        await putEncrypted(rp(`travel/${meta.id}.enc`), note)
+        indexChanged = true
+      }
+    }
+
+    // ④ Merge notes that exist on both sides (newer updatedAt wins)
+    for (const localMeta of localList) {
+      if (isDeleted(localMeta.id)) continue
+      const remoteMeta = remoteList.find(r => r.id === localMeta.id)
+      if (!remoteMeta) continue
+
+      const localNote = await loadTravelNote(localMeta.id)
+      if (!localNote) continue
+      const localUpdatedAt = localNote.updatedAt ?? localMeta.updatedAt ?? new Date(0).toISOString()
+      const remoteUpdatedAt = remoteMeta.updatedAt ?? new Date(0).toISOString()
+
+      if (remoteUpdatedAt > localUpdatedAt) {
+        const resp = await webdavGet(dav(), rp(`travel/${localMeta.id}.enc`))
+        if (resp.ok) {
+          try {
+            const remoteNote = JSON.parse(await decryptData(resp.body, config.password)) as TravelNote
+            await saveTravelNote(remoteNote)
+          } catch { /* skip */ }
+        }
+      } else if (localChanged && localUpdatedAt > remoteUpdatedAt) {
+        await putEncrypted(rp(`travel/${localMeta.id}.enc`), localNote)
+        indexChanged = true
+      }
+    }
+
+    if (!localChanged && !indexChanged) return
+
+    // Upload index with lightweight metadata only (no content)
+    const finalList = await listTravelNotes()
+    await putEncrypted(idxPath, {
+      list: finalList,
+      deletedTravelNotes: mergedDeleted,
+    } satisfies TravelPayload)
+  }
+
   // ─── Public API ──────────────────────────────────────────────────────────
 
   async function testConnection(): Promise<{ ok: boolean; message: string }> {
@@ -620,18 +760,20 @@ export const useSyncStore = defineStore('sync', () => {
       const now = new Date().toISOString()
 
       for (const { mod, localChanged } of toSync) {
-        if (mod === MOD_AI)   await syncAiSettings(localChanged)
-        if (mod === MOD_AST)  await syncAssistants(localChanged)
-        if (mod === MOD_CONV) await syncConversations(localChanged)
+        if (mod === MOD_AI)        await syncAiSettings(localChanged)
+        if (mod === MOD_AST)       await syncAssistants(localChanged)
+        if (mod === MOD_CONV)      await syncConversations(localChanged)
+        if (mod === MOD_CHAT_SET)  await syncChatSettings(localChanged)
+        if (mod === MOD_TRAVEL)    await syncTravelNotes(localChanged)
         newRemoteTs[mod] = now
       }
 
       // ⑤ Write updated manifest so other devices see the new timestamps
       await pushManifest(newRemoteTs)
 
-      // ⑥ Wait for any debounced store persists (e.g. aiSettings 300ms debounce)
-      //    before capturing syncedAt, so the timestamps are ordered correctly.
-      await new Promise(r => setTimeout(r, 350))
+      // ⑥ Wait for any debounced store persists before capturing syncedAt,
+      //    so the timestamps are ordered correctly.
+      await new Promise(r => setTimeout(r, DEBOUNCE_MS + 50))
 
       // ⑦ Persist local sync record
       const syncedAt = new Date().toISOString()

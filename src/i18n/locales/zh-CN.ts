@@ -13,6 +13,8 @@ export default {
     newChat:     '新建对话',
     search:      '搜索…',
     placeholder: '选择一个对话，或开始新的聊天。',
+    feedbackPositive: '有帮助',
+    feedbackNegative: '没有帮助',
   },
   travel: {
     title:           '旅行日记',
@@ -23,6 +25,7 @@ export default {
     noResults:       '没有找到匹配的日记。',
     noPreview:       '暂无预览',
     mapView:         '地图',
+    powerMapView:    '旅行轨迹',
     editorView:      '编辑器',
     editMode:        '编辑',
     splitMode:       '分栏',

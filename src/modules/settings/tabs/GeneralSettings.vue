@@ -94,23 +94,6 @@ async function confirmDeleteOld() {
     <h1 class="page-title">{{ t('settings.sections.general') }}</h1>
 
     <div class="section-card">
-      <h2 class="section-title">语言 / Language</h2>
-      <div class="lang-list">
-        <button
-          v-for="lang in languages"
-          :key="lang.code"
-          class="lang-item"
-          :class="{ active: locale === lang.code }"
-          @click="setLocale(lang.code)"
-        >
-          <span class="lang-flag">{{ lang.flag }}</span>
-          <span class="lang-label">{{ lang.label }}</span>
-          <span v-if="locale === lang.code" class="lang-check">✓</span>
-        </button>
-      </div>
-    </div>
-
-    <div class="section-card">
       <h2 class="section-title">{{ t('settings.dataPath.title') }}</h2>
       <p class="section-desc">{{ t('settings.dataPath.description') }}</p>
 
@@ -126,6 +109,23 @@ async function confirmDeleteOld() {
           </button>
         </div>
         <div v-if="migrateError" class="migrate-error">{{ migrateError }}</div>
+      </div>
+    </div>
+
+    <div class="section-card">
+      <h2 class="section-title">语言 / Language</h2>
+      <div class="lang-list">
+        <button
+          v-for="lang in languages"
+          :key="lang.code"
+          class="lang-item"
+          :class="{ active: locale === lang.code }"
+          @click="setLocale(lang.code)"
+        >
+          <span class="lang-flag">{{ lang.flag }}</span>
+          <span class="lang-label">{{ lang.label }}</span>
+          <span v-if="locale === lang.code" class="lang-check">✓</span>
+        </button>
       </div>
     </div>
 

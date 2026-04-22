@@ -2,8 +2,6 @@
 import { useI18n } from 'vue-i18n'
 import {
   SlidersHorizontal,
-  Palette,
-  Globe,
   Bot,
   CloudUpload,
   Info,
@@ -15,13 +13,11 @@ const { t } = useI18n()
 const ui    = useUiStore()
 
 const sections = [
-  { id: 'general',    icon: SlidersHorizontal, labelKey: 'settings.sections.general' },
-  { id: 'appearance', icon: Palette,            labelKey: 'settings.sections.appearance' },
-  { id: 'language',   icon: Globe,              labelKey: 'settings.sections.language' },
-  { id: 'ai',         icon: Bot,               labelKey: 'settings.sections.ai' },
-  { id: 'chat',       icon: MessageSquare,      label: '对话' },
-  { id: 'sync',       icon: CloudUpload,        labelKey: 'settings.sections.sync' },
-  { id: 'about',      icon: Info,              labelKey: 'settings.sections.about' },
+  { id: 'general', icon: SlidersHorizontal, labelKey: 'settings.sections.general' },
+  { id: 'ai',      icon: Bot,               labelKey: 'settings.sections.ai' },
+  { id: 'chat',    icon: MessageSquare,     label: '对话' },
+  { id: 'sync',    icon: CloudUpload,       labelKey: 'settings.sections.sync' },
+  { id: 'about',   icon: Info,              labelKey: 'settings.sections.about' },
 ]
 
 function select(id: string) {
@@ -62,7 +58,7 @@ function select(id: string) {
   background: rgba(235, 235, 235, 0.85);
   backdrop-filter: blur(40px) saturate(1.8);
   -webkit-backdrop-filter: blur(40px) saturate(1.8);
-  border-radius: 12px;
+  border-radius: 24px;
   overflow: hidden;
   box-shadow: 0 2px 16px rgba(0, 0, 0, 0.10), 0 0 0 0.5px rgba(255, 255, 255, 0.6) inset;
 }

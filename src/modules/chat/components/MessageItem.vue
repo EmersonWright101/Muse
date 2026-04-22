@@ -60,7 +60,8 @@ hljs.registerLanguage('rb', ruby)
 hljs.registerLanguage('php', php)
 hljs.registerLanguage('r', r)
 import DOMPurify from 'dompurify'
-import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Bot, AtSign, Download, Clock } from 'lucide-vue-next'
+import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Bot, AtSign, Download, Clock, ThumbsUp, ThumbsDown } from 'lucide-vue-next'
+import { useI18n } from 'vue-i18n'
 import type { ChatMessage } from '../../../stores/chat'
 import { useChatStore } from '../../../stores/chat'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
@@ -69,6 +70,7 @@ const props = defineProps<{ message: ChatMessage; streaming?: boolean }>()
 
 const chat = useChatStore()
 const ai   = useAiSettingsStore()
+const { t } = useI18n()
 
 // ─── Copy + edit ─────────────────────────────────────────────────────────────
 
@@ -205,6 +207,7 @@ const displayedContent    = computed(() => activeVariantData.value?.content    ?
 const displayedUsage      = computed(() => activeVariantData.value?.usage      ?? props.message.usage)
 const displayedReasoning  = computed(() => activeVariantData.value?.reasoning  ?? props.message.reasoning)
 const displayedError      = computed(() => activeVariantData.value?.error      ?? props.message.error)
+const displayedFeedback   = computed(() => activeVariantData.value?.feedback   ?? props.message.feedback   ?? null)
 
 // Short display name: strip provider prefix
 const modelDisplayName = computed(() => {
@@ -500,6 +503,25 @@ function showSaveToast(msg: string) {
               </div>
             </Transition>
           </div>
+          <!-- Feedback buttons -->
+          <button
+            v-if="!isUser && !streaming"
+            class="action-btn"
+            :class="{ positive: displayedFeedback === 'positive' }"
+            :title="t('chat.feedbackPositive')"
+            @click="chat.setMessageFeedback(message.id, displayedFeedback === 'positive' ? null : 'positive')"
+          >
+            <ThumbsUp :size="13" />
+          </button>
+          <button
+            v-if="!isUser && !streaming"
+            class="action-btn"
+            :class="{ negative: displayedFeedback === 'negative' }"
+            :title="t('chat.feedbackNegative')"
+            @click="chat.setMessageFeedback(message.id, displayedFeedback === 'negative' ? null : 'negative')"
+          >
+            <ThumbsDown :size="13" />
+          </button>
         </div>
 
         <div v-if="!isUser && (displayedUsage || modelDisplayName) && !streaming" class="msg-usage">
@@ -913,6 +935,14 @@ function showSaveToast(msg: string) {
 
 .action-btn.done {
   color: #34c759;
+}
+
+.action-btn.positive {
+  color: #34c759;
+}
+
+.action-btn.negative {
+  color: #ff3b30;
 }
 
 .edit-textarea {

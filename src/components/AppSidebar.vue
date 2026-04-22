@@ -28,19 +28,19 @@ async function onHeaderMouseDown(e: MouseEvent) {
     <!-- Traffic lights — draggable header area -->
     <div class="sidebar-header" @mousedown="onHeaderMouseDown">
       <div class="traffic-lights">
-        <button class="tl-btn tl-close" @click="win.close()">
-          <svg class="tl-icon" viewBox="0 0 10 10">
+        <button class="tl-btn tl-close" @click.stop="win.close()" @mousedown.stop>
+          <svg class="tl-icon" viewBox="0 0 10 10" fill="none">
             <path d="M2.5 2.5l5 5M7.5 2.5l-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
           </svg>
         </button>
-        <button class="tl-btn tl-minimize" @click="win.minimize()">
-          <svg class="tl-icon" viewBox="0 0 10 10">
+        <button class="tl-btn tl-minimize" @click.stop="win.minimize()" @mousedown.stop>
+          <svg class="tl-icon" viewBox="0 0 10 10" fill="none">
             <path d="M2 5h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
           </svg>
         </button>
-        <button class="tl-btn tl-zoom" @click="win.toggleMaximize()">
-          <svg class="tl-icon" viewBox="0 0 10 10">
-            <path d="M2.5 7.5l2-2M7.5 2.5l-2 2M2 2.5h2.5V5M5 5h2.5v2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+        <button class="tl-btn tl-zoom" @click.stop="win.toggleMaximize()" @mousedown.stop>
+          <svg class="tl-icon" viewBox="0 0 10 10" fill="none">
+            <path d="M5 2v6M2 5h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
           </svg>
         </button>
       </div>

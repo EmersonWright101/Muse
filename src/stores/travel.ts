@@ -28,7 +28,7 @@ export const useTravelStore = defineStore('travel', () => {
   const searchQuery = ref('')
   const selectedCategory = ref<string>('')
   const isLoading = ref(false)
-  const viewMode = ref<'map' | 'editor'>('map')
+  const viewMode = ref<'map' | 'editor' | 'powerMap'>('map')
 
   const categories = computed(() => {
     const set = new Set<string>()

@@ -13,6 +13,8 @@ export default {
     newChat:     'New Chat',
     search:      'Search…',
     placeholder: 'Select a conversation or start a new chat.',
+    feedbackPositive: 'Helpful',
+    feedbackNegative: 'Not helpful',
   },
   travel: {
     title:           'Travel',
@@ -23,6 +25,7 @@ export default {
     noResults:       'No matching entries found.',
     noPreview:       'No preview',
     mapView:         'Map',
+    powerMapView:    'Trail',
     editorView:      'Editor',
     editMode:        'Edit',
     splitMode:       'Split',

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Search, Plus, Star, FileText, ChevronDown, MapPin } from 'lucide-vue-next'
+import { Search, Plus, Star, FileText, ChevronDown, MapPin, Trash2, LayoutList } from 'lucide-vue-next'
 import { useTravelStore } from '../../stores/travel'
 import { initImageAssetBase, resolveImageUrl } from '../../utils/imageAsset'
 
@@ -19,6 +19,13 @@ function onEntryClick(id: string) {
 
 function onNewEntry() {
   store.newNote()
+}
+
+function onDeleteEntry(e: MouseEvent, id: string) {
+  e.stopPropagation()
+  if (window.confirm(t('travel.deleteConfirm'))) {
+    store.deleteOne(id)
+  }
 }
 
 // ─── Category picker dropdown ────────────────────────────────────────────────
@@ -80,12 +87,12 @@ function clearCategory() {
 
       <div class="header-actions">
         <button
-          v-if="store.viewMode === 'editor'"
           class="icon-btn"
-          :title="t('travel.mapView')"
-          @click="store.viewMode = 'map'"
+          :title="store.viewMode === 'editor' ? t('travel.mapView') : t('travel.editorView')"
+          @click="store.viewMode = store.viewMode === 'editor' ? 'map' : 'editor'"
         >
-          <MapPin :size="15" />
+          <MapPin v-if="store.viewMode === 'editor'" :size="15" />
+          <LayoutList v-else :size="15" />
         </button>
         <button class="icon-btn" :title="t('travel.newEntry')" @click="onNewEntry">
           <Plus :size="15" />
@@ -140,7 +147,12 @@ function clearCategory() {
           <span v-else>{{ entry.cover || '📍' }}</span>
         </div>
         <div class="item-content">
-          <div class="item-title">{{ entry.title }}</div>
+          <div class="item-title-row">
+            <div class="item-title">{{ entry.title }}</div>
+            <button class="delete-btn" :title="t('common.delete')" @click="onDeleteEntry($event, entry.id)">
+              <Trash2 :size="12" />
+            </button>
+          </div>
           <div class="item-preview">{{ entry.preview || t('travel.noPreview') }}</div>
           <div class="item-meta-row">
             <span class="item-category" v-if="entry.category">{{ entry.category }}</span>
@@ -169,7 +181,7 @@ function clearCategory() {
   background: rgba(240, 240, 242, 0.45);
   backdrop-filter: blur(60px) saturate(2);
   -webkit-backdrop-filter: blur(60px) saturate(2);
-  border-radius: 12px;
+  border-radius: 24px;
   overflow: hidden;
   box-shadow: 0 2px 16px rgba(0, 0, 0, 0.10), 0 0 0 0.5px rgba(255, 255, 255, 0.6) inset;
 }
@@ -407,18 +419,52 @@ function clearCategory() {
   flex: 1;
 }
 
+.item-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
 .item-title {
   font-size: 13px;
   font-weight: 500;
   color: #1c1c1e;
-  margin-bottom: 3px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
 }
 
 .list-item.active .item-title {
   color: #223F79;
+}
+
+.delete-btn {
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: #c7c7cc;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.12s, color 0.12s;
+  flex-shrink: 0;
+}
+
+.list-item:hover .delete-btn {
+  opacity: 1;
+}
+
+.delete-btn:hover {
+  background: rgba(255, 59, 48, 0.10);
+  color: #ff3b30;
 }
 
 .item-preview {

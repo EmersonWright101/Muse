@@ -26,7 +26,7 @@ import {
   type MessageUsage,
   type MessageVariant,
 } from '../utils/storage'
-import { useAiSettingsStore }    from './aiSettings'
+import { useAiSettingsStore, calculateModelCost } from './aiSettings'
 import { useAssistantsStore }   from './assistants'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { useChatSettingsStore, DEFAULT_TITLE_PROMPT } from './chatSettings'
@@ -725,6 +725,11 @@ export const useChatStore = defineStore('chat', () => {
             localText            = ''
           }
         }
+        // Fallback cost calculation if API didn't return cost
+        if (usage.costUsd == null) {
+          const computed = calculateModelCost(aiStore.providers, pid, mid, usage.inputTokens, usage.outputTokens)
+          if (computed != null) usage.costUsd = computed
+        }
         assistantMsg.usage = { ...usage, durationMs: Date.now() - startedAt }
         streamingConvIds.delete(conv.id)
         _abortControllers.delete(conv.id)
@@ -874,6 +879,11 @@ export const useChatStore = defineStore('chat', () => {
         v.mediaOutputs.push(isUrl ? { mimeType, url: data } : { mimeType, data })
       },
       async onDone(usage) {
+        // Fallback cost calculation if API didn't return cost
+        if (usage.costUsd == null) {
+          const computed = calculateModelCost(aiStore.providers, providerId, modelId, usage.inputTokens, usage.outputTokens)
+          if (computed != null) usage.costUsd = computed
+        }
         msg.variants![vi].usage = { ...usage, durationMs: Date.now() - startedAt }
         streamingConvIds.delete(conv.id)
         _abortControllers.delete(conv.id)
@@ -921,6 +931,19 @@ export const useChatStore = defineStore('chat', () => {
   function setActiveVariant(messageId: string, idx: number) {
     const msg = activeConv.value?.messages.find(m => m.id === messageId)
     if (msg) msg.activeVariantIdx = idx
+  }
+
+  function setMessageFeedback(messageId: string, feedback: 'positive' | 'negative' | null) {
+    if (!activeConv.value) return
+    const msg = activeConv.value.messages.find(m => m.id === messageId)
+    if (!msg) return
+    const idx = msg.activeVariantIdx ?? 0
+    if (idx === 0) {
+      msg.feedback = feedback
+    } else if (msg.variants && msg.variants[idx - 1]) {
+      msg.variants[idx - 1].feedback = feedback
+    }
+    saveConversation(activeConv.value)
   }
 
   // ─── Context cutoff ─────────────────────────────────────────────────────
@@ -1050,6 +1073,6 @@ export const useChatStore = defineStore('chat', () => {
     togglePin, renameConversation, streamingText, streamingReasoning, streamingMsgId,
     clearContext, removeContextCutoff,
     useReasoning, reasoningLevel, setReasoning, setReasoningLevel,
-    regenerateWithModel, setActiveVariant, streamingVariantMsgId,
+    regenerateWithModel, setActiveVariant, streamingVariantMsgId, setMessageFeedback,
   }
 })

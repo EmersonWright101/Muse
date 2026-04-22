@@ -13,13 +13,11 @@ const ui = useUiStore()
 const PlaceholderTab = { template: '<div style="padding:28px 32px;color:#8e8e93;font-size:14px;">即将推出</div>' }
 
 const sectionComponents: Record<string, unknown> = {
-  general:    GeneralSettings,
-  appearance: PlaceholderTab,
-  language:   GeneralSettings,   // redirect language to general (has lang picker)
-  ai:         AISettings,
-  chat:       ChatSettings,
-  sync:       SyncSettings,
-  about:      AboutSettings,
+  general: GeneralSettings,
+  ai:      AISettings,
+  chat:    ChatSettings,
+  sync:    SyncSettings,
+  about:   AboutSettings,
 }
 
 const activeComponent = computed(() => sectionComponents[ui.settingsSection] ?? PlaceholderTab)

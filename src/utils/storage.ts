@@ -13,6 +13,7 @@ import {
   exists,
   mkdir,
   remove,
+  rename,
 } from '@tauri-apps/plugin-fs';
 import { resolveDataRoot, conversationsDir } from './path';
 
@@ -47,6 +48,7 @@ export interface MessageVariant {
   reasoning?:   string;
   error?:       boolean;
   mediaOutputs?: Array<{ mimeType: string; data?: string; url?: string }>;
+  feedback?:    'positive' | 'negative' | null;
 }
 
 export interface ChatMessage {
@@ -63,6 +65,7 @@ export interface ChatMessage {
   mediaOutputs?: Array<{ mimeType: string; data?: string; url?: string }>;
   variants?:        MessageVariant[];
   activeVariantIdx?: number;  // 0 = original, 1+ = variants[activeVariantIdx-1]
+  feedback?:    'positive' | 'negative' | null;
 }
 
 export interface Assistant {
@@ -127,7 +130,7 @@ async function readIndex(): Promise<ConversationMeta[]> {
 async function writeIndex(index: ConversationMeta[]): Promise<void> {
   await ensureDirs();
   const path = `${await convDir()}/index.json`;
-  await writeTextFile(path, JSON.stringify(index, null, 2));
+  await atomicWriteTextFile(path, JSON.stringify(index, null, 2));
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -152,10 +155,16 @@ export async function loadConversation(id: string): Promise<Conversation | null>
   }
 }
 
+async function atomicWriteTextFile(path: string, content: string): Promise<void> {
+  const tmpPath = `${path}.tmp`;
+  await writeTextFile(tmpPath, content);
+  await rename(tmpPath, path);
+}
+
 export async function saveConversation(conv: Conversation): Promise<void> {
   await ensureDirs();
   const path = `${await convDir()}/${conv.id}.json`;
-  await writeTextFile(path, JSON.stringify(conv, null, 2));
+  await atomicWriteTextFile(path, JSON.stringify(conv, null, 2));
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
 
   // Update index entry
@@ -180,6 +189,25 @@ export async function saveConversation(conv: Conversation): Promise<void> {
 
 const LS_DELETED_CONVERSATIONS_KEY = 'muse-deleted-conversations';
 
+async function tombstonesPath(): Promise<string> {
+  return `${await resolveDataRoot()}/tombstones.json`;
+}
+
+async function loadDiskTombstones(): Promise<Record<string, string>> {
+  try {
+    const path = await tombstonesPath();
+    if (!(await exists(path))) return {};
+    const raw = await readTextFile(path);
+    return JSON.parse(raw) as Record<string, string>;
+  } catch { return {} }
+}
+
+async function saveDiskTombstones(map: Record<string, string>): Promise<void> {
+  try {
+    await atomicWriteTextFile(await tombstonesPath(), JSON.stringify(map, null, 2));
+  } catch { /* ignore */ }
+}
+
 export function getDeletedConversations(): Record<string, string> {
   try { return JSON.parse(localStorage.getItem(LS_DELETED_CONVERSATIONS_KEY) ?? '{}') } catch { return {} }
 }
@@ -190,7 +218,10 @@ export function applyRemoteDeletedConversations(remote: Record<string, string>) 
   for (const [id, ts] of Object.entries(remote)) {
     if (!local[id] || ts > local[id]) { local[id] = ts; changed = true; }
   }
-  if (changed) localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(local));
+  if (changed) {
+    localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(local));
+    saveDiskTombstones(local);
+  }
 }
 
 export async function deleteConversation(id: string): Promise<void> {
@@ -204,6 +235,7 @@ export async function deleteConversation(id: string): Promise<void> {
   const map = getDeletedConversations();
   map[id] = new Date().toISOString();
   localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
+  saveDiskTombstones(map);
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
 }
 
@@ -221,6 +253,7 @@ export async function deleteConversations(ids: string[]): Promise<void> {
   const map = getDeletedConversations();
   for (const id of set) map[id] = now;
   localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
+  saveDiskTombstones(map);
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
 }
 
@@ -238,7 +271,10 @@ export function applyRemoteDeletedAssistants(remote: Record<string, string>) {
   for (const [id, ts] of Object.entries(remote)) {
     if (!local[id] || ts > local[id]) { local[id] = ts; changed = true; }
   }
-  if (changed) localStorage.setItem(LS_DELETED_ASSISTANTS_KEY, JSON.stringify(local));
+  if (changed) {
+    localStorage.setItem(LS_DELETED_ASSISTANTS_KEY, JSON.stringify(local));
+    saveDiskTombstones(local);
+  }
 }
 
 async function assistantsPath(): Promise<string> {
@@ -262,16 +298,17 @@ export async function saveAssistant(assistant: Assistant): Promise<void> {
   const idx  = list.findIndex(a => a.id === assistant.id);
   if (idx >= 0) list[idx] = assistant;
   else list.push(assistant);
-  await writeTextFile(await assistantsPath(), JSON.stringify(list, null, 2));
+  await atomicWriteTextFile(await assistantsPath(), JSON.stringify(list, null, 2));
   localStorage.setItem('muse-ts-assistants', new Date().toISOString());
 }
 
 export async function deleteAssistant(id: string): Promise<void> {
   const list = await listAssistants();
-  await writeTextFile(await assistantsPath(), JSON.stringify(list.filter(a => a.id !== id), null, 2));
+  await atomicWriteTextFile(await assistantsPath(), JSON.stringify(list.filter(a => a.id !== id), null, 2));
   const map = getDeletedAssistants();
   map[id] = new Date().toISOString();
   localStorage.setItem(LS_DELETED_ASSISTANTS_KEY, JSON.stringify(map));
+  saveDiskTombstones(map);
   localStorage.setItem('muse-ts-assistants', new Date().toISOString());
 }
 
@@ -285,3 +322,23 @@ export function buildPreview(messages: ChatMessage[]): string {
   const last = messages.filter(m => m.role === 'user').at(-1);
   return last ? last.content.slice(0, 80).replace(/\n/g, ' ') : '';
 }
+
+// ─── Tombstone recovery from disk ────────────────────────────────────────────
+// If localStorage tombstones were lost (e.g. browser data cleared), restore
+// them from the on-disk backup on module load.
+
+;(async () => {
+  try {
+    const disk = await loadDiskTombstones()
+    const conv = getDeletedConversations()
+    const ast  = getDeletedAssistants()
+    let changedConv = false
+    let changedAst  = false
+    for (const [id, ts] of Object.entries(disk)) {
+      if (!conv[id] || ts > conv[id]) { conv[id] = ts; changedConv = true }
+      if (!ast[id]  || ts > ast[id])  { ast[id]  = ts; changedAst  = true }
+    }
+    if (changedConv) localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(conv))
+    if (changedAst)  localStorage.setItem(LS_DELETED_ASSISTANTS_KEY, JSON.stringify(ast))
+  } catch { /* ignore */ }
+})()

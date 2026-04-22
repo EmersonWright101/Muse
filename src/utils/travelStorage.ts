@@ -59,6 +59,7 @@ export interface TravelNote {
   date: string
   cover: string
   content: string // raw markdown including frontmatter
+  updatedAt?: string
 }
 
 // ─── Frontmatter helpers ─────────────────────────────────────────────────────
@@ -100,16 +101,30 @@ function stringifyFrontmatter(note: TravelNote): string {
     `rating: ${note.rating}`,
     `date: ${note.date}`,
     `cover: ${note.cover || ''}`,
-    '---',
-    '',
-    note.content.replace(/^---[\s\S]*?---\s*\n?/, '').trimStart(),
   ]
+  if (note.updatedAt) lines.push(`updatedAt: ${note.updatedAt}`)
+  lines.push('---', '', note.content.replace(/^---[\s\S]*?---\s*\n?/, '').trimStart())
   return lines.join('\n')
 }
 
 function buildPreview(body: string): string {
   const firstLine = body.split('\n').find(l => l.trim()) ?? ''
   return firstLine.slice(0, 80).trim()
+}
+
+const LS_DELETED_TRAVEL_KEY = 'muse-deleted-travel-notes'
+
+export function getDeletedTravelNotes(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(LS_DELETED_TRAVEL_KEY) ?? '{}') } catch { return {} }
+}
+
+export function applyRemoteDeletedTravelNotes(remote: Record<string, string>) {
+  const local = getDeletedTravelNotes()
+  let changed = false
+  for (const [id, ts] of Object.entries(remote)) {
+    if (!local[id] || ts > local[id]) { local[id] = ts; changed = true }
+  }
+  if (changed) localStorage.setItem(LS_DELETED_TRAVEL_KEY, JSON.stringify(local))
 }
 
 const TRAVEL_EMOJIS = [
@@ -165,7 +180,7 @@ export async function listTravelNotes(): Promise<TravelNoteMeta[]> {
         date: meta.date ?? new Date().toISOString().slice(0, 10),
         cover,
         preview: buildPreview(body),
-        updatedAt: meta.date ?? new Date().toISOString(),
+        updatedAt: meta.updatedAt ?? meta.date ?? new Date().toISOString(),
       })
     } catch {
       // skip malformed files
@@ -192,6 +207,7 @@ export async function loadTravelNote(id: string): Promise<TravelNote | null> {
       date: meta.date ?? new Date().toISOString().slice(0, 10),
       cover,
       content: raw,
+      updatedAt: meta.updatedAt ?? meta.date ?? new Date().toISOString(),
     }
   } catch {
     return null
@@ -201,7 +217,9 @@ export async function loadTravelNote(id: string): Promise<TravelNote | null> {
 export async function saveTravelNote(note: TravelNote): Promise<void> {
   await ensureDir()
   const path = await notePath(note.id)
+  note.updatedAt = new Date().toISOString()
   await writeTextFile(path, stringifyFrontmatter(note))
+  localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
 }
 
 export async function deleteTravelNote(id: string): Promise<void> {
@@ -209,6 +227,10 @@ export async function deleteTravelNote(id: string): Promise<void> {
     const path = await notePath(id)
     if (await exists(path)) await remove(path)
   } catch { /* ignore */ }
+  const map = getDeletedTravelNotes()
+  map[id] = new Date().toISOString()
+  localStorage.setItem(LS_DELETED_TRAVEL_KEY, JSON.stringify(map))
+  localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
 }
 
 export async function listCategories(): Promise<string[]> {

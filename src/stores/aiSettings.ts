@@ -9,10 +9,26 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 import { encryptLocal, decryptLocal } from '../utils/crypto'
+import { resolveDataRoot } from '../utils/path'
+import { writeTextFile, rename } from '@tauri-apps/plugin-fs'
 
 const LS_KEY             = 'muse-ai-settings'
 const LS_DELETED_KEY     = 'muse-deleted-providers'
 export const LS_MODIFIED_AT_KEY = 'muse-ai-settings-modified-at'
+export const DEBOUNCE_MS = 300
+
+async function tombstonesPath(): Promise<string> {
+  return `${await resolveDataRoot()}/provider-tombstones.json`
+}
+
+async function saveProviderTombstones(map: Record<string, string>): Promise<void> {
+  try {
+    const path = await tombstonesPath()
+    const tmp = `${path}.tmp`
+    await writeTextFile(tmp, JSON.stringify(map, null, 2))
+    await rename(tmp, path)
+  } catch { /* ignore */ }
+}
 
 // Tombstone helpers — record provider deletions for cross-device sync
 export function getDeletedProviders(): Record<string, string> {
@@ -22,6 +38,7 @@ function recordProviderDeletion(id: string) {
   const map = getDeletedProviders()
   map[id] = new Date().toISOString()
   localStorage.setItem(LS_DELETED_KEY, JSON.stringify(map))
+  saveProviderTombstones(map)
 }
 export function applyRemoteDeletedProviders(remote: Record<string, string>) {
   const local = getDeletedProviders()
@@ -29,7 +46,10 @@ export function applyRemoteDeletedProviders(remote: Record<string, string>) {
   for (const [id, ts] of Object.entries(remote)) {
     if (!local[id] || ts > local[id]) { local[id] = ts; changed = true }
   }
-  if (changed) localStorage.setItem(LS_DELETED_KEY, JSON.stringify(local))
+  if (changed) {
+    localStorage.setItem(LS_DELETED_KEY, JSON.stringify(local))
+    saveProviderTombstones(local)
+  }
 }
 
 export interface AIModel {
@@ -39,10 +59,34 @@ export interface AIModel {
   multimodal?:   boolean;  // supports image/video INPUT
   reasoning?:    boolean;  // is a reasoning/thinking model
   imageOutput?:  boolean;  // generates images as output
+  audio?:        boolean;  // supports audio input
+  video?:        boolean;  // supports video input
+  inputPrice?:   number;   // per 1M input tokens (in priceCurrency)
+  outputPrice?:  number;   // per 1M output tokens (in priceCurrency)
+  priceCurrency?: 'usd' | 'cny';
 }
 
 /** Infer model capabilities from model ID and optional OpenRouter modality string. */
-export function inferModelCaps(modelId: string, openRouterModality?: string): Partial<Pick<AIModel, 'multimodal' | 'reasoning' | 'imageOutput'>> {
+const EXCHANGE_RATE_CNY_TO_USD = 7.2
+
+export function calculateModelCost(
+  providers: AIProvider[],
+  providerId: string,
+  modelId: string,
+  inputTokens?: number,
+  outputTokens?: number,
+): number | undefined {
+  const provider = providers.find(p => p.id === providerId)
+  const model = provider?.models.find(m => m.id === modelId)
+  if (!model) return undefined
+  if (model.inputPrice == null && model.outputPrice == null) return undefined
+  const rate = model.priceCurrency === 'cny' ? EXCHANGE_RATE_CNY_TO_USD : 1
+  const inputCost = ((inputTokens ?? 0) / 1_000_000) * (model.inputPrice ?? 0) / rate
+  const outputCost = ((outputTokens ?? 0) / 1_000_000) * (model.outputPrice ?? 0) / rate
+  return inputCost + outputCost
+}
+
+export function inferModelCaps(modelId: string, openRouterModality?: string): Partial<Pick<AIModel, 'multimodal' | 'reasoning' | 'imageOutput' | 'audio' | 'video'>> {
   const id = modelId.toLowerCase()
   const reasoning = /\bo[1-9](-|$)|\bo4|deepseek-r[0-9]|qwq|thinking|reflect|reasoner/.test(id)
   if (openRouterModality) {
@@ -50,11 +94,14 @@ export function inferModelCaps(modelId: string, openRouterModality?: string): Pa
       multimodal:  openRouterModality.includes('image') && openRouterModality.includes('->text'),
       imageOutput: openRouterModality.includes('->image'),
       reasoning,
+      video:       openRouterModality.includes('->video') || openRouterModality.includes('video'),
     }
   }
   const imageOutput = /dall-e|imagen|gpt-image|gpt-5-image|flux|stable-diff|sd-|midj/.test(id)
   const multimodal  = !imageOutput && /vision|gpt-4o|claude-3|gemini|llava|pixtral|qwen-vl|intern-vl|phi.*vision|cogvlm|minicpm-v/.test(id)
-  return { multimodal, imageOutput, reasoning }
+  const audio       = /whisper|tts|audio|speech/.test(id)
+  const video       = /video|sora/.test(id)
+  return { multimodal, imageOutput, reasoning, audio, video }
 }
 
 export interface AIProvider {
@@ -119,7 +166,7 @@ interface PersistedProvider {
   baseUrl:         string;
   enabled:         boolean;
   selectedModelId: string;
-  customModels?:   AIModel[];
+  customModels?:   AIModel[];  // kept for backward compatibility
   updatedAt?:      string;
 }
 
@@ -148,7 +195,7 @@ async function saveToStorage(
         baseUrl:         p.baseUrl,
         enabled:         p.enabled,
         selectedModelId: p.selectedModelId,
-        customModels:    p.type === 'custom' ? p.models : undefined,
+        customModels:    p.models,
         updatedAt:       p.updatedAt,
       })
     }
@@ -279,7 +326,7 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
   let _persistTimer: ReturnType<typeof setTimeout> | null = null
   function persist() {
     if (_persistTimer) clearTimeout(_persistTimer)
-    _persistTimer = setTimeout(() => saveToStorage(activeProviderId.value, providers.value), 300)
+    _persistTimer = setTimeout(() => saveToStorage(activeProviderId.value, providers.value), DEBOUNCE_MS)
   }
 
   // Load persisted settings on init
@@ -320,7 +367,19 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
         p.enabled         = sp.enabled
         p.selectedModelId = sp.selectedModelId || p.selectedModelId
         p.updatedAt       = sp.updatedAt
-        if (sp.customModels?.length) p.models = sp.customModels
+        if (sp.customModels?.length) {
+          if (p.type === 'custom') {
+            p.models = sp.customModels
+          } else {
+            // Merge saved prices into hardcoded defaults
+            const savedMap = new Map(sp.customModels.map(m => [m.id, m]))
+            p.models = p.models.map(m => {
+              const saved = savedMap.get(m.id)
+              if (!saved) return m
+              return { ...m, inputPrice: saved.inputPrice, outputPrice: saved.outputPrice }
+            })
+          }
+        }
         if (sp.apiKeyEnc) {
           try { p.apiKey = await decryptLocal(sp.apiKeyEnc) } catch { /* skip */ }
         }

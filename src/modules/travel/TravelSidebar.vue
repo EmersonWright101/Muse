@@ -1,37 +1,103 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Search, Plus, MapPin } from 'lucide-vue-next'
+import { Search, Plus, Star, FileText, ChevronDown, MapPin } from 'lucide-vue-next'
+import { useTravelStore } from '../../stores/travel'
+import { initImageAssetBase, resolveImageUrl } from '../../utils/imageAsset'
 
 const { t } = useI18n()
+const store = useTravelStore()
 
-const selectedEntry = ref(1)
-const searchQuery = ref('')
+const hasEntries = computed(() => store.notes.length > 0)
+const categories = computed(() => store.categories)
 
-const entries = ref([
-  { id: 1, title: '日本·东京', preview: '在新宿的街道上漫无目的地走着...', date: '2024-03', cover: '🗼' },
-  { id: 2, title: '法国·巴黎', preview: '傍晚的埃菲尔铁塔在夕阳下发光...', date: '2023-09', cover: '🗽' },
-  { id: 3, title: '美国·纽约', preview: '时代广场的霓虹灯让人目不暇接...', date: '2023-06', cover: '🌆' },
-  { id: 4, title: '意大利·罗马', preview: '每一块石头都是一段历史...', date: '2023-04', cover: '🏛️' },
-  { id: 5, title: '泰国·清迈', preview: '古城区的庙宇金光闪闪...', date: '2022-12', cover: '🌸' },
-])
+initImageAssetBase()
+
+function onEntryClick(id: string) {
+  store.openNote(id)
+}
+
+function onNewEntry() {
+  store.newNote()
+}
+
+// ─── Category picker dropdown ────────────────────────────────────────────────
+
+const pickerOpen = ref(false)
+const pickerRoot = ref<HTMLElement>()
+
+function handlePickerOutside(e: MouseEvent) {
+  if (pickerRoot.value && !pickerRoot.value.contains(e.target as Node)) {
+    pickerOpen.value = false
+  }
+}
+
+onMounted(() => document.addEventListener('mousedown', handlePickerOutside))
+onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside))
+
+function selectCategory(cat: string) {
+  store.selectedCategory = cat
+  pickerOpen.value = false
+}
+
+function clearCategory() {
+  store.selectedCategory = ''
+  pickerOpen.value = false
+}
 </script>
 
 <template>
   <div class="travel-sidebar">
     <!-- Header -->
     <div class="panel-header">
-      <h2 class="panel-title">{{ t('travel.title') }}</h2>
-      <button class="icon-btn" :title="t('travel.newEntry')">
-        <Plus :size="15" />
-      </button>
+      <div ref="pickerRoot" class="category-picker">
+        <button class="picker-btn" @click="pickerOpen = !pickerOpen">
+          <span class="picker-label">{{ store.selectedCategory || t('travel.title') }}</span>
+          <ChevronDown :size="11" class="picker-chevron" :class="{ rotated: pickerOpen }" />
+        </button>
+        <Transition name="picker-drop">
+          <div v-if="pickerOpen" class="picker-dropdown">
+            <button
+              class="picker-item"
+              :class="{ active: !store.selectedCategory }"
+              @click="clearCategory"
+            >
+              <span class="picker-item-name">{{ t('travel.title') }}</span>
+            </button>
+            <div v-if="categories.length" class="picker-divider" />
+            <button
+              v-for="cat in categories"
+              :key="cat"
+              class="picker-item"
+              :class="{ active: store.selectedCategory === cat }"
+              @click="selectCategory(cat)"
+            >
+              <span class="picker-item-name">{{ cat }}</span>
+            </button>
+          </div>
+        </Transition>
+      </div>
+
+      <div class="header-actions">
+        <button
+          v-if="store.viewMode === 'editor'"
+          class="icon-btn"
+          :title="t('travel.mapView')"
+          @click="store.viewMode = 'map'"
+        >
+          <MapPin :size="15" />
+        </button>
+        <button class="icon-btn" :title="t('travel.newEntry')" @click="onNewEntry">
+          <Plus :size="15" />
+        </button>
+      </div>
     </div>
 
     <!-- Search -->
     <div class="search-bar">
       <Search :size="13" class="search-icon" />
       <input
-        v-model="searchQuery"
+        v-model="store.searchQuery"
         class="search-input"
         :placeholder="t('travel.search')"
         type="text"
@@ -40,20 +106,52 @@ const entries = ref([
 
     <!-- Entries list -->
     <div class="list-scroll">
+      <!-- Empty state -->
+      <div v-if="!hasEntries" class="empty-state">
+        <FileText :size="32" class="empty-icon" />
+        <p class="empty-text">{{ t('travel.noEntries') }}</p>
+        <button class="empty-action" @click="onNewEntry">
+          <Plus :size="13" />
+          {{ t('travel.newEntry') }}
+        </button>
+      </div>
+
+      <!-- No search results -->
+      <div v-else-if="!store.filteredNotes.length" class="empty-state">
+        <Search :size="28" class="empty-icon" />
+        <p class="empty-text">{{ t('travel.noResults') }}</p>
+      </div>
+
+      <!-- List -->
       <div
-        v-for="entry in entries"
+        v-for="entry in store.filteredNotes"
         :key="entry.id"
         class="list-item"
-        :class="{ active: selectedEntry === entry.id }"
-        @click="selectedEntry = entry.id"
+        :class="{ active: store.activeNoteId === entry.id }"
+        @click="onEntryClick(entry.id)"
       >
-        <div class="item-cover">{{ entry.cover }}</div>
+        <div class="item-cover">
+          <img
+            v-if="entry.cover && (entry.cover.startsWith('http') || entry.cover.startsWith('/') || entry.cover.includes('.'))"
+            :src="resolveImageUrl(entry.cover)"
+            class="cover-img"
+            alt=""
+          />
+          <span v-else>{{ entry.cover || '📍' }}</span>
+        </div>
         <div class="item-content">
           <div class="item-title">{{ entry.title }}</div>
-          <div class="item-preview">{{ entry.preview }}</div>
-          <div class="item-date">
-            <MapPin :size="10" />
-            {{ entry.date }}
+          <div class="item-preview">{{ entry.preview || t('travel.noPreview') }}</div>
+          <div class="item-meta-row">
+            <span class="item-category" v-if="entry.category">{{ entry.category }}</span>
+            <span class="item-rating" v-if="entry.rating > 0">
+              <Star :size="9" class="star-icon" />
+              {{ entry.rating }}
+            </span>
+            <span class="item-date">
+              <MapPin :size="10" />
+              {{ entry.date }}
+            </span>
           </div>
         </div>
       </div>
@@ -68,9 +166,9 @@ const entries = ref([
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: rgba(235, 235, 235, 0.85);
-  backdrop-filter: blur(40px) saturate(1.8);
-  -webkit-backdrop-filter: blur(40px) saturate(1.8);
+  background: rgba(240, 240, 242, 0.45);
+  backdrop-filter: blur(60px) saturate(2);
+  -webkit-backdrop-filter: blur(60px) saturate(2);
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 2px 16px rgba(0, 0, 0, 0.10), 0 0 0 0.5px rgba(255, 255, 255, 0.6) inset;
@@ -78,7 +176,7 @@ const entries = ref([
 
 .panel-header {
   height: 52px;
-  padding: 0 14px;
+  padding: 0 10px 0 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -86,11 +184,107 @@ const entries = ref([
   flex-shrink: 0;
 }
 
-.panel-title {
+/* ─── Category picker dropdown ────────────────────────────────────────────── */
+
+.category-picker {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.picker-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 8px 0 6px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  max-width: 140px;
+  transition: background 0.12s;
+}
+
+.picker-btn:hover { background: rgba(0, 0, 0, 0.06); }
+
+.picker-label {
   font-size: 14px;
   font-weight: 600;
   color: #1c1c1e;
-  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.picker-chevron {
+  color: #8e8e93;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+
+.picker-chevron.rotated { transform: rotate(180deg); }
+
+.picker-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 160px;
+  background: rgba(250, 250, 252, 0.96);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  padding: 5px;
+  z-index: 50;
+}
+
+.picker-divider {
+  height: 1px;
+  background: rgba(0, 0, 0, 0.07);
+  margin: 4px 4px;
+}
+
+.picker-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.10s;
+}
+
+.picker-item:hover { background: rgba(0, 0, 0, 0.05); }
+.picker-item.active { background: rgba(34, 63, 121, 0.08); }
+.picker-item.active .picker-item-name { color: #223F79; }
+
+.picker-item-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #1c1c1e;
+}
+
+/* Transition */
+.picker-drop-enter-active, .picker-drop-leave-active {
+  transition: opacity 0.12s, transform 0.12s;
+}
+.picker-drop-enter-from, .picker-drop-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+/* ─── Header actions ──────────────────────────────────────────────────────── */
+
+.header-actions {
+  display: flex;
+  gap: 2px;
+  align-items: center;
 }
 
 .icon-btn {
@@ -111,6 +305,13 @@ const entries = ref([
   background: rgba(0, 0, 0, 0.06);
   color: #3c3c43;
 }
+
+.icon-btn.active {
+  background: rgba(34, 63, 121, 0.10);
+  color: #223F79;
+}
+
+/* ─── Search ──────────────────────────────────────────────────────────────── */
 
 .search-bar {
   margin: 10px 12px 8px;
@@ -141,6 +342,8 @@ const entries = ref([
 .search-input::placeholder {
   color: #8e8e93;
 }
+
+/* ─── List ────────────────────────────────────────────────────────────────── */
 
 .list-scroll {
   flex: 1;
@@ -190,6 +393,13 @@ const entries = ref([
   align-items: center;
   justify-content: center;
   line-height: 1;
+  overflow: hidden;
+}
+
+.cover-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .item-content {
@@ -220,11 +430,79 @@ const entries = ref([
   text-overflow: ellipsis;
 }
 
+.item-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.item-category {
+  font-size: 10px;
+  color: #223F79;
+  background: rgba(34, 63, 121, 0.08);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.item-rating {
+  font-size: 10px;
+  color: #ff9500;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.star-icon {
+  fill: #ff9500;
+}
+
 .item-date {
   font-size: 10px;
   color: #aeaeb2;
   display: flex;
   align-items: center;
   gap: 3px;
+}
+
+/* Empty state */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 16px;
+  gap: 10px;
+  text-align: center;
+}
+
+.empty-icon {
+  color: #c7c7cc;
+}
+
+.empty-text {
+  font-size: 13px;
+  color: #8e8e93;
+  margin: 0;
+}
+
+.empty-action {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(34, 63, 121, 0.10);
+  color: #223F79;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.empty-action:hover {
+  background: rgba(34, 63, 121, 0.18);
 }
 </style>

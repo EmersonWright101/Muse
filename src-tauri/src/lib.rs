@@ -1,3 +1,5 @@
+use tauri::Manager;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default()
@@ -15,6 +17,16 @@ pub fn run() {
     }
 
     builder
+        .setup(|app| {
+            #[cfg(desktop)]
+            {
+                if let Ok(dir) = app.path().app_local_data_dir() {
+                    let travel_notes = dir.join("muse").join("travel_notes");
+                    let _ = app.asset_protocol_scope().allow_directory(&travel_notes, true);
+                }
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

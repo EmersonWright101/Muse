@@ -1,9 +1,15 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
+import { useRoute } from 'vue-router'
+import { useTravelStore } from './stores/travel'
 import TitleBar from './components/TitleBar.vue'
 import AppSidebar from './components/AppSidebar.vue'
 
 const showPanel = ref(true)
+const route = useRoute()
+const travel = useTravelStore()
+
+const panelFloats = computed(() => route.path === '/travel' && travel.viewMode === 'map')
 </script>
 
 <template>
@@ -15,7 +21,7 @@ const showPanel = ref(true)
     <div class="app-right">
       <TitleBar :panel-visible="showPanel" @toggle="showPanel = !showPanel" />
 
-      <div class="content-area">
+      <div class="content-area" :class="{ 'panel-floats': panelFloats }">
         <Transition name="panel-slide">
           <div v-show="showPanel" class="panel-column">
             <router-view name="sidebar" />
@@ -85,6 +91,21 @@ body {
   min-height: 0;
   background: #ffffff;
   overflow: hidden;
+  position: relative;
+}
+
+/* Floating panel for travel map view */
+.content-area.panel-floats .panel-column {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.content-area.panel-floats .panel-column > * {
+  pointer-events: auto;
 }
 
 /* Floating panel wrapper */

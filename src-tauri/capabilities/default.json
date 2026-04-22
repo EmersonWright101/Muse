@@ -15,8 +15,16 @@
     "fs:allow-mkdir",
     "fs:allow-remove",
     "fs:allow-exists",
+    "fs:allow-copy-file",
     "fs:scope-download-recursive",
     "dialog:allow-save",
+    "dialog:allow-open",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "**" }
+      ]
+    },
     "http:default",
     {
       "identifier": "http:allow-fetch",

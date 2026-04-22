@@ -7,7 +7,6 @@
  *   attachments/{convId}/{file} — image/file attachments
  */
 
-import { appLocalDataDir } from '@tauri-apps/api/path';
 import {
   readTextFile,
   writeTextFile,
@@ -15,6 +14,7 @@ import {
   mkdir,
   remove,
 } from '@tauri-apps/plugin-fs';
+import { resolveDataRoot, conversationsDir } from './path';
 
 export interface AttachmentMeta {
   id:       string;
@@ -102,18 +102,8 @@ export interface ConversationMeta {
 
 // ─── Paths ───────────────────────────────────────────────────────────────────
 
-let _dataDir: string | null = null;
-
-async function dataDir(): Promise<string> {
-  if (!_dataDir) {
-    const base = await appLocalDataDir();
-    _dataDir   = base.replace(/[/\\]+$/, '') + '/muse';
-  }
-  return _dataDir;
-}
-
 async function convDir(): Promise<string> {
-  return `${await dataDir()}/conversations`;
+  return conversationsDir();
 }
 
 async function ensureDirs(): Promise<void> {
@@ -252,7 +242,7 @@ export function applyRemoteDeletedAssistants(remote: Record<string, string>) {
 }
 
 async function assistantsPath(): Promise<string> {
-  return `${await dataDir()}/assistants.json`;
+  return `${await resolveDataRoot()}/assistants.json`;
 }
 
 export async function listAssistants(): Promise<Assistant[]> {

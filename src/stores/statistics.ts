@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { listConversations, loadConversation, type ChatMessage, type Conversation, type ConversationMeta } from '../utils/storage'
 import { useAiSettingsStore } from './aiSettings'
-import { appLocalDataDir } from '@tauri-apps/api/path'
+import { resolveDataRoot } from '../utils/path'
 import { readTextFile, writeTextFile, exists, mkdir } from '@tauri-apps/plugin-fs'
 
 export type TimeRange = 'today' | 'week' | 'month' | 'year'
@@ -87,9 +87,7 @@ interface StatsCache {
 }
 
 async function getStatsCachePath(): Promise<string> {
-  const base = await appLocalDataDir()
-  const dataDir = base.replace(/[/\\]+$/, '') + '/muse'
-  return `${dataDir}/stats-cache.json`
+  return `${await resolveDataRoot()}/stats-cache.json`
 }
 
 async function readStatsCache(): Promise<StatsCache | null> {
@@ -248,6 +246,70 @@ export const useStatisticsStore = defineStore('statistics', () => {
 
   const rankedModels = computed(() => {
     return sortedModelStats.value.map((m, idx) => ({ ...m, rank: idx + 1 }))
+  })
+
+  // ─── Time-filtered model stats (for ranking & model distribution) ───────────
+
+  function getCutoffDate(range: TimeRange): Date {
+    const now = new Date()
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    let cutoff = new Date(today)
+    if (range === 'today') cutoff = today
+    else if (range === 'week') cutoff.setDate(cutoff.getDate() - 6)
+    else if (range === 'month') cutoff.setDate(cutoff.getDate() - 29)
+    else if (range === 'year') cutoff.setMonth(cutoff.getMonth() - 11)
+    return cutoff
+  }
+
+  const filteredModelStats = computed(() => {
+    const cutoff = getCutoffDate(timeRange.value)
+    const modelMap = new Map<string, ModelStat>()
+    const infoMap = new Map(modelStats.value.map(m => [m.modelId, { provider: m.provider, modelName: m.modelName }]))
+
+    for (const d of dailyStatsAll.value) {
+      const dt = new Date(d.date + 'T00:00:00')
+      if (dt < cutoff) continue
+
+      for (const dm of d.models) {
+        const existing = modelMap.get(dm.modelId)
+        if (existing) {
+          existing.inputTokens += dm.inputTokens
+          existing.outputTokens += dm.outputTokens
+          existing.totalTokens += dm.totalTokens
+          existing.uploadsMB += dm.uploadsMB
+          existing.downloadsMB += dm.downloadsMB
+          existing.cost += dm.cost
+          existing.requests += dm.requests
+        } else {
+          const info = infoMap.get(dm.modelId)
+          modelMap.set(dm.modelId, {
+            modelId: dm.modelId,
+            modelName: dm.modelName || info?.modelName || getModelDisplayName(dm.modelId),
+            provider: info?.provider || getProviderDisplayName('unknown', dm.modelId),
+            inputTokens: dm.inputTokens,
+            outputTokens: dm.outputTokens,
+            totalTokens: dm.totalTokens,
+            uploadsMB: dm.uploadsMB,
+            downloadsMB: dm.downloadsMB,
+            cost: dm.cost,
+            requests: dm.requests,
+          })
+        }
+      }
+    }
+
+    return Array.from(modelMap.values()).filter(m => m.requests > 0)
+  })
+
+  const filteredSortedModelStats = computed(() => {
+    const list = [...filteredModelStats.value]
+    const keyMap: Record<SortBy, keyof ModelStat> = { tokens: 'totalTokens', cost: 'cost', requests: 'requests' }
+    const key = keyMap[sortBy.value]
+    return list.sort((a, b) => (b[key] as number) - (a[key] as number))
+  })
+
+  const filteredRankedModels = computed(() => {
+    return filteredSortedModelStats.value.map((m, idx) => ({ ...m, rank: idx + 1 }))
   })
 
   function aggregateConversation(conv: Conversation, meta: ConversationMeta): CachedConvStat {
@@ -537,6 +599,9 @@ export const useStatisticsStore = defineStore('statistics', () => {
     hasData,
     sortedModelStats,
     rankedModels,
+    filteredModelStats,
+    filteredSortedModelStats,
+    filteredRankedModels,
     loadStats,
     setTimeRange,
     setSortBy,

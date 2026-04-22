@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useStatisticsStore, type SortBy, getModelColor } from '../../../stores/statistics'
 import ModelIcon from '../components/ModelIcon.vue'
+import TimeRangeSelector from '../components/TimeRangeSelector.vue'
 import EmptyState from '../components/EmptyState.vue'
 import { Hash, Wallet, Zap } from 'lucide-vue-next'
 
@@ -15,7 +16,7 @@ const sortOptions: { key: SortBy; label: string; icon: typeof Hash }[] = [
   { key: 'requests', label: '请求数', icon: Zap },
 ]
 
-const ranked = computed(() => stats.rankedModels)
+const ranked = computed(() => stats.filteredRankedModels)
 
 function formatNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
@@ -25,7 +26,7 @@ function formatNumber(n: number): string {
 
 const maxValue = computed(() => {
   const key = keyMap[stats.sortBy]
-  return Math.max(...stats.modelStats.map(m => m[key] as number), 1)
+  return Math.max(...stats.filteredModelStats.map(m => m[key] as number), 1)
 })
 </script>
 
@@ -40,6 +41,7 @@ const maxValue = computed(() => {
     <template v-else>
       <div class="tab-header">
         <h2 class="tab-title">排行榜</h2>
+        <TimeRangeSelector />
       </div>
 
       <div class="sort-bar">
@@ -55,7 +57,10 @@ const maxValue = computed(() => {
         </button>
       </div>
 
-      <div class="rank-list">
+      <div v-if="ranked.length === 0" class="no-range-data">
+        该时间段暂无数据，尝试切换其他时间范围
+      </div>
+      <div v-else class="rank-list">
         <div v-for="m in ranked" :key="m.modelId" class="rank-item">
           <ModelIcon :model-id="m.modelId" :size="32" />
 
@@ -248,5 +253,15 @@ const maxValue = computed(() => {
 .stat-label {
   font-size: 10px;
   color: #8e8e93;
+}
+
+.no-range-data {
+  padding: 48px 20px;
+  text-align: center;
+  font-size: 13px;
+  color: #8e8e93;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 12px;
+  border: 1px dashed rgba(0, 0, 0, 0.08);
 }
 </style>

@@ -42,3 +42,45 @@ export const useChatSettingsStore = defineStore('chatSettings', () => {
 
   return { titleGenProviderId, titleGenModelId, titleGenPrompt, temperature, maxTokens }
 })
+
+// ─── Sync module ─────────────────────────────────────────────────────────────
+
+import { syncService } from '../services/sync'
+import type { SyncModule } from '../services/sync/types'
+
+const MOD_CHAT_SET = 'chatSettings'
+
+const chatSettingsSyncModule: SyncModule = {
+  id: MOD_CHAT_SET,
+  remoteDirs: ['settings'],
+  getLocalTimestamp() {
+    return localStorage.getItem(LS_MODIFIED_AT_KEY) ?? new Date(0).toISOString()
+  },
+  async sync(ctx, localChanged) {
+    ctx.setProgress('同步对话设置…')
+    const path = ctx.rp('settings/chat_settings.enc')
+    const raw = localStorage.getItem(LS_KEY)
+    const localData = raw ? JSON.parse(raw) : {}
+
+    const remoteData = await ctx.getEncrypted<Record<string, unknown> | null>(path, null)
+
+    if (!remoteData) {
+      if (localChanged && Object.keys(localData).length > 0) {
+        await ctx.putEncrypted(path, localData)
+      }
+      return
+    }
+
+    const localTs = await this.getLocalTimestamp()
+    const remoteTs = (remoteData as Record<string, unknown> & { __syncTs?: string }).__syncTs ?? new Date(0).toISOString()
+
+    if (remoteTs > localTs) {
+      localStorage.setItem(LS_KEY, JSON.stringify(remoteData))
+    }
+
+    if (!localChanged) return
+    await ctx.putEncrypted(path, { ...localData, __syncTs: new Date().toISOString() })
+  },
+}
+
+syncService.register(chatSettingsSyncModule)

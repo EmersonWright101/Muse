@@ -326,6 +326,55 @@ export function buildPreview(messages: ChatMessage[]): string {
   return last ? last.content.slice(0, 80).replace(/\n/g, ' ') : '';
 }
 
+// ─── Sync merge helpers ──────────────────────────────────────────────────────
+
+export function mergeVariants(
+  local?: MessageVariant[],
+  remote?: MessageVariant[],
+): MessageVariant[] | undefined {
+  if (!local?.length && !remote?.length) return undefined
+  if (!remote?.length) return local
+  if (!local?.length) return remote
+  const map = new Map<string, MessageVariant>()
+  for (const v of local) map.set(v.id, v)
+  for (const v of remote) { if (!map.has(v.id)) map.set(v.id, v) }
+  return [...map.values()]
+}
+
+export function mergeMessages(local: ChatMessage[], remote: ChatMessage[]): ChatMessage[] {
+  const map = new Map<string, ChatMessage>()
+  for (const msg of local) map.set(msg.id, msg)
+  for (const msg of remote) {
+    const existing = map.get(msg.id)
+    if (!existing) {
+      map.set(msg.id, msg)
+    } else {
+      const base = msg.timestamp > existing.timestamp ? msg : existing
+      const variants = mergeVariants(existing.variants, msg.variants)
+      map.set(msg.id, variants ? { ...base, variants } : base)
+    }
+  }
+  return [...map.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+}
+
+export function mergeConversation(
+  local: Conversation, remote: Conversation,
+): { merged: Conversation; localChanged: boolean; remoteChanged: boolean } {
+  const messages = mergeMessages(local.messages, remote.messages)
+  const newerIsRemote = remote.updatedAt > local.updatedAt
+  const base = newerIsRemote ? remote : local
+  const merged: Conversation = { ...base, messages }
+
+  const localChanged = messages.length !== local.messages.length
+    || merged.updatedAt !== local.updatedAt
+    || merged.title !== local.title
+  const remoteChanged = messages.length !== remote.messages.length
+    || merged.updatedAt !== remote.updatedAt
+    || merged.title !== remote.title
+
+  return { merged, localChanged, remoteChanged }
+}
+
 // ─── Tombstone recovery from disk ────────────────────────────────────────────
 // If localStorage tombstones were lost (e.g. browser data cleared), restore
 // them from the on-disk backup on module load.

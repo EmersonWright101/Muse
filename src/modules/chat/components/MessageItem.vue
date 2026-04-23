@@ -60,7 +60,7 @@ hljs.registerLanguage('rb', ruby)
 hljs.registerLanguage('php', php)
 hljs.registerLanguage('r', r)
 import DOMPurify from 'dompurify'
-import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Maximize2, Minimize2, Bot, AtSign, Download, Clock, ThumbsUp, ThumbsDown } from 'lucide-vue-next'
+import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Maximize2, Minimize2, Bot, AtSign, Download, Clock, ThumbsUp, ThumbsDown, Trash2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import type { ChatMessage } from '../../../stores/chat'
 import { useChatStore } from '../../../stores/chat'
@@ -187,6 +187,32 @@ const providerDisplayName = computed(() =>
 // The currently displayed response: idx 0 = original message, 1+ = variants[idx-1]
 const activeVariantIdx = computed(() => props.message.activeVariantIdx ?? 0)
 
+// ─── Variant context menu ────────────────────────────────────────────────────
+const variantMenuOpen = ref(false)
+const variantMenuIdx = ref(0)
+const variantMenuPos = ref({ x: 0, y: 0 })
+
+function openVariantMenu(e: MouseEvent, idx: number) {
+  variantMenuIdx.value = idx
+  variantMenuPos.value = { x: e.clientX, y: e.clientY }
+  variantMenuOpen.value = true
+}
+
+function closeVariantMenu() {
+  variantMenuOpen.value = false
+}
+
+function confirmDeleteVariant() {
+  const idx = variantMenuIdx.value
+  if (idx > 0 && confirm('确定要删除这个模型的回答吗？')) {
+    chat.deleteVariant(props.message.id, idx)
+  }
+  variantMenuOpen.value = false
+}
+
+onMounted(() => document.addEventListener('click', closeVariantMenu))
+onUnmounted(() => document.removeEventListener('click', closeVariantMenu))
+
 const activeVariantData = computed(() => {
   const idx = activeVariantIdx.value
   if (idx === 0 || !props.message.variants?.length) return null
@@ -205,7 +231,11 @@ const displayedModel      = computed(() => activeVariantData.value?.model      ?
 const displayedProviderId = computed(() => activeVariantData.value?.providerId ?? props.message.providerId ?? '')
 const displayedContent    = computed(() => activeVariantData.value?.content    ?? props.message.content    ?? '')
 const displayedUsage      = computed(() => activeVariantData.value?.usage      ?? props.message.usage)
-const displayedReasoning  = computed(() => activeVariantData.value?.reasoning  ?? props.message.reasoning)
+const displayedReasoning  = computed(() => {
+  const idx = activeVariantIdx.value
+  if (idx === 0 || !props.message.variants?.length) return props.message.reasoning
+  return activeVariantData.value?.reasoning
+})
 const displayedError      = computed(() => activeVariantData.value?.error      ?? props.message.error)
 const displayedFeedback   = computed(() => activeVariantData.value?.feedback   ?? props.message.feedback   ?? null)
 
@@ -578,6 +608,7 @@ function showSaveToast(msg: string) {
               streaming: chat.streamingVariantMsgId === message.id && activeVariantIdx === idx && idx > 0
             }"
             @click="chat.setActiveVariant(message.id, idx)"
+            @contextmenu.prevent="openVariantMenu($event, idx)"
           >
             <img
               v-if="lookupLogoUrl(slot.model, slot.providerId)"
@@ -591,6 +622,19 @@ function showSaveToast(msg: string) {
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- Variant context menu -->
+  <div
+    v-if="variantMenuOpen"
+    class="variant-context-menu"
+    :style="{ left: variantMenuPos.x + 'px', top: variantMenuPos.y + 'px' }"
+    @click.stop
+  >
+    <button class="variant-menu-item delete" @click="confirmDeleteVariant">
+      <Trash2 :size="14" />
+      <span>删除此回答</span>
+    </button>
   </div>
 </template>
 
@@ -1383,4 +1427,44 @@ function showSaveToast(msg: string) {
 .hljs-addition { background: #2d2d2d; }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: bold; }
+
+/* Variant context menu */
+.variant-context-menu {
+  position: fixed;
+  z-index: 1000;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  padding: 4px;
+  min-width: 120px;
+}
+
+.variant-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #3c3c43;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.variant-menu-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.variant-menu-item.delete {
+  color: #ff3b30;
+}
+
+.variant-menu-item.delete:hover {
+  background: rgba(255, 59, 48, 0.08);
+}
 </style>

@@ -419,3 +419,94 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     persist,
   }
 })
+
+// ─── Sync module ─────────────────────────────────────────────────────────────
+
+import { syncService } from '../services/sync'
+import type { SyncModule } from '../services/sync/types'
+
+const MOD_AI = 'aiSettings'
+
+const aiSyncModule: SyncModule = {
+  id: MOD_AI,
+  remoteDirs: ['settings'],
+  getLocalTimestamp() {
+    return localStorage.getItem(LS_MODIFIED_AT_KEY) ?? new Date(0).toISOString()
+  },
+  async sync(ctx, localChanged) {
+    ctx.setProgress('同步 AI 设置…')
+    const aiStore = useAiSettingsStore()
+
+    function toRemote(p: AIProvider) {
+      return {
+        id: p.id, name: p.name, type: p.type, builtIn: p.builtIn,
+        apiKey: p.apiKey, baseUrl: p.baseUrl, enabled: p.enabled,
+        selectedModelId: p.selectedModelId,
+        customModels: p.type === 'custom' ? p.models : undefined,
+        updatedAt: p.updatedAt ?? new Date(0).toISOString(),
+      }
+    }
+
+    const localDeleted = getDeletedProviders()
+    const localData = {
+      timestamp: await this.getLocalTimestamp(),
+      providers: aiStore.providers.map(toRemote),
+      activeProviderId: aiStore.activeProviderId,
+      deletedProviders: localDeleted,
+    }
+
+    const path = ctx.rp('settings/ai_settings.enc')
+    const remoteData = await ctx.getEncrypted<typeof localData | null>(path, null)
+
+    if (!remoteData) {
+      if (localChanged) await ctx.putEncrypted(path, localData)
+      return
+    }
+
+    const remoteDeleted: Record<string, string> = remoteData.deletedProviders ?? {}
+    applyRemoteDeletedProviders(remoteDeleted)
+    const mergedDeleted = getDeletedProviders()
+
+    function isDeleted(p: ReturnType<typeof toRemote>): boolean {
+      const ts = mergedDeleted[p.id]
+      return !!ts && ts > (p.updatedAt ?? new Date(0).toISOString())
+    }
+
+    const remoteMap = new Map<string, ReturnType<typeof toRemote>>(
+      (remoteData.providers ?? []).filter((p: ReturnType<typeof toRemote>) => !isDeleted(p)).map((p: ReturnType<typeof toRemote>) => [p.id, p]),
+    )
+    const localMap = new Map<string, ReturnType<typeof toRemote>>(localData.providers.map(p => [p.id, p]))
+
+    for (const [id, rp_] of remoteMap) {
+      const lp = localMap.get(id)
+      if (!lp || (rp_.updatedAt ?? '') > (lp.updatedAt ?? '')) aiStore.importProvider(rp_)
+    }
+
+    for (const [id, ts] of Object.entries(mergedDeleted)) {
+      const p = aiStore.providers.find(p => p.id === id)
+      if (p && ts > (p.updatedAt ?? new Date(0).toISOString())) aiStore.removeProvider(id)
+    }
+
+    if ((remoteData.timestamp ?? '') > localData.timestamp && remoteData.activeProviderId) {
+      aiStore.setActiveProvider(remoteData.activeProviderId)
+    }
+
+    if (!localChanged) return
+
+    const mergedProviders = aiStore.providers.map(toRemote)
+    for (const [id, rp_] of remoteMap) {
+      if (!localMap.has(id) && !mergedProviders.find(p => p.id === id)) {
+        mergedProviders.push(rp_)
+      }
+    }
+
+    await ctx.putEncrypted(path, {
+      timestamp: new Date().toISOString(),
+      providers: mergedProviders,
+      activeProviderId: aiStore.activeProviderId,
+      deletedProviders: mergedDeleted,
+    })
+  },
+}
+
+syncService.register(aiSyncModule)

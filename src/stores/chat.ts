@@ -19,6 +19,9 @@ import {
   deleteConversation,
   deleteConversations,
   newId,
+  getDeletedConversations,
+  applyRemoteDeletedConversations,
+  mergeConversation,
   type ConversationMeta,
   type Conversation,
   type ChatMessage,
@@ -316,11 +319,16 @@ async function streamOllama(
   systemPrompt?: string,
   temperature?: number,
   maxTokens?: number,
+  useReasoning?: boolean,
 ) {
   const allMessages = systemPrompt
     ? [{ role: 'system', content: systemPrompt }, ...messages]
-    : messages
+    : [...messages]
+
   const reqBody: Record<string, unknown> = { model, messages: allMessages, stream: true }
+  if (useReasoning != null) {
+    reqBody.think = useReasoning
+  }
   const options: Record<string, unknown> = {}
   if (temperature !== undefined) options.temperature = temperature
   if (maxTokens   !== undefined) options.num_predict = maxTokens
@@ -334,7 +342,9 @@ async function streamOllama(
   })
   if (resp.status === 404) {
     // Fall back to OpenAI-compatible endpoint (e.g. DGX-Spark / Ollama proxies that
-    // expose /v1/chat/completions but not the native /api/chat route)
+    // expose /v1/chat/completions but not the native /api/chat route).
+    // Ollama's OpenAI-compatible endpoint does not support the think parameter,
+    // so thinking behavior falls back to the model's default in this path.
     await streamOpenAI(`${baseUrl}/v1`, '', model, allMessages, handler, signal, undefined, undefined, undefined, temperature, maxTokens)
     return
   }
@@ -520,8 +530,9 @@ export const useChatStore = defineStore('chat', () => {
         const lastAssistant = [...conv.messages].reverse().find(m => m.role === 'assistant' && !m.error)
         streamingMsgId.value = lastAssistant?.id ?? null
       } else {
-        streamingMsgId.value = null
-        streamingText.value  = ''
+        streamingMsgId.value     = null
+        streamingText.value      = ''
+        streamingReasoning.value = ''
       }
     }
     isLoading.value = false
@@ -553,8 +564,9 @@ export const useChatStore = defineStore('chat', () => {
     }
     activeConv.value   = conv
     activeConvId.value = conv.id
-    streamingMsgId.value = null
-    streamingText.value  = ''
+    streamingMsgId.value     = null
+    streamingText.value      = ''
+    streamingReasoning.value = ''
     // Persist immediately so the conversation appears in the list (and in filtered views)
     saveConversation(conv).then(() => loadList())
     return conv
@@ -661,8 +673,9 @@ export const useChatStore = defineStore('chat', () => {
     streamingConvIds.add(conv.id)
     // Update UI streaming refs only when this is the visible conversation
     if (activeConvId.value === conv.id) {
-      streamingText.value  = ''
-      streamingMsgId.value = assistantMsg.id
+      streamingText.value      = ''
+      streamingReasoning.value = ''
+      streamingMsgId.value     = assistantMsg.id
     }
     error.value = null
 
@@ -790,7 +803,7 @@ export const useChatStore = defineStore('chat', () => {
       } else if (provider.type === 'google') {
         await streamGoogle(provider.baseUrl, provider.apiKey, mid, payload, handler, ac.signal, systemPrompt, temperature, maxTokens)
       } else if (provider.type === 'ollama') {
-        await streamOllama(provider.baseUrl, mid, payload, handler, ac.signal, systemPrompt, temperature, maxTokens)
+        await streamOllama(provider.baseUrl, mid, payload, handler, ac.signal, systemPrompt, temperature, maxTokens, useReasoning.value)
       } else {
         // openai / custom — pass reasoning_effort for o-series and compatible providers
         const effort = useReasoning.value ? reasoningLevel.value : undefined
@@ -936,7 +949,7 @@ export const useChatStore = defineStore('chat', () => {
       } else if (provider.type === 'google') {
         await streamGoogle(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, chatSettings.temperature, chatSettings.maxTokens)
       } else if (provider.type === 'ollama') {
-        await streamOllama(provider.baseUrl, modelId, payload, handler, ac.signal, systemPrompt, chatSettings.temperature, chatSettings.maxTokens)
+        await streamOllama(provider.baseUrl, modelId, payload, handler, ac.signal, systemPrompt, chatSettings.temperature, chatSettings.maxTokens, useReasoning.value)
       } else {
         const effort = useReasoning.value ? reasoningLevel.value : undefined
         await streamOpenAI(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, effort, undefined, chatSettings.temperature, chatSettings.maxTokens)
@@ -955,6 +968,32 @@ export const useChatStore = defineStore('chat', () => {
   function setActiveVariant(messageId: string, idx: number) {
     const msg = activeConv.value?.messages.find(m => m.id === messageId)
     if (msg) msg.activeVariantIdx = idx
+  }
+
+  function deleteVariant(messageId: string, idx: number) {
+    if (!activeConv.value || isStreaming.value) return
+    const conv = activeConv.value
+
+    if (idx === 0) {
+      // Delete the whole assistant message (original + all variants)
+      const msgIdx = conv.messages.findIndex(m => m.id === messageId)
+      if (msgIdx < 0) return
+      conv.messages.splice(msgIdx, 1)
+      saveConversation(conv)
+      return
+    }
+
+    const msg = conv.messages.find(m => m.id === messageId)
+    if (!msg || !msg.variants) return
+    const vi = idx - 1
+    if (vi < 0 || vi >= msg.variants.length) return
+    msg.variants.splice(vi, 1)
+    // Adjust active variant index if it now points out of bounds
+    const maxIdx = msg.variants.length
+    if ((msg.activeVariantIdx ?? 0) > maxIdx) {
+      msg.activeVariantIdx = maxIdx
+    }
+    saveConversation(conv)
   }
 
   function setMessageFeedback(messageId: string, feedback: 'positive' | 'negative' | null) {
@@ -1097,6 +1136,143 @@ export const useChatStore = defineStore('chat', () => {
     togglePin, renameConversation, streamingText, streamingReasoning, streamingMsgId,
     clearContext, removeContextCutoff,
     useReasoning, reasoningLevel, setReasoning, setReasoningLevel,
-    regenerateWithModel, setActiveVariant, streamingVariantMsgId, setMessageFeedback,
+    regenerateWithModel, setActiveVariant, deleteVariant, streamingVariantMsgId, setMessageFeedback,
   }
 })
+
+// ─── Sync module ─────────────────────────────────────────────────────────────
+
+import { syncService } from '../services/sync'
+import type { SyncModule } from '../services/sync/types'
+
+const MOD_CONV = 'conversations'
+
+interface ConversationsPayload {
+  list: ConversationMeta[]
+  deletedConversations: Record<string, string>
+}
+
+const conversationsSyncModule: SyncModule = {
+  id: MOD_CONV,
+  remoteDirs: ['conversations'],
+  getLocalTimestamp() {
+    return localStorage.getItem('muse-ts-conversations') ?? new Date(0).toISOString()
+  },
+  async sync(ctx, localChanged) {
+    ctx.setProgress('同步对话历史…')
+
+    const localList = await listConversations()
+    const idxPath = ctx.rp('conversations/index.enc')
+
+    const raw = await ctx.getEncrypted<ConversationsPayload | ConversationMeta[]>(idxPath, { list: [], deletedConversations: {} })
+    const remotePayload: ConversationsPayload = Array.isArray(raw)
+      ? { list: raw, deletedConversations: {} }
+      : raw
+
+    applyRemoteDeletedConversations(remotePayload.deletedConversations ?? {})
+    const mergedDeleted = getDeletedConversations()
+
+    function isDeleted(id: string, updatedAt: string): boolean {
+      const ts = mergedDeleted[id]
+      return !!ts && ts > updatedAt
+    }
+
+    const remoteList = remotePayload.list
+    const localIds = new Set(localList.map(c => c.id))
+    const remoteIds = new Set(remoteList.map(c => c.id))
+    const remoteTombstones = new Set(Object.keys(remotePayload.deletedConversations ?? {}))
+
+    let indexChanged = false
+
+    // ① Apply tombstones
+    for (const meta of localList) {
+      if (isDeleted(meta.id, meta.updatedAt)) await deleteConversation(meta.id)
+    }
+    for (const [id] of Object.entries(mergedDeleted)) {
+      if (!remoteTombstones.has(id)) {
+        await ctx.webdavDelete(ctx.rp(`conversations/${id}.enc`))
+        indexChanged = true
+      }
+    }
+
+    // ② Download conversations that only exist on remote
+    for (const meta of remoteList) {
+      if (localIds.has(meta.id)) continue
+      if (isDeleted(meta.id, meta.updatedAt)) continue
+      const resp = await ctx.webdavGet(ctx.rp(`conversations/${meta.id}.enc`))
+      if (!resp.ok) continue
+      try {
+        const conv = JSON.parse(await ctx.decrypt(resp.body)) as Conversation
+        if (!isDeleted(conv.id, conv.updatedAt)) await saveConversation(conv)
+      } catch { /* skip corrupt remote entry */ }
+    }
+
+    // ③ Upload conversations that only exist locally
+    if (localChanged) {
+      for (const meta of localList) {
+        if (remoteIds.has(meta.id)) continue
+        if (isDeleted(meta.id, meta.updatedAt)) continue
+        const conv = await loadConversation(meta.id)
+        if (!conv) continue
+        await ctx.putEncrypted(ctx.rp(`conversations/${meta.id}.enc`), conv)
+        indexChanged = true
+      }
+    }
+
+    // ④ Merge conversations that exist on both sides but differ
+    for (const localMeta of localList) {
+      if (isDeleted(localMeta.id, localMeta.updatedAt)) continue
+      const remoteMeta = remoteList.find(r => r.id === localMeta.id)
+      if (!remoteMeta || localMeta.updatedAt === remoteMeta.updatedAt) continue
+
+      const localConv = await loadConversation(localMeta.id)
+      if (!localConv) continue
+
+      const convPath = ctx.rp(`conversations/${localMeta.id}.enc`)
+      const remoteResp = await ctx.webdavGet(convPath)
+
+      if (!remoteResp.ok) {
+        if (localChanged && localMeta.updatedAt > remoteMeta.updatedAt) {
+          await ctx.putEncrypted(convPath, localConv)
+          indexChanged = true
+        }
+        continue
+      }
+
+      try {
+        const remoteConv = JSON.parse(await ctx.decrypt(remoteResp.body)) as Conversation
+        const { merged, localChanged: convLocalChanged, remoteChanged: convRemoteChanged } = mergeConversation(localConv, remoteConv)
+        if (convLocalChanged) await saveConversation(merged)
+        if (convRemoteChanged && localChanged) {
+          await ctx.putEncrypted(convPath, merged)
+          indexChanged = true
+        }
+      } catch {
+        if (localChanged && localMeta.updatedAt > remoteMeta.updatedAt) {
+          await ctx.putEncrypted(convPath, localConv)
+          indexChanged = true
+        }
+      }
+    }
+
+    if (!localChanged && !indexChanged) return
+
+    // Prune tombstones older than 6 months
+    const sixMonthsAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString()
+    for (const [id, ts] of Object.entries(mergedDeleted)) {
+      if (ts < sixMonthsAgo) delete mergedDeleted[id]
+    }
+    localStorage.setItem('muse-deleted-conversations', JSON.stringify(mergedDeleted))
+
+    const finalIndex = await listConversations()
+    await ctx.putEncrypted(idxPath, {
+      list: finalIndex,
+      deletedConversations: mergedDeleted,
+    } satisfies ConversationsPayload)
+  },
+  async onSynced() {
+    await useChatStore().loadList()
+  },
+}
+
+syncService.register(conversationsSyncModule)

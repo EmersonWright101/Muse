@@ -266,3 +266,115 @@ export function createEmptyNote(): TravelNote {
 export function rebuildContent(note: TravelNote): string {
   return stringifyFrontmatter(note)
 }
+
+// ─── Sync module ─────────────────────────────────────────────────────────────
+
+import { syncService } from '../services/sync'
+import type { SyncModule } from '../services/sync/types'
+
+const MOD_TRAVEL = 'travelNotes'
+
+interface TravelPayload {
+  list: TravelNoteMeta[]
+  deletedTravelNotes: Record<string, string>
+}
+
+const travelSyncModule: SyncModule = {
+  id: MOD_TRAVEL,
+  remoteDirs: ['travel'],
+  getLocalTimestamp() {
+    return localStorage.getItem('muse-ts-travel-notes') ?? new Date(0).toISOString()
+  },
+  async sync(ctx, localChanged) {
+    ctx.setProgress('同步旅行日记…')
+    const localList = await listTravelNotes()
+    const idxPath = ctx.rp('travel/index.enc')
+
+    const raw = await ctx.getEncrypted<TravelPayload | null>(idxPath, { list: [], deletedTravelNotes: {} })
+    const remotePayload: TravelPayload = raw ?? { list: [], deletedTravelNotes: {} }
+
+    applyRemoteDeletedTravelNotes(remotePayload.deletedTravelNotes ?? {})
+    const mergedDeleted = getDeletedTravelNotes()
+
+    function isDeleted(id: string): boolean {
+      return !!mergedDeleted[id]
+    }
+
+    const remoteList = remotePayload.list
+    const localIds = new Set(localList.map(n => n.id))
+    const remoteIds = new Set(remoteList.map(n => n.id))
+    const remoteTombstones = new Set(Object.keys(remotePayload.deletedTravelNotes ?? {}))
+
+    let indexChanged = false
+
+    // ① Apply tombstones
+    for (const meta of localList) {
+      if (isDeleted(meta.id)) await deleteTravelNote(meta.id)
+    }
+    for (const [id] of Object.entries(mergedDeleted)) {
+      if (!remoteTombstones.has(id)) {
+        await ctx.webdavDelete(ctx.rp(`travel/${id}.enc`))
+        indexChanged = true
+      }
+    }
+
+    // ② Download notes that only exist on remote
+    for (const meta of remoteList) {
+      if (localIds.has(meta.id)) continue
+      if (isDeleted(meta.id)) continue
+      const resp = await ctx.webdavGet(ctx.rp(`travel/${meta.id}.enc`))
+      if (!resp.ok) continue
+      try {
+        const note = JSON.parse(await ctx.decrypt(resp.body)) as TravelNote
+        if (!isDeleted(note.id)) await saveTravelNote(note)
+      } catch { /* skip corrupt */ }
+    }
+
+    // ③ Upload notes that only exist locally
+    if (localChanged) {
+      for (const meta of localList) {
+        if (remoteIds.has(meta.id)) continue
+        if (isDeleted(meta.id)) continue
+        const note = await loadTravelNote(meta.id)
+        if (!note) continue
+        await ctx.putEncrypted(ctx.rp(`travel/${meta.id}.enc`), note)
+        indexChanged = true
+      }
+    }
+
+    // ④ Merge notes that exist on both sides (newer updatedAt wins)
+    for (const localMeta of localList) {
+      if (isDeleted(localMeta.id)) continue
+      const remoteMeta = remoteList.find(r => r.id === localMeta.id)
+      if (!remoteMeta) continue
+
+      const localNote = await loadTravelNote(localMeta.id)
+      if (!localNote) continue
+      const localUpdatedAt = localNote.updatedAt ?? localMeta.updatedAt ?? new Date(0).toISOString()
+      const remoteUpdatedAt = remoteMeta.updatedAt ?? new Date(0).toISOString()
+
+      if (remoteUpdatedAt > localUpdatedAt) {
+        const resp = await ctx.webdavGet(ctx.rp(`travel/${localMeta.id}.enc`))
+        if (resp.ok) {
+          try {
+            const remoteNote = JSON.parse(await ctx.decrypt(resp.body)) as TravelNote
+            await saveTravelNote(remoteNote)
+          } catch { /* skip */ }
+        }
+      } else if (localChanged && localUpdatedAt > remoteUpdatedAt) {
+        await ctx.putEncrypted(ctx.rp(`travel/${localMeta.id}.enc`), localNote)
+        indexChanged = true
+      }
+    }
+
+    if (!localChanged && !indexChanged) return
+
+    const finalList = await listTravelNotes()
+    await ctx.putEncrypted(idxPath, {
+      list: finalList,
+      deletedTravelNotes: mergedDeleted,
+    } satisfies TravelPayload)
+  },
+}
+
+syncService.register(travelSyncModule)

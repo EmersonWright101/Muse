@@ -45,6 +45,7 @@ const PROVIDER_ICONS: Record<string, string> = {
   zhipu:       new URL('../../../assets/providers/zhipu.svg',       import.meta.url).href,
   microsoft:   new URL('../../../assets/providers/microsoft.svg',   import.meta.url).href,
   nvidia:      new URL('../../../assets/providers/nvidia.svg',      import.meta.url).href,
+  moleapi:     new URL('../../../assets/providers/MoleAPI.svg',     import.meta.url).href,
 }
 
 function providerIcon(p: AIProvider): string | null {
@@ -63,6 +64,7 @@ function providerIcon(p: AIProvider): string | null {
   if (key.includes('claude') || key.includes('anthropic')) return PROVIDER_ICONS.anthropic
   if (key.includes('gemini') || key.includes('google'))    return PROVIDER_ICONS.google
   if (key.includes('openai') || p.type === 'openai')       return PROVIDER_ICONS.openai
+  if (key.includes('moleapi'))                             return PROVIDER_ICONS.moleapi
   return null
 }
 </script>

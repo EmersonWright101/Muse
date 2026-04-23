@@ -446,7 +446,7 @@ function getProviderLogoUrl(p: AIProvider): string | null {
   const hay = (p.name + ' ' + p.baseUrl).toLowerCase()
   if (hay.includes('dgx') || hay.includes('nvidia')) return svgMap['nvidia'] ?? null
   for (const [name, url] of Object.entries(svgMap)) {
-    if (hay.includes(name)) return url
+    if (hay.includes(name.toLowerCase())) return url
   }
   return null
 }

@@ -54,7 +54,9 @@ const sortOptions: { key: SortBy; label: string }[] = [
   { key: 'requests', label: '请求' },
 ]
 
-/* ─── Provider cards ────────────────────────────────────────── */
+/* ─── Provider pie chart ───────────────────────────────────── */
+const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#ec4899']
+
 const providerStats = computed(() => {
   const map = new Map<string, { tokens: number; models: Set<string> }>()
   for (const m of stats.modelStats) {
@@ -78,16 +80,82 @@ const providerStats = computed(() => {
     .slice(0, 5)
 })
 
+function describeDonutArc(
+  cx: number, cy: number, outerR: number, innerR: number,
+  startAngle: number, endAngle: number,
+) {
+  const largeArc = endAngle - startAngle > Math.PI ? 1 : 0
+  const ox1 = cx + outerR * Math.cos(startAngle)
+  const oy1 = cy + outerR * Math.sin(startAngle)
+  const ox2 = cx + outerR * Math.cos(endAngle)
+  const oy2 = cy + outerR * Math.sin(endAngle)
+  const ix1 = cx + innerR * Math.cos(startAngle)
+  const iy1 = cy + innerR * Math.sin(startAngle)
+  const ix2 = cx + innerR * Math.cos(endAngle)
+  const iy2 = cy + innerR * Math.sin(endAngle)
+  return `M ${ox1} ${oy1} A ${outerR} ${outerR} 0 ${largeArc} 1 ${ox2} ${oy2} L ${ix2} ${iy2} A ${innerR} ${innerR} 0 ${largeArc} 0 ${ix1} ${iy1} Z`
+}
+
+const pieData = computed(() => {
+  const list = providerStats.value
+  if (!list.length) return []
+  const total = list.reduce((s, p) => s + p.tokens, 0) || 1
+  let startAngle = -Math.PI / 2
+  return list.map((p, i) => {
+    const angle = (p.tokens / total) * Math.PI * 2
+    const endAngle = startAngle + angle
+    const d = describeDonutArc(50, 50, 38, 22, startAngle, endAngle)
+    const item = {
+      name: p.name,
+      pct: p.pct,
+      tokens: p.tokens,
+      modelCount: p.modelCount,
+      color: PIE_COLORS[i % PIE_COLORS.length],
+      d,
+    }
+    startAngle = endAngle
+    return item
+  })
+})
+
+/* ─── Meta ──────────────────────────────────────────────────── */
+const activeDays = computed(() => stats.dailyStatsAll.filter(d => d.totalTokens > 0).length)
+
 /* ─── Trend mini chart ──────────────────────────────────────── */
 const trendData = computed(() => stats.dailyStatsAll.slice(-30))
 const trendMax = computed(() => Math.max(...trendData.value.map(d => d.totalTokens), 1))
 
-/* ─── Meta ──────────────────────────────────────────────────── */
-const activeDays = computed(() => stats.dailyStatsAll.length)
-const startedAt = computed(() => {
-  const all = stats.dailyStatsAll
-  if (!all.length) return '-'
-  return all[0].date
+const TREND_W = 800
+const TREND_H = 120
+const TREND_PAD = 16
+
+const linePath = computed(() => {
+  const data = trendData.value
+  if (data.length < 2) return ''
+  const stepX = (TREND_W - TREND_PAD * 2) / (data.length - 1)
+  const chartH = TREND_H - TREND_PAD * 2
+  const points = data.map((d, i) => {
+    const x = TREND_PAD + i * stepX
+    const y = TREND_PAD + chartH - (d.totalTokens / trendMax.value) * chartH
+    return `${x},${y}`
+  })
+  return `M ${points.join(' L ')}`
+})
+
+const areaPath = computed(() => {
+  const data = trendData.value
+  if (data.length < 2) return ''
+  const stepX = (TREND_W - TREND_PAD * 2) / (data.length - 1)
+  const chartH = TREND_H - TREND_PAD * 2
+  const points = data.map((d, i) => {
+    const x = TREND_PAD + i * stepX
+    const y = TREND_PAD + chartH - (d.totalTokens / trendMax.value) * chartH
+    return `${x},${y}`
+  })
+  const firstX = TREND_PAD
+  const lastX = TREND_PAD + (data.length - 1) * stepX
+  const bottomY = TREND_H - TREND_PAD
+  return `M ${firstX},${bottomY} L ${points.join(' L ')} L ${lastX},${bottomY} Z`
 })
 
 /* ─── Token time distribution ───────────────────────────────── */
@@ -149,21 +217,6 @@ const weeks = computed(() => {
   return weeksArr
 })
 
-const monthLabels = computed(() => {
-  const labels: { text: string; index: number }[] = []
-  const seen = new Set<string>()
-  weeks.value.forEach((w, wi) => {
-    const mid = w.days[3]
-    if (!mid) return
-    const month = mid.date.slice(0, 7)
-    if (!seen.has(month)) {
-      seen.add(month)
-      labels.push({ text: `${+mid.date.slice(5, 7)}月`, index: wi })
-    }
-  })
-  return labels
-})
-
 const dayLabels = ['日', '一', '二', '三', '四', '五', '六']
 
 const monthRowLabels = computed(() => {
@@ -216,7 +269,7 @@ const monthRowLabels = computed(() => {
         <!-- Left column -->
         <div class="dash-left">
           <!-- Top models with sort -->
-          <div class="dash-section">
+          <div class="dash-section grid-top-models">
             <div class="dash-section-header">
               <div class="dash-section-title">Top 模型</div>
               <div class="sort-bar">
@@ -247,8 +300,60 @@ const monthRowLabels = computed(() => {
             </div>
           </div>
 
-          <!-- Heatmap (compact, placed in left column) -->
-          <div class="dash-section heatmap-section">
+          <!-- Provider pie chart -->
+          <div class="dash-section grid-pie">
+            <div class="dash-section-title">供应商分布</div>
+            <div v-if="pieData.length" class="pie-chart-wrap">
+              <svg viewBox="0 0 100 100" class="pie-svg">
+                <path
+                  v-for="slice in pieData"
+                  :key="slice.name"
+                  :d="slice.d"
+                  :fill="slice.color"
+                />
+              </svg>
+              <div class="pie-legend">
+                <div
+                  v-for="slice in pieData"
+                  :key="slice.name"
+                  class="pie-legend-item"
+                >
+                  <div class="pie-legend-dot" :style="{ background: slice.color }" />
+                  <div class="pie-legend-text">
+                    <div class="pie-legend-name">{{ slice.name }}</div>
+                    <div class="pie-legend-pct">{{ slice.pct }}% · {{ slice.modelCount }} 个模型</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right column -->
+        <div class="dash-right">
+          <div class="hero-block grid-hero">
+            <div class="hero-label">TOTAL TOKENS</div>
+            <div class="hero-value">{{ fmtBig(stats.totalTokens) }}</div>
+            <div class="hero-cost">{{ stats.formatCost(stats.totalCost) }}</div>
+            <div class="hero-divider" />
+            <div class="hero-metrics">
+              <div class="hero-metric">
+                <div class="hero-metric-value">{{ stats.totalRequests }}</div>
+                <div class="hero-metric-label">请求</div>
+              </div>
+              <div class="hero-metric">
+                <div class="hero-metric-value">{{ stats.modelStats.length }}</div>
+                <div class="hero-metric-label">模型</div>
+              </div>
+              <div class="hero-metric">
+                <div class="hero-metric-value">{{ activeDays }}</div>
+                <div class="hero-metric-label">活跃天</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Heatmap -->
+          <div class="dash-section heatmap-section grid-heatmap">
             <div class="dash-section-title">活动热力图</div>
             <div class="heatmap-wrap">
               <!-- Header: corner + day labels -->
@@ -283,55 +388,52 @@ const monthRowLabels = computed(() => {
                   </div>
                 </div>
               </div>
-              <div class="heatmap-legend">
-                <span class="legend-label">少</span>
-                <div class="legend-cell level-0" />
-                <div class="legend-cell level-1" />
-                <div class="legend-cell level-2" />
-                <div class="legend-cell level-3" />
-                <div class="legend-cell level-4" />
-                <span class="legend-label">多</span>
-              </div>
+
             </div>
           </div>
+
         </div>
 
-        <!-- Right column -->
-        <div class="dash-right">
-          <div class="hero-block">
-            <div class="hero-label">TOTAL TOKENS</div>
-            <div class="hero-value">{{ fmtBig(stats.totalTokens) }}</div>
-            <div class="hero-cost">{{ stats.formatCost(stats.totalCost) }}</div>
-          </div>
-
-          <div class="provider-row">
-            <div
-              v-for="p in providerStats"
-              :key="p.name"
-              class="provider-card"
+        <!-- Trend chart (full width) -->
+        <div class="dash-section grid-trend">
+          <div class="dash-section-title">使用趋势（30天）</div>
+          <div class="trend-chart">
+            <svg
+              :viewBox="`0 0 ${TREND_W} ${TREND_H}`"
+              class="trend-svg"
+              preserveAspectRatio="none"
             >
-              <div class="provider-name">{{ p.name }}</div>
-              <div class="provider-pct">{{ p.pct }}%</div>
-              <div class="provider-sub">{{ p.modelCount }} 个模型</div>
-            </div>
-          </div>
-
-          <div class="dash-section">
-            <div class="dash-section-title">使用趋势（30天）</div>
-            <div class="trend-chart">
-              <div
+              <path
+                v-if="areaPath"
+                :d="areaPath"
+                fill="rgba(34, 63, 121, 0.08)"
+              />
+              <path
+                v-if="linePath"
+                :d="linePath"
+                fill="none"
+                stroke="#223F79"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <circle
+                v-for="(d, i) in trendData"
+                :key="i"
+                :cx="TREND_PAD + i * ((TREND_W - TREND_PAD * 2) / (trendData.length - 1 || 1))"
+                :cy="TREND_PAD + (TREND_H - TREND_PAD * 2) - (d.totalTokens / trendMax) * (TREND_H - TREND_PAD * 2)"
+                r="3.5"
+                fill="#ffffff"
+                stroke="#223F79"
+                stroke-width="2"
+              />
+            </svg>
+            <div class="trend-dates">
+              <span
                 v-for="d in trendData"
                 :key="d.date"
-                class="trend-col"
-              >
-                <div class="trend-bar-wrap">
-                  <div
-                    class="trend-bar"
-                    :style="{ height: `${(d.totalTokens / trendMax) * 100}%` }"
-                  />
-                </div>
-                <div class="trend-date">{{ d.date.slice(5) }}</div>
-              </div>
+                class="trend-date"
+              >{{ d.date.slice(5) }}</span>
             </div>
           </div>
         </div>
@@ -549,16 +651,21 @@ const monthRowLabels = computed(() => {
 /* ─── Body grid ────────────────────────────────────────────── */
 .dashboard-body {
   display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 20px;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
 }
 
-/* ─── Left column ──────────────────────────────────────────── */
-.dash-left {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+.dash-left,
+.dash-right {
+  display: contents;
 }
+
+/* ─── Grid placement ───────────────────────────────────────── */
+.grid-top-models  { grid-column: 1; grid-row: 1; }
+.grid-hero        { grid-column: 2; grid-row: 1; }
+.grid-pie         { grid-column: 1; grid-row: 2; }
+.grid-heatmap     { grid-column: 2; grid-row: 2; }
+.grid-trend       { grid-column: 1 / -1; grid-row: 3; }
 
 .dash-section {
   background: #ffffff;
@@ -647,82 +754,88 @@ const monthRowLabels = computed(() => {
 
 /* ─── Heatmap (compact, inside left column) ────────────────── */
 .heatmap-section {
-  padding: 14px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.heatmap-section .dash-section-title {
+  margin-bottom: 12px;
 }
 
 .heatmap-wrap {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
   overflow-x: auto;
   padding-bottom: 4px;
 }
 
 .heatmap-header {
   display: flex;
-  gap: 4px;
+  gap: 6px;
 }
 
 .corner-spacer {
-  width: 28px;
+  width: 40px;
   flex-shrink: 0;
 }
 
 .day-header-row {
   display: flex;
-  gap: 2px;
+  gap: 3px;
 }
 
 .day-header {
-  width: 10px;
-  font-size: 8px;
+  width: 14px;
+  font-size: 11px;
   color: #aeaeb2;
   text-align: center;
-  line-height: 10px;
+  line-height: 14px;
 }
 
 .heatmap-body {
   display: flex;
-  gap: 4px;
+  gap: 6px;
 }
 
 .month-labels-col {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  width: 28px;
+  gap: 3px;
+  width: 40px;
   flex-shrink: 0;
 }
 
 .month-label-row {
-  height: 10px;
-  font-size: 9px;
+  height: 14px;
+  font-size: 11px;
   color: #8e8e93;
-  line-height: 10px;
+  line-height: 14px;
   text-align: right;
 }
 
 .heatmap-grid {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .heatmap-week {
   display: flex;
-  gap: 2px;
+  gap: 3px;
 }
 
 .heatmap-cell {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
   background: #ebedf0;
   transition: transform 0.1s;
   cursor: pointer;
 }
 .heatmap-cell:hover {
-  transform: scale(1.3);
+  transform: scale(1.25);
   outline: 1px solid rgba(0,0,0,0.2);
   z-index: 1;
 }
@@ -732,50 +845,31 @@ const monthRowLabels = computed(() => {
 .level-3 { background: #2e7d32; }
 .level-4 { background: #1b5e20; }
 
-.heatmap-legend {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  margin-top: 4px;
-  padding-left: 32px;
-}
-
-.legend-label {
-  font-size: 9px;
-  color: #8e8e93;
-}
-
-.legend-cell {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-}
-
 /* ─── Right column ─────────────────────────────────────────── */
-.dash-right {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
+
 
 .hero-block {
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 14px;
-  padding: 28px;
+  padding: 22px 24px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
 }
 
 .hero-label {
   font-size: 12px;
   color: #8e8e93;
   letter-spacing: 0.08em;
-  margin-bottom: 8px;
 }
 
 .hero-value {
-  font-size: 42px;
+  font-size: 40px;
   font-weight: 800;
   color: #1c1c1e;
   line-height: 1.1;
@@ -786,97 +880,104 @@ const monthRowLabels = computed(() => {
   font-size: 16px;
   color: #34c759;
   font-weight: 600;
-  margin-top: 8px;
 }
 
-/* Provider cards */
-.provider-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 12px;
+.hero-divider {
+  width: 100%;
+  height: 1px;
+  background: rgba(0, 0, 0, 0.06);
+  margin: 8px 0 4px;
 }
 
-.provider-card {
-  background: #ffffff;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 12px;
-  padding: 14px 16px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
-  transition: box-shadow 0.15s;
-}
-.provider-card:hover {
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+.hero-metrics {
+  display: flex;
+  width: 100%;
+  justify-content: space-around;
+  gap: 8px;
 }
 
-.provider-name {
-  font-size: 12px;
-  color: #8e8e93;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+.hero-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
 }
 
-.provider-pct {
-  font-size: 22px;
+.hero-metric-value {
+  font-size: 16px;
   font-weight: 700;
   color: #1c1c1e;
-  margin-top: 6px;
 }
 
-.provider-sub {
+.hero-metric-label {
   font-size: 11px;
-  color: #aeaeb2;
-  margin-top: 2px;
+  color: #8e8e93;
+}
+
+/* Provider pie chart */
+.pie-chart-wrap {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 4px 0;
+}
+.pie-svg {
+  width: 90px;
+  height: 90px;
+  flex-shrink: 0;
+}
+.pie-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.pie-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pie-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.pie-legend-name {
+  font-size: 11px;
+  color: #3c3c43;
+  font-weight: 500;
+}
+.pie-legend-pct {
+  font-size: 10px;
+  color: #8e8e93;
 }
 
 /* Trend chart */
 .trend-chart {
   display: flex;
-  align-items: flex-end;
-  gap: 3px;
-  height: 120px;
-  padding-bottom: 20px;
-  position: relative;
-}
-
-.trend-col {
-  flex: 1;
-  display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
+  gap: 8px;
+  padding-bottom: 4px;
 }
 
-.trend-bar-wrap {
+.trend-svg {
   width: 100%;
-  height: 100px;
+  height: 120px;
+  overflow: visible;
+}
+
+.trend-dates {
   display: flex;
-  align-items: flex-end;
-  background: rgba(0, 0, 0, 0.02);
-  border-radius: 3px 3px 0 0;
-  overflow: hidden;
-}
-
-.trend-bar {
-  width: 100%;
-  background: #223F79;
-  opacity: 0.85;
-  border-radius: 3px 3px 0 0;
-  transition: height 0.4s ease;
-  min-height: 2px;
-}
-.trend-bar:hover {
-  opacity: 1;
+  justify-content: space-between;
+  padding: 0 4px;
 }
 
 .trend-date {
-  font-size: 9px;
+  font-size: 10px;
   color: #aeaeb2;
   white-space: nowrap;
-  transform: rotate(-35deg);
-  transform-origin: top center;
-  margin-top: 2px;
 }
 
 /* ─── AI Usage section ─────────────────────────────────────── */

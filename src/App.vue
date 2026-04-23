@@ -2,12 +2,17 @@
 import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useTravelStore } from './stores/travel'
+import { useSyncStore } from './stores/sync'
 import TitleBar from './components/TitleBar.vue'
 import AppSidebar from './components/AppSidebar.vue'
 
 const showPanel = ref(true)
 const route = useRoute()
 const travel = useTravelStore()
+
+// Initialize sync store on app launch so the auto-sync timer starts
+// even if the user never opens the Settings page.
+useSyncStore()
 
 const panelFloats = computed(() => route.path === '/travel' && travel.viewMode !== 'editor')
 </script>

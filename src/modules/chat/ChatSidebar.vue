@@ -4,11 +4,34 @@ import { useI18n } from 'vue-i18n'
 import { Search, SquarePen, Trash2, ListChecks, X, Pin, Plus, Pencil, ChevronDown } from 'lucide-vue-next'
 import { useChatStore }       from '../../stores/chat'
 import { useAssistantsStore, ASSISTANT_COLORS } from '../../stores/assistants'
+import { useAiSettingsStore } from '../../stores/aiSettings'
 import type { Assistant }     from '../../stores/assistants'
 
 const { t } = useI18n()
 const chat       = useChatStore()
 const assistants = useAssistantsStore()
+const aiSettings = useAiSettingsStore()
+
+const configuredProviders = computed(() => aiSettings.configuredProviders())
+
+const formModelSelection = computed({
+  get() {
+    if (formDefaultProviderId.value && formDefaultModelId.value) {
+      return `${formDefaultProviderId.value}::${formDefaultModelId.value}`
+    }
+    return ''
+  },
+  set(val: string) {
+    if (val) {
+      const [pid, mid] = val.split('::')
+      formDefaultProviderId.value = pid
+      formDefaultModelId.value = mid
+    } else {
+      formDefaultProviderId.value = undefined
+      formDefaultModelId.value = undefined
+    }
+  },
+})
 
 // ─── Conversation filter ───────────────────────────────────────────────────────
 
@@ -110,7 +133,17 @@ function clickItem(id: string) {
 // ─── New conversation ─────────────────────────────────────────────────────────
 
 function handleNewChat() {
-  chat.newConversation(undefined, undefined, filterAssistantId.value ?? undefined)
+  const assistantId = filterAssistantId.value ?? undefined
+  let providerId: string | undefined
+  let modelId: string | undefined
+  if (assistantId) {
+    const a = assistants.assistants.find(x => x.id === assistantId)
+    if (a?.defaultProviderId && a?.defaultModelId) {
+      providerId = a.defaultProviderId
+      modelId = a.defaultModelId
+    }
+  }
+  chat.newConversation(providerId, modelId, assistantId)
 }
 
 // ─── Assistant form ───────────────────────────────────────────────────────────
@@ -120,6 +153,8 @@ const editingId     = ref<string | null>(null)
 const formName      = ref('')
 const formPrompt    = ref('')
 const formColor     = ref(ASSISTANT_COLORS[0])
+const formDefaultProviderId = ref<string | undefined>(undefined)
+const formDefaultModelId    = ref<string | undefined>(undefined)
 const formNameInput = ref<HTMLInputElement>()
 
 function openCreate() {
@@ -127,6 +162,8 @@ function openCreate() {
   formName.value   = ''
   formPrompt.value = ''
   formColor.value  = ASSISTANT_COLORS[0]
+  formDefaultProviderId.value = undefined
+  formDefaultModelId.value    = undefined
   showForm.value   = true
   nextTick(() => formNameInput.value?.focus())
 }
@@ -136,6 +173,8 @@ function openEdit(a: Assistant) {
   formName.value   = a.name
   formPrompt.value = a.systemPrompt
   formColor.value  = a.color
+  formDefaultProviderId.value = a.defaultProviderId
+  formDefaultModelId.value    = a.defaultModelId
   showForm.value   = true
   nextTick(() => formNameInput.value?.focus())
 }
@@ -146,10 +185,12 @@ function cancelForm() {
 
 async function saveForm() {
   if (!formName.value.trim()) return
+  const dp = formDefaultProviderId.value
+  const dm = formDefaultModelId.value
   if (editingId.value) {
-    await assistants.update(editingId.value, formName.value, formPrompt.value, formColor.value)
+    await assistants.update(editingId.value, formName.value, formPrompt.value, formColor.value, dp, dm)
   } else {
-    await assistants.create(formName.value, formPrompt.value, formColor.value)
+    await assistants.create(formName.value, formPrompt.value, formColor.value, dp, dm)
   }
   showForm.value = false
 }
@@ -375,6 +416,20 @@ async function removeAssistant(id: string) {
             placeholder="请输入助手的 system prompt，用于定义角色和行为…"
             rows="5"
           />
+
+          <label class="form-label">默认模型（可选）</label>
+          <select v-model="formModelSelection" class="form-input" style="height: 30px;">
+            <option value="">使用全局默认模型</option>
+            <optgroup v-for="p in configuredProviders" :key="p.id" :label="p.name">
+              <option
+                v-for="m in p.models"
+                :key="m.id"
+                :value="`${p.id}::${m.id}`"
+              >
+                {{ m.name }}
+              </option>
+            </optgroup>
+          </select>
 
           <div class="form-actions">
             <button class="form-btn cancel" @click="cancelForm()">取消</button>

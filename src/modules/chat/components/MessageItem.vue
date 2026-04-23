@@ -60,7 +60,7 @@ hljs.registerLanguage('rb', ruby)
 hljs.registerLanguage('php', php)
 hljs.registerLanguage('r', r)
 import DOMPurify from 'dompurify'
-import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Bot, AtSign, Download, Clock, ThumbsUp, ThumbsDown } from 'lucide-vue-next'
+import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Maximize2, Minimize2, Bot, AtSign, Download, Clock, ThumbsUp, ThumbsDown } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import type { ChatMessage } from '../../../stores/chat'
 import { useChatStore } from '../../../stores/chat'
@@ -239,7 +239,15 @@ const configuredProviders = computed(() => ai.configuredProviders())
 
 // ─── Reasoning collapse ───────────────────────────────────────────────────────
 
-const reasoningExpanded = ref(true)
+type ReasoningView = 'collapsed' | 'preview' | 'expanded'
+const reasoningView = ref<ReasoningView>('preview')
+
+function countWords(text: string): number {
+  const matches = text.match(/[\u4e00-\u9fff]|[a-zA-Z0-9]+/g)
+  return matches ? matches.length : 0
+}
+
+const reasoningWordCount = computed(() => countWords(displayedReasoning.value || ''))
 
 // ─── Media lightbox ───────────────────────────────────────────────────────────
 
@@ -405,12 +413,27 @@ function showSaveToast(msg: string) {
 
       <!-- Reasoning block (collapsible) -->
       <div v-if="!isUser && displayedReasoning" class="reasoning-block">
-        <button class="reasoning-header" @click="reasoningExpanded = !reasoningExpanded">
-          <ChevronDown :size="12" class="reasoning-chevron" :class="{ expanded: reasoningExpanded }" />
+        <button
+          class="reasoning-header"
+          @click="reasoningView = reasoningView === 'collapsed' ? 'preview' : 'collapsed'"
+        >
+          <ChevronDown :size="12" class="reasoning-chevron" :class="{ expanded: reasoningView !== 'collapsed' }" />
           <span class="reasoning-header-label">思考过程</span>
-          <span class="reasoning-header-len">{{ displayedReasoning.length }} 字符</span>
+          <span class="reasoning-meta">{{ reasoningWordCount }} 词 · {{ displayedReasoning.length }} 字符</span>
+          <component
+            :is="reasoningView === 'expanded' ? Minimize2 : Maximize2"
+            :size="12"
+            class="reasoning-expand-icon"
+            @click.stop="reasoningView = reasoningView === 'expanded' ? 'preview' : 'expanded'"
+          />
         </button>
-        <div v-if="reasoningExpanded" class="reasoning-content">{{ displayedReasoning }}</div>
+        <div
+          v-if="reasoningView !== 'collapsed'"
+          class="reasoning-content"
+          :class="{ 'reasoning-full': reasoningView === 'expanded' }"
+        >
+          {{ displayedReasoning }}
+        </div>
       </div>
 
       <!-- Assistant message: rendered markdown or inline edit -->
@@ -533,7 +556,7 @@ function showSaveToast(msg: string) {
           <span v-if="displayedUsage?.outputTokens != null">↓{{ displayedUsage.outputTokens }}</span>
           <span
             v-if="displayedUsage?.outputTokens != null && displayedUsage?.durationMs != null && displayedUsage.durationMs > 0"
-          >{{ Math.round(displayedUsage.outputTokens / (displayedUsage.durationMs / 1000)) }} t/s</span>
+          >{{ Math.round(((displayedUsage.outputTokens ?? 0) + (displayedUsage.reasoningTokens ?? 0)) / (displayedUsage.durationMs / 1000)) }} t/s</span>
           <span v-if="displayedUsage?.durationMs != null" class="msg-duration">
             <Clock :size="9" />{{ (displayedUsage.durationMs / 1000).toFixed(1) }}s
           </span>
@@ -1031,10 +1054,20 @@ function showSaveToast(msg: string) {
   color: rgba(34, 63, 121, 0.7);
 }
 
-.reasoning-header-len {
+.reasoning-meta {
   margin-left: auto;
   font-size: 10px;
   color: #aeaeb2;
+}
+
+.reasoning-expand-icon {
+  color: #8e8e93;
+  flex-shrink: 0;
+  transition: color 0.12s;
+}
+
+.reasoning-header:hover .reasoning-expand-icon {
+  color: rgba(34, 63, 121, 0.7);
 }
 
 .reasoning-content {
@@ -1047,6 +1080,10 @@ function showSaveToast(msg: string) {
   border-top: 1px solid rgba(34, 63, 121, 0.08);
   max-height: 200px;
   overflow-y: auto;
+}
+
+.reasoning-content.reasoning-full {
+  max-height: none;
 }
 
 .reasoning-content::-webkit-scrollbar { width: 3px; }

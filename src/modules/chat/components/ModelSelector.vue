@@ -4,6 +4,7 @@ import { ChevronDown, Check } from 'lucide-vue-next'
 import { useAiSettingsStore, type AIProvider } from '../../../stores/aiSettings'
 
 const props = defineProps<{ dropDown?: boolean }>()
+const emit = defineEmits<{ (e: 'select', providerId: string, modelId: string): void }>()
 
 const ai    = useAiSettingsStore()
 const open  = ref(false)
@@ -19,6 +20,7 @@ const configuredProviders = computed(() => ai.configuredProviders())
 function selectModel(providerId: string, modelId: string) {
   ai.setActiveProvider(providerId)
   ai.setModelForProvider(providerId, modelId)
+  emit('select', providerId, modelId)
   open.value = false
 }
 

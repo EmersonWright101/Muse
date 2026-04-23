@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useStatisticsStore, getModelColor, getModelLogoUrl } from '../../../stores/statistics'
+import { useStatisticsStore, getModelColor, getModelLogoUrl, type SortBy } from '../../../stores/statistics'
 import ModelIcon from '../components/ModelIcon.vue'
 import TimeRangeSelector from '../components/TimeRangeSelector.vue'
 import EmptyState from '../components/EmptyState.vue'
+import { Wallet, Building2, Type } from 'lucide-vue-next'
 
 const stats = useStatisticsStore()
 
@@ -17,7 +18,13 @@ const CHART_HEIGHT = 320
 const ICON_MIN_PX = 18
 const iconThreshold = ICON_MIN_PX / CHART_HEIGHT
 
-const maxModelCost = computed(() => Math.max(...stats.modelStats.map(m => m.cost), 0.001))
+const maxModelCost = computed(() => Math.max(...stats.filteredSortedModelStats.map(m => m.cost), 0.001))
+
+const sortOptions: { key: SortBy; label: string; icon: typeof Wallet }[] = [
+  { key: 'cost', label: '花费', icon: Wallet },
+  { key: 'provider', label: '供应商', icon: Building2 },
+  { key: 'name', label: '名称', icon: Type },
+]
 </script>
 
 <template>
@@ -102,9 +109,23 @@ const maxModelCost = computed(() => Math.max(...stats.modelStats.map(m => m.cost
 
       <!-- 按模型分布 -->
       <div class="section-card">
-        <div class="section-title">按模型分布</div>
+        <div class="section-header">
+          <div class="section-title">按模型分布</div>
+          <div class="sort-bar">
+            <button
+              v-for="opt in sortOptions"
+              :key="opt.key"
+              class="sort-btn"
+              :class="{ active: stats.sortBy === opt.key }"
+              @click="stats.setSortBy(opt.key)"
+            >
+              <component :is="opt.icon" :size="11" />
+              {{ opt.label }}
+            </button>
+          </div>
+        </div>
         <div class="model-list">
-          <div v-for="m in stats.modelStats" :key="m.modelId" class="model-row">
+          <div v-for="m in stats.filteredSortedModelStats" :key="m.modelId" class="model-row">
             <ModelIcon :model-id="m.modelId" :size="24" />
             <div class="model-info">
               <span class="model-name">{{ m.modelName }}</span>
@@ -247,11 +268,48 @@ const maxModelCost = computed(() => Math.max(...stats.modelStats.map(m => m.cost
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
 }
 
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
 .section-title {
   font-size: 14px;
   font-weight: 600;
   color: #1c1c1e;
-  margin-bottom: 16px;
+  margin: 0;
+}
+
+.sort-bar {
+  display: flex;
+  gap: 6px;
+}
+
+.sort-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: #ffffff;
+  font-size: 11px;
+  color: #3c3c43;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.sort-btn:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.sort-btn.active {
+  background: rgba(34, 63, 121, 0.10);
+  border-color: rgba(34, 63, 121, 0.18);
+  color: #223F79;
+  font-weight: 500;
 }
 
 /* ── 时间分布柱状图 — overlay 方案 ── */

@@ -8,7 +8,7 @@ import { Hash, Wallet, Zap } from 'lucide-vue-next'
 
 const stats = useStatisticsStore()
 
-const keyMap: Record<SortBy, keyof typeof stats.modelStats[number]> = { tokens: 'totalTokens', cost: 'cost', requests: 'requests' }
+const keyMap: Record<string, keyof typeof stats.modelStats[number]> = { tokens: 'totalTokens', cost: 'cost', requests: 'requests' }
 
 const sortOptions: { key: SortBy; label: string; icon: typeof Hash }[] = [
   { key: 'tokens', label: 'Token 用量', icon: Hash },

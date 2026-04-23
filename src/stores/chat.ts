@@ -97,6 +97,7 @@ async function streamOpenAI(
   const reader  = resp.body!.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let reasoningText = ''
   const usage: MessageUsage = {}
   while (true) {
     const { done, value } = await reader.read()
@@ -142,15 +143,25 @@ async function streamOpenAI(
         // OpenRouter uses delta.reasoning; DeepSeek uses delta.reasoning_content
         const reasoningContent = parsed.choices?.[0]?.delta?.reasoning
           ?? parsed.choices?.[0]?.delta?.reasoning_content
-        if (reasoningContent && handler.onReasoningToken) handler.onReasoningToken(reasoningContent)
+        if (reasoningContent && handler.onReasoningToken) {
+          reasoningText += reasoningContent
+          handler.onReasoningToken(reasoningContent)
+        }
         if (parsed.usage) {
           usage.inputTokens  = parsed.usage.prompt_tokens
           usage.outputTokens = parsed.usage.completion_tokens
+          if (parsed.usage.completion_tokens_details?.reasoning_tokens != null) {
+            usage.reasoningTokens = parsed.usage.completion_tokens_details.reasoning_tokens
+          }
           if (parsed.usage.cost != null)       usage.costUsd = parsed.usage.cost
           if (parsed.usage.total_cost != null) usage.costUsd = parsed.usage.total_cost
         }
       } catch { /* skip malformed */ }
     }
+  }
+  // Fallback: estimate reasoning tokens when API does not include them in outputTokens
+  if (!usage.reasoningTokens && reasoningText) {
+    usage.reasoningTokens = Math.max(1, Math.ceil(reasoningText.length / 4))
   }
   handler.onDone(usage)
 }
@@ -498,6 +509,12 @@ export const useChatStore = defineStore('chat', () => {
     if (conv) {
       activeConv.value   = conv
       activeConvId.value = id
+      // Sync global model selector to this conversation's model
+      const aiStore = useAiSettingsStore()
+      if (conv.providerId) {
+        aiStore.setActiveProvider(conv.providerId)
+        aiStore.setModelForProvider(conv.providerId, conv.model)
+      }
       // Restore streaming UI state if this conversation is still streaming
       if (streamingConvIds.has(id)) {
         const lastAssistant = [...conv.messages].reverse().find(m => m.role === 'assistant' && !m.error)
@@ -516,6 +533,13 @@ export const useChatStore = defineStore('chat', () => {
     const aiStore = useAiSettingsStore()
     const pid = providerId ?? aiStore.activeProviderId
     const mid = modelId   ?? aiStore.activeModelId()
+    // Sync global model state so the selector reflects the conversation's model
+    if (providerId) {
+      aiStore.setActiveProvider(providerId)
+    }
+    if (providerId && modelId) {
+      aiStore.setModelForProvider(providerId, modelId)
+    }
 
     const conv: Conversation = {
       id:          newId(),

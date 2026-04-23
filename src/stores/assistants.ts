@@ -28,13 +28,18 @@ export const useAssistantsStore = defineStore('assistants', () => {
     assistants.value = await listAssistants()
   }
 
-  async function create(name: string, systemPrompt: string, color: string): Promise<Assistant> {
+  async function create(
+    name: string, systemPrompt: string, color: string,
+    defaultProviderId?: string, defaultModelId?: string,
+  ): Promise<Assistant> {
     const now = new Date().toISOString()
     const a: Assistant = {
       id:           newId(),
       name:         name.trim(),
       systemPrompt: systemPrompt.trim(),
       color,
+      defaultProviderId,
+      defaultModelId,
       createdAt:    now,
       updatedAt:    now,
     }
@@ -43,10 +48,21 @@ export const useAssistantsStore = defineStore('assistants', () => {
     return a
   }
 
-  async function update(id: string, name: string, systemPrompt: string, color: string) {
+  async function update(
+    id: string, name: string, systemPrompt: string, color: string,
+    defaultProviderId?: string, defaultModelId?: string,
+  ) {
     const existing = assistants.value.find(a => a.id === id)
     if (!existing) return
-    await saveAssistant({ ...existing, name: name.trim(), systemPrompt: systemPrompt.trim(), color, updatedAt: new Date().toISOString() })
+    await saveAssistant({
+      ...existing,
+      name: name.trim(),
+      systemPrompt: systemPrompt.trim(),
+      color,
+      defaultProviderId,
+      defaultModelId,
+      updatedAt: new Date().toISOString(),
+    })
     await load()
   }
 

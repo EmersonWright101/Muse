@@ -15,9 +15,9 @@ export function resolveImageUrl(src: string): string {
   const baseDir = imageBaseDir.value
   if (baseDir) {
     if (src.startsWith('/')) {
-      return convertFileSrc(src)
+      return convertFileSrc(encodeURI(src))
     }
-    return convertFileSrc(`${baseDir}/${src}`)
+    return convertFileSrc(encodeURI(`${baseDir}/${src}`))
   }
   return src
 }

@@ -210,7 +210,7 @@ async function onPaste(e: ClipboardEvent) {
     const bytes = new Uint8Array(buffer)
 
     const ext = item.type === 'image/jpeg' ? 'jpg' : item.type.replace('image/', '')
-    const filename = `${note.value.id}_${Date.now()}.${ext}`
+    const filename = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`
 
     const baseDir = await travelNotesDir()
     const imgDir = `${baseDir}/images`

@@ -6,7 +6,7 @@ import { resolveDataRoot } from '../utils/path'
 import { readTextFile, writeTextFile, exists, mkdir } from '@tauri-apps/plugin-fs'
 
 export type TimeRange = 'today' | 'week' | 'month' | 'year'
-export type SortBy = 'tokens' | 'cost' | 'requests'
+export type SortBy = 'tokens' | 'cost' | 'requests' | 'provider' | 'name'
 export type Currency = 'usd' | 'cny'
 
 const EXCHANGE_RATE = 7
@@ -239,9 +239,18 @@ export const useStatisticsStore = defineStore('statistics', () => {
 
   const sortedModelStats = computed(() => {
     const list = [...modelStats.value]
-    const keyMap: Record<SortBy, keyof ModelStat> = { tokens: 'totalTokens', cost: 'cost', requests: 'requests' }
-    const key = keyMap[sortBy.value]
-    return list.sort((a, b) => (b[key] as number) - (a[key] as number))
+    const numKeyMap: Record<string, keyof ModelStat> = { tokens: 'totalTokens', cost: 'cost', requests: 'requests' }
+    const key = numKeyMap[sortBy.value]
+    if (key) {
+      return list.sort((a, b) => (b[key] as number) - (a[key] as number))
+    }
+    if (sortBy.value === 'provider') {
+      return list.sort((a, b) => a.provider.localeCompare(b.provider))
+    }
+    if (sortBy.value === 'name') {
+      return list.sort((a, b) => a.modelName.localeCompare(b.modelName))
+    }
+    return list
   })
 
   const rankedModels = computed(() => {
@@ -303,9 +312,18 @@ export const useStatisticsStore = defineStore('statistics', () => {
 
   const filteredSortedModelStats = computed(() => {
     const list = [...filteredModelStats.value]
-    const keyMap: Record<SortBy, keyof ModelStat> = { tokens: 'totalTokens', cost: 'cost', requests: 'requests' }
-    const key = keyMap[sortBy.value]
-    return list.sort((a, b) => (b[key] as number) - (a[key] as number))
+    const numKeyMap: Record<string, keyof ModelStat> = { tokens: 'totalTokens', cost: 'cost', requests: 'requests' }
+    const key = numKeyMap[sortBy.value]
+    if (key) {
+      return list.sort((a, b) => (b[key] as number) - (a[key] as number))
+    }
+    if (sortBy.value === 'provider') {
+      return list.sort((a, b) => a.provider.localeCompare(b.provider))
+    }
+    if (sortBy.value === 'name') {
+      return list.sort((a, b) => a.modelName.localeCompare(b.modelName))
+    }
+    return list
   })
 
   const filteredRankedModels = computed(() => {

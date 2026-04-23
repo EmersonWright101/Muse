@@ -12,6 +12,7 @@ import MessageItem              from './components/MessageItem.vue'
 import ModelSelector            from './components/ModelSelector.vue'
 import type { AttachmentMeta }  from '../../stores/chat'
 import { processPdfFile }       from '../../utils/pdf'
+import { saveConversation }     from '../../utils/storage'
 
 const chat       = useChatStore()
 const assistants = useAssistantsStore()
@@ -62,8 +63,8 @@ function scrollToBottom(force = false) {
 }
 
 watch(() => messages.value.length, () => scrollToBottom())
-watch(() => chat.streamingText,      () => scrollToBottom(true))
-watch(() => chat.streamingReasoning, () => scrollToBottom(true))
+watch(() => chat.streamingText,      () => scrollToBottom())
+watch(() => chat.streamingReasoning, () => scrollToBottom())
 
 onMounted(() => scrollToBottom(true))
 
@@ -226,8 +227,26 @@ function removeImage(id: string) {
 // ─── New chat ─────────────────────────────────────────────────────────────────
 
 function startNewChat() {
-  chat.newConversation()
+  const assistantId = chat.activeConv?.assistantId
+  let providerId: string | undefined
+  let modelId: string | undefined
+  if (assistantId) {
+    const a = assistants.assistants.find(x => x.id === assistantId)
+    if (a?.defaultProviderId && a?.defaultModelId) {
+      providerId = a.defaultProviderId
+      modelId = a.defaultModelId
+    }
+  }
+  chat.newConversation(providerId, modelId, assistantId)
   nextTick(() => textareaEl.value?.focus())
+}
+
+function onModelSelect(providerId: string, modelId: string) {
+  const conv = chat.activeConv
+  if (!conv) return
+  conv.providerId = providerId
+  conv.model = modelId
+  saveConversation(conv)
 }
 
 // ─── Reasoning popover ────────────────────────────────────────────────────────
@@ -273,7 +292,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleReasoningOutsi
             <span class="badge-dot" :style="{ background: activeAssistant.color }" />
             {{ activeAssistant.name }}
           </span>
-          <ModelSelector drop-down />
+          <ModelSelector drop-down @select="onModelSelect" />
         </div>
       </div>
 

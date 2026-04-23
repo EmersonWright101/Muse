@@ -33,10 +33,11 @@ export interface AttachmentMeta {
 }
 
 export interface MessageUsage {
-  inputTokens?:  number;
-  outputTokens?: number;
-  durationMs?:   number;
-  costUsd?:      number;
+  inputTokens?:     number;
+  outputTokens?:    number;
+  reasoningTokens?: number;
+  durationMs?:      number;
+  costUsd?:         number;
 }
 
 export interface MessageVariant {
@@ -69,12 +70,14 @@ export interface ChatMessage {
 }
 
 export interface Assistant {
-  id:           string;
-  name:         string;
-  systemPrompt: string;
-  color:        string;
-  createdAt:    string;
-  updatedAt:    string;
+  id:                 string;
+  name:               string;
+  systemPrompt:       string;
+  color:              string;
+  defaultProviderId?: string;
+  defaultModelId?:    string;
+  createdAt:          string;
+  updatedAt:          string;
 }
 
 export interface Conversation {

@@ -788,7 +788,7 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
                 </div>
 
                 <div class="edit-panel-section">
-                  <div class="edit-panel-label">价格</div>
+                  <div class="edit-panel-label">价格 <span class="edit-panel-hint">/ 1M tokens</span></div>
                   <div class="price-edit-row">
                     <div class="price-field">
                       <span class="price-field-label">输入</span>
@@ -798,7 +798,7 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
                         step="0.01"
                         min="0"
                         class="price-edit-input"
-                        placeholder="0.00"
+                        placeholder="0.00 / 1M"
                       />
                     </div>
                     <div class="price-field">
@@ -809,7 +809,7 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
                         step="0.01"
                         min="0"
                         class="price-edit-input"
-                        placeholder="0.00"
+                        placeholder="0.00 / 1M"
                       />
                     </div>
                     <div class="price-field">
@@ -1656,6 +1656,14 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
   color: #8e8e93;
   text-transform: uppercase;
   letter-spacing: 0.3px;
+}
+
+.edit-panel-hint {
+  font-size: 10px;
+  font-weight: 500;
+  color: #b0b0b5;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .cap-toggle-group {

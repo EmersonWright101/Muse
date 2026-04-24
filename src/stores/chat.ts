@@ -70,6 +70,7 @@ async function streamOpenAI(
   modalities?: string[],
   temperature?: number,
   maxTokens?: number,
+  ollamaThink?: boolean,
 ) {
   const allMessages = systemPrompt
     ? [{ role: 'system', content: systemPrompt }, ...messages]
@@ -83,6 +84,8 @@ async function streamOpenAI(
       reqBody.reasoning_effort = reasoningEffort
     }
   }
+  // Ollama OpenAI-compatible endpoint uses think: bool to toggle reasoning
+  if (ollamaThink !== undefined) reqBody.think = ollamaThink
   if (modalities?.length) reqBody.modalities = modalities
   if (temperature !== undefined) reqBody.temperature = temperature
   if (maxTokens   !== undefined) reqBody.max_tokens  = maxTokens
@@ -143,9 +146,10 @@ async function streamOpenAI(
             }
           }
         }
-        // OpenRouter uses delta.reasoning; DeepSeek uses delta.reasoning_content
+        // OpenRouter uses delta.reasoning; DeepSeek uses delta.reasoning_content; Ollama OpenAI-compat uses delta.thinking
         const reasoningContent = parsed.choices?.[0]?.delta?.reasoning
           ?? parsed.choices?.[0]?.delta?.reasoning_content
+          ?? parsed.choices?.[0]?.delta?.thinking
         if (reasoningContent && handler.onReasoningToken) {
           reasoningText += reasoningContent
           handler.onReasoningToken(reasoningContent)
@@ -343,9 +347,8 @@ async function streamOllama(
   if (resp.status === 404) {
     // Fall back to OpenAI-compatible endpoint (e.g. DGX-Spark / Ollama proxies that
     // expose /v1/chat/completions but not the native /api/chat route).
-    // Ollama's OpenAI-compatible endpoint does not support the think parameter,
-    // so thinking behavior falls back to the model's default in this path.
-    await streamOpenAI(`${baseUrl}/v1`, '', model, allMessages, handler, signal, undefined, undefined, undefined, temperature, maxTokens)
+    // Pass think: useReasoning so reasoning mode is still controllable in this path.
+    await streamOpenAI(`${baseUrl}/v1`, '', model, allMessages, handler, signal, undefined, undefined, undefined, temperature, maxTokens, useReasoning)
     return
   }
   if (!resp.ok) {
@@ -508,6 +511,13 @@ export const useChatStore = defineStore('chat', () => {
 
   async function loadList() {
     conversations.value = await listConversations()
+  }
+
+  // Coalesces rapid back-to-back loadList() calls (e.g. concurrent stream completions).
+  let _loadListTimer: ReturnType<typeof setTimeout> | null = null
+  function scheduleLoadList() {
+    if (_loadListTimer) clearTimeout(_loadListTimer)
+    _loadListTimer = setTimeout(() => { _loadListTimer = null; loadList() }, 50)
   }
 
   // ─── Open conversation ──────────────────────────────────────────────────
@@ -777,7 +787,7 @@ export const useChatStore = defineStore('chat', () => {
         }
         conv.updatedAt = new Date().toISOString()
         await saveConversation(conv)
-        await loadList()
+        scheduleLoadList()
         // Generate AI title after the first completed assistant reply
         if (shouldGenTitle) generateTitle(conv).catch(() => {})
       },
@@ -792,7 +802,7 @@ export const useChatStore = defineStore('chat', () => {
           streamingReasoning.value = ''
         }
         await saveConversation(conv)
-        await loadList()
+        scheduleLoadList()
       },
     }
 

@@ -3,6 +3,9 @@ import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useTravelStore } from './stores/travel'
 import { useSyncStore } from './stores/sync'
+import './stores/travelCopilot'  // ensure copilot sync module is registered at startup
+import './stores/chat'           // ensure conversations sync module is registered at startup
+import './stores/assistants'     // ensure assistants sync module is registered at startup
 import TitleBar from './components/TitleBar.vue'
 import AppSidebar from './components/AppSidebar.vue'
 

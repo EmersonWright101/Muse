@@ -117,6 +117,21 @@ async function ensureDirs(): Promise<void> {
   if (!(await exists(d))) await mkdir(d, { recursive: true });
 }
 
+// ─── Mutex ───────────────────────────────────────────────────────────────────
+// Serializes concurrent read-modify-write operations on shared JSON files.
+
+class AsyncMutex {
+  private _queue: Promise<void> = Promise.resolve()
+  run<T>(fn: () => Promise<T>): Promise<T> {
+    const result = this._queue.then(fn)
+    this._queue = result.then(() => {}, () => {})
+    return result
+  }
+}
+
+const indexMutex      = new AsyncMutex()
+const assistantsMutex = new AsyncMutex()
+
 // ─── Index ───────────────────────────────────────────────────────────────────
 
 async function readIndex(): Promise<ConversationMeta[]> {
@@ -170,24 +185,25 @@ export async function saveConversation(conv: Conversation): Promise<void> {
   await atomicWriteTextFile(path, JSON.stringify(conv, null, 2));
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
 
-  // Update index entry
-  const index = await readIndex();
-  const idx   = index.findIndex(m => m.id === conv.id);
-  const lastMsg = conv.messages.filter(m => m.role !== 'system').at(-1);
-  const meta: ConversationMeta = {
-    id:          conv.id,
-    title:       conv.title,
-    createdAt:   conv.createdAt,
-    updatedAt:   conv.updatedAt,
-    preview:     lastMsg ? lastMsg.content.slice(0, 80).replace(/\n/g, ' ') : '',
-    model:       conv.model,
-    providerId:  conv.providerId,
-    pinned:      conv.pinned,
-    assistantId: conv.assistantId,
-  };
-  if (idx >= 0) index[idx] = meta;
-  else index.unshift(meta);
-  await writeIndex(index);
+  await indexMutex.run(async () => {
+    const index = await readIndex();
+    const idx   = index.findIndex(m => m.id === conv.id);
+    const lastMsg = conv.messages.filter(m => m.role !== 'system').at(-1);
+    const meta: ConversationMeta = {
+      id:          conv.id,
+      title:       conv.title,
+      createdAt:   conv.createdAt,
+      updatedAt:   conv.updatedAt,
+      preview:     lastMsg ? lastMsg.content.slice(0, 80).replace(/\n/g, ' ') : '',
+      model:       conv.model,
+      providerId:  conv.providerId,
+      pinned:      conv.pinned,
+      assistantId: conv.assistantId,
+    };
+    if (idx >= 0) index[idx] = meta;
+    else index.unshift(meta);
+    await writeIndex(index);
+  });
 }
 
 const LS_DELETED_CONVERSATIONS_KEY = 'muse-deleted-conversations';
@@ -233,8 +249,10 @@ export async function deleteConversation(id: string): Promise<void> {
     if (await exists(path)) await remove(path);
   } catch { /* ignore */ }
 
-  const index = await readIndex();
-  await writeIndex(index.filter(m => m.id !== id));
+  await indexMutex.run(async () => {
+    const index = await readIndex();
+    await writeIndex(index.filter(m => m.id !== id));
+  });
   const map = getDeletedConversations();
   map[id] = new Date().toISOString();
   localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
@@ -251,8 +269,10 @@ export async function deleteConversations(ids: string[]): Promise<void> {
       if (await exists(path)) await remove(path);
     } catch { /* ignore */ }
   }
-  const index = await readIndex();
-  await writeIndex(index.filter(m => !set.has(m.id)));
+  await indexMutex.run(async () => {
+    const index = await readIndex();
+    await writeIndex(index.filter(m => !set.has(m.id)));
+  });
   const map = getDeletedConversations();
   for (const id of set) map[id] = now;
   localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
@@ -297,17 +317,21 @@ export async function listAssistants(): Promise<Assistant[]> {
 
 export async function saveAssistant(assistant: Assistant): Promise<void> {
   await ensureDirs();
-  const list = await listAssistants();
-  const idx  = list.findIndex(a => a.id === assistant.id);
-  if (idx >= 0) list[idx] = assistant;
-  else list.push(assistant);
-  await atomicWriteTextFile(await assistantsPath(), JSON.stringify(list, null, 2));
+  await assistantsMutex.run(async () => {
+    const list = await listAssistants();
+    const idx  = list.findIndex(a => a.id === assistant.id);
+    if (idx >= 0) list[idx] = assistant;
+    else list.push(assistant);
+    await atomicWriteTextFile(await assistantsPath(), JSON.stringify(list, null, 2));
+  });
   localStorage.setItem('muse-ts-assistants', new Date().toISOString());
 }
 
 export async function deleteAssistant(id: string): Promise<void> {
-  const list = await listAssistants();
-  await atomicWriteTextFile(await assistantsPath(), JSON.stringify(list.filter(a => a.id !== id), null, 2));
+  await assistantsMutex.run(async () => {
+    const list = await listAssistants();
+    await atomicWriteTextFile(await assistantsPath(), JSON.stringify(list.filter(a => a.id !== id), null, 2));
+  });
   const map = getDeletedAssistants();
   map[id] = new Date().toISOString();
   localStorage.setItem(LS_DELETED_ASSISTANTS_KEY, JSON.stringify(map));

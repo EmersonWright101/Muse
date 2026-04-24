@@ -4,20 +4,24 @@
  * Each note is a Markdown file with YAML frontmatter.
  *
  * Frontmatter schema:
- *   title    : string
- *   lat      : number
- *   lng      : number
- *   category : string
- *   rating   : number (1-5)
- *   date     : string (ISO date)
- *   cover    : string (emoji or empty)
+ *   title      : string
+ *   lat        : number
+ *   lng        : number
+ *   categoryL1 : string  (primary category / 一级分类)
+ *   categoryL2 : string  (secondary category / 二级分类)
+ *   category   : string  (legacy alias = categoryL2, kept for sync compat)
+ *   rating     : number (1-5)
+ *   date       : string (ISO date)
+ *   cover      : string (emoji or empty)
  *
  * Example:
  *   ---
  *   title: 日本·东京
  *   lat: 35.6762
  *   lng: 139.6503
- *   category: 城市游
+ *   categoryL1: 城市
+ *   categoryL2: 景点
+ *   category: 景点
  *   rating: 5
  *   date: 2024-03-15
  *   cover: 🗼
@@ -32,6 +36,7 @@ import {
   exists,
   mkdir,
   remove,
+  rename,
   readDir,
 } from '@tauri-apps/plugin-fs'
 import { travelNotesDir } from './path'
@@ -41,7 +46,8 @@ export interface TravelNoteMeta {
   title: string
   lat: number
   lng: number
-  category: string
+  categoryL1: string // primary category / 一级分类
+  categoryL2: string // secondary category / 二级分类
   rating: number
   date: string
   cover: string
@@ -54,7 +60,8 @@ export interface TravelNote {
   title: string
   lat: number
   lng: number
-  category: string
+  categoryL1: string
+  categoryL2: string
   rating: number
   date: string
   cover: string
@@ -72,6 +79,7 @@ function parseFrontmatter(raw: string): { meta: Partial<TravelNote>; body: strin
   const yamlBlock = match[1]
   const body = match[2].trimStart()
   const meta: Partial<TravelNote> = { content: raw }
+  let legacyCategory = ''
 
   for (const line of yamlBlock.split('\n')) {
     const colonIdx = line.indexOf(':')
@@ -79,15 +87,22 @@ function parseFrontmatter(raw: string): { meta: Partial<TravelNote>; body: strin
     const key = line.slice(0, colonIdx).trim()
     const val = line.slice(colonIdx + 1).trim()
     switch (key) {
-      case 'title': meta.title = val; break
-      case 'lat': meta.lat = parseFloat(val); break
-      case 'lng': meta.lng = parseFloat(val); break
-      case 'category': meta.category = val; break
-      case 'rating': meta.rating = parseFloat(val); break
-      case 'date': meta.date = val; break
-      case 'cover': meta.cover = val; break
+      case 'title':      meta.title = val; break
+      case 'lat':        meta.lat = parseFloat(val); break
+      case 'lng':        meta.lng = parseFloat(val); break
+      case 'categoryL1': meta.categoryL1 = val; break
+      case 'categoryL2': meta.categoryL2 = val; break
+      case 'category':   legacyCategory = val; break  // old field → migrate to L2
+      case 'rating':     meta.rating = parseFloat(val); break
+      case 'date':       meta.date = val; break
+      case 'cover':      meta.cover = val; break
+      case 'updatedAt':  meta.updatedAt = val; break
     }
   }
+  // Migrate old single-category field to L2 if L2 not explicitly set
+  if (!meta.categoryL2 && legacyCategory) meta.categoryL2 = legacyCategory
+  if (!meta.categoryL1) meta.categoryL1 = ''
+  if (!meta.categoryL2) meta.categoryL2 = ''
   return { meta, body }
 }
 
@@ -97,7 +112,9 @@ function stringifyFrontmatter(note: TravelNote): string {
     `title: ${note.title}`,
     `lat: ${note.lat}`,
     `lng: ${note.lng}`,
-    `category: ${note.category}`,
+    `categoryL1: ${note.categoryL1 ?? ''}`,
+    `categoryL2: ${note.categoryL2 ?? ''}`,
+    `category: ${note.categoryL2 ?? ''}`,  // legacy compat for sync
     `rating: ${note.rating}`,
     `date: ${note.date}`,
     `cover: ${note.cover || ''}`,
@@ -175,7 +192,8 @@ export async function listTravelNotes(): Promise<TravelNoteMeta[]> {
         title: meta.title ?? id,
         lat: meta.lat ?? 0,
         lng: meta.lng ?? 0,
-        category: meta.category ?? '未分类',
+        categoryL1: meta.categoryL1 ?? '',
+        categoryL2: meta.categoryL2 ?? '',
         rating: meta.rating ?? 0,
         date: meta.date ?? new Date().toISOString().slice(0, 10),
         cover,
@@ -202,7 +220,8 @@ export async function loadTravelNote(id: string): Promise<TravelNote | null> {
       title: meta.title ?? id,
       lat: meta.lat ?? 0,
       lng: meta.lng ?? 0,
-      category: meta.category ?? '未分类',
+      categoryL1: meta.categoryL1 ?? '',
+      categoryL2: meta.categoryL2 ?? '',
       rating: meta.rating ?? 0,
       date: meta.date ?? new Date().toISOString().slice(0, 10),
       cover,
@@ -218,7 +237,9 @@ export async function saveTravelNote(note: TravelNote): Promise<void> {
   await ensureDir()
   const path = await notePath(note.id)
   note.updatedAt = new Date().toISOString()
-  await writeTextFile(path, stringifyFrontmatter(note))
+  const tmp = `${path}.tmp`
+  await writeTextFile(tmp, stringifyFrontmatter(note))
+  await rename(tmp, path)
   localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
 }
 
@@ -233,11 +254,53 @@ export async function deleteTravelNote(id: string): Promise<void> {
   localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
 }
 
-export async function listCategories(): Promise<string[]> {
+export async function listCategoriesL1(): Promise<string[]> {
   const notes = await listTravelNotes()
   const set = new Set<string>()
-  for (const n of notes) if (n.category) set.add(n.category)
+  for (const n of notes) if (n.categoryL1) set.add(n.categoryL1)
   return Array.from(set).sort()
+}
+
+export async function listCategoriesL2(): Promise<string[]> {
+  const notes = await listTravelNotes()
+  const set = new Set<string>()
+  for (const n of notes) if (n.categoryL2) set.add(n.categoryL2)
+  return Array.from(set).sort()
+}
+
+/** Returns filenames (not paths) of image attachments not referenced in any note. */
+export async function scanUnusedAttachments(): Promise<string[]> {
+  const dir = await travelNotesDir()
+  const imgDir = `${dir}/images`
+  if (!(await exists(imgDir))) return []
+
+  const imgEntries = await readDir(imgDir)
+  const IMAGE_EXTS = /\.(jpe?g|png|gif|webp|avif|svg|bmp|tiff?)$/i
+  const imageFiles = imgEntries
+    .filter(e => e.name && !e.isDirectory && IMAGE_EXTS.test(e.name))
+    .map(e => e.name!)
+
+  if (imageFiles.length === 0) return []
+
+  const noteEntries = await readDir(dir)
+  let allContent = ''
+  for (const entry of noteEntries) {
+    if (!entry.name?.endsWith('.md')) continue
+    try {
+      const content = await readTextFile(`${dir}/${entry.name}`)
+      allContent += content
+    } catch { /* skip */ }
+  }
+
+  return imageFiles.filter(filename => !allContent.includes(filename))
+}
+
+export async function deleteAttachment(filename: string): Promise<void> {
+  const dir = await travelNotesDir()
+  const filePath = `${dir}/images/${filename}`
+  try {
+    if (await exists(filePath)) await remove(filePath)
+  } catch { /* ignore */ }
 }
 
 export function newNoteId(): string {
@@ -254,7 +317,8 @@ export function createEmptyNote(): TravelNote {
     title: '新笔记',
     lat: 0,
     lng: 0,
-    category: '未分类',
+    categoryL1: '',
+    categoryL2: '',
     rating: 0,
     date,
     cover: randomTravelEmoji(),

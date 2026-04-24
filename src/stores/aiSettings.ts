@@ -148,10 +148,16 @@ const GOOGLE_MODELS: AIModel[] = [
   { id: 'gemini-1.5-flash',      name: 'Gemini 1.5 Flash',      contextLength: 1_000_000, multimodal: true },
 ]
 
+const DEEPSEEK_MODELS: AIModel[] = [
+  { id: 'deepseek-chat',     name: 'DeepSeek V3',        contextLength: 64_000,  inputPrice: 1,  outputPrice: 2,  priceCurrency: 'cny' },
+  { id: 'deepseek-reasoner', name: 'DeepSeek R1',        contextLength: 64_000,  reasoning: true, inputPrice: 4, outputPrice: 16, priceCurrency: 'cny' },
+]
+
 const DEFAULT_PROVIDERS: AIProvider[] = [
   { id: 'openai',    type: 'openai',    name: 'OpenAI',              apiKey: '', baseUrl: 'https://api.openai.com/v1',                       models: OPENAI_MODELS,    enabled: true,  selectedModelId: 'gpt-4o',              builtIn: true },
   { id: 'anthropic', type: 'anthropic', name: 'Anthropic',           apiKey: '', baseUrl: 'https://api.anthropic.com',                        models: ANTHROPIC_MODELS, enabled: true,  selectedModelId: 'claude-sonnet-4-5',   builtIn: true },
   { id: 'google',    type: 'google',    name: 'Google Gemini',       apiKey: '', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', models: GOOGLE_MODELS,    enabled: true,  selectedModelId: 'gemini-2.0-flash',    builtIn: true },
+  { id: 'deepseek',  type: 'custom',    name: 'DeepSeek',            apiKey: '', baseUrl: 'https://api.deepseek.com',                         models: DEEPSEEK_MODELS,  enabled: true,  selectedModelId: 'deepseek-chat',       builtIn: true },
   { id: 'custom',    type: 'custom',    name: '自定义 (OpenAI 兼容)', apiKey: '', baseUrl: '',                                                  models: [{ id: 'custom-model', name: '自定义模型' }], enabled: false, selectedModelId: 'custom-model', builtIn: true },
 ]
 
@@ -324,9 +330,18 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
   // ─── Persistence helpers ────────────────────────────────────────────────────
 
   let _persistTimer: ReturnType<typeof setTimeout> | null = null
+  let _initDone = false
+  let _pendingPersist = false
+
   function persist() {
+    if (!_initDone) { _pendingPersist = true; return }
     if (_persistTimer) clearTimeout(_persistTimer)
     _persistTimer = setTimeout(() => saveToStorage(activeProviderId.value, providers.value), DEBOUNCE_MS)
+  }
+
+  function flush(): Promise<void> {
+    if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null }
+    return saveToStorage(activeProviderId.value, providers.value)
   }
 
   // Load persisted settings on init
@@ -396,6 +411,8 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
 
       if (saved.activeProviderId) activeProviderId.value = saved.activeProviderId
     } catch { /* ignore */ }
+    _initDone = true
+    if (_pendingPersist) persist()
   })()
 
   // Watch for changes and auto-persist
@@ -417,6 +434,7 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     addProvider,
     removeProvider,
     persist,
+    flush,
   }
 })
 

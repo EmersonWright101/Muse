@@ -15,6 +15,8 @@ import {
   createEmptyNote,
   rebuildContent,
   extractFirstImage,
+  scanUnusedAttachments,
+  deleteAttachment,
   type TravelNoteMeta,
   type TravelNote,
 } from '../utils/travelStorage'
@@ -26,20 +28,36 @@ export const useTravelStore = defineStore('travel', () => {
   const activeNoteId = ref<string | null>(null)
   const activeNote = ref<TravelNote | null>(null)
   const searchQuery = ref('')
-  const selectedCategory = ref<string>('')
+  const selectedCategoryL1 = ref<string>('')
+  const selectedCategoryL2 = ref<string>('')
   const isLoading = ref(false)
   const viewMode = ref<'map' | 'editor' | 'powerMap'>('map')
+  const orphanedAttachments = ref<string[]>([])
+  let _openNoteReqId = 0
 
-  const categories = computed(() => {
+  const categoriesL1 = computed(() => {
     const set = new Set<string>()
-    for (const n of notes.value) if (n.category) set.add(n.category)
+    for (const n of notes.value) if (n.categoryL1) set.add(n.categoryL1)
+    return Array.from(set).sort()
+  })
+
+  const categoriesL2 = computed(() => {
+    const set = new Set<string>()
+    for (const n of notes.value) {
+      // If L1 filter active, only show L2 values for matching notes
+      if (selectedCategoryL1.value && n.categoryL1 !== selectedCategoryL1.value) continue
+      if (n.categoryL2) set.add(n.categoryL2)
+    }
     return Array.from(set).sort()
   })
 
   const filteredNotes = computed(() => {
     let list = notes.value
-    if (selectedCategory.value) {
-      list = list.filter(n => n.category === selectedCategory.value)
+    if (selectedCategoryL1.value) {
+      list = list.filter(n => n.categoryL1 === selectedCategoryL1.value)
+    }
+    if (selectedCategoryL2.value) {
+      list = list.filter(n => n.categoryL2 === selectedCategoryL2.value)
     }
     if (searchQuery.value.trim()) {
       const q = searchQuery.value.toLowerCase()
@@ -47,7 +65,8 @@ export const useTravelStore = defineStore('travel', () => {
         n =>
           n.title.toLowerCase().includes(q) ||
           n.preview.toLowerCase().includes(q) ||
-          n.category.toLowerCase().includes(q)
+          n.categoryL1.toLowerCase().includes(q) ||
+          n.categoryL2.toLowerCase().includes(q)
       )
     }
     return list
@@ -61,12 +80,25 @@ export const useTravelStore = defineStore('travel', () => {
     isLoading.value = false
   }
 
+  // ─── Scan orphaned attachments ─────────────────────────────────────────────
+
+  async function scanAttachments() {
+    orphanedAttachments.value = await scanUnusedAttachments()
+  }
+
+  async function deleteOrphanedAttachment(filename: string) {
+    await deleteAttachment(filename)
+    orphanedAttachments.value = orphanedAttachments.value.filter(f => f !== filename)
+  }
+
   // ─── Open note ─────────────────────────────────────────────────────────────
 
   async function openNote(id: string) {
     if (activeNoteId.value === id) return
+    const reqId = ++_openNoteReqId
     isLoading.value = true
     const note = await loadTravelNote(id)
+    if (reqId !== _openNoteReqId) return  // superseded by a newer openNote call
     if (note) {
       activeNote.value = note
       activeNoteId.value = id
@@ -128,8 +160,12 @@ export const useTravelStore = defineStore('travel', () => {
     }
   }
 
-  function setCategory(category: string) {
-    if (activeNote.value) activeNote.value.category = category
+  function setCategoryL1(cat: string) {
+    if (activeNote.value) activeNote.value.categoryL1 = cat
+  }
+
+  function setCategoryL2(cat: string) {
+    if (activeNote.value) activeNote.value.categoryL2 = cat
   }
 
   function setRating(rating: number) {
@@ -146,7 +182,6 @@ export const useTravelStore = defineStore('travel', () => {
 
   function setBody(body: string) {
     if (activeNote.value) {
-      // Rebuild full content with current meta + new body
       const note = activeNote.value
       note.content = rebuildContent({ ...note, content: body })
     }
@@ -160,19 +195,25 @@ export const useTravelStore = defineStore('travel', () => {
     activeNoteId,
     activeNote,
     searchQuery,
-    selectedCategory,
+    selectedCategoryL1,
+    selectedCategoryL2,
     isLoading,
     viewMode,
-    categories,
+    categoriesL1,
+    categoriesL2,
     filteredNotes,
+    orphanedAttachments,
     loadList,
+    scanAttachments,
+    deleteOrphanedAttachment,
     openNote,
     newNote,
     saveActive,
     deleteOne,
     setTitle,
     setLatLng,
-    setCategory,
+    setCategoryL1,
+    setCategoryL2,
     setRating,
     setDate,
     setCover,

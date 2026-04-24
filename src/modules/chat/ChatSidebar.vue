@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Search, SquarePen, Trash2, ListChecks, X, Pin, Plus, Pencil, ChevronDown } from 'lucide-vue-next'
+import { Search, SquarePen, Trash2, ListChecks, X, Pin, Plus, Pencil, ChevronDown, Download } from 'lucide-vue-next'
 import { useChatStore }       from '../../stores/chat'
 import { useAssistantsStore, ASSISTANT_COLORS } from '../../stores/assistants'
 import { useAiSettingsStore } from '../../stores/aiSettings'
 import type { Assistant }     from '../../stores/assistants'
+import { useChatExport, type ExportFilter } from '../../composables/useChatExport'
 
 const { t } = useI18n()
 const chat       = useChatStore()
@@ -199,6 +200,29 @@ async function removeAssistant(id: string) {
   if (filterAssistantId.value === id) filterAssistantId.value = null
   await assistants.remove(id)
 }
+
+// ─── Export ───────────────────────────────────────────────────────────────────
+
+const { exportChat, exporting, exportError } = useChatExport()
+const exportOpen    = ref(false)
+const exportRoot    = ref<HTMLElement>()
+const exportSuccess = ref(false)
+
+function handleExportOutside(e: MouseEvent) {
+  if (exportRoot.value && !exportRoot.value.contains(e.target as Node)) exportOpen.value = false
+}
+
+onMounted(()  => document.addEventListener('mousedown', handleExportOutside))
+onUnmounted(() => document.removeEventListener('mousedown', handleExportOutside))
+
+async function doExport(filter: ExportFilter) {
+  exportOpen.value = false
+  await exportChat(filter)
+  if (!exportError.value) {
+    exportSuccess.value = true
+    setTimeout(() => { exportSuccess.value = false }, 2000)
+  }
+}
 </script>
 
 <template>
@@ -262,6 +286,47 @@ async function removeAssistant(id: string) {
         >
           <ListChecks :size="14" />
         </button>
+
+        <!-- Export -->
+        <div ref="exportRoot" class="export-picker">
+          <button
+            class="icon-btn"
+            :class="{ active: exportOpen || exportSuccess }"
+            :title="exporting ? '导出中…' : '导出对话数据'"
+            :disabled="exporting"
+            @click="exportOpen = !exportOpen"
+          >
+            <Download :size="14" />
+          </button>
+          <Transition name="picker-drop">
+            <div v-if="exportOpen" class="export-dropdown">
+              <div class="export-title">导出对话</div>
+              <button class="export-item" @click="doExport('all')">
+                <span class="export-item-icon">📄</span>
+                <div class="export-item-info">
+                  <span class="export-item-label">全部对话</span>
+                  <span class="export-item-desc">导出所有消息及反馈</span>
+                </div>
+              </button>
+              <button class="export-item" @click="doExport('positive')">
+                <span class="export-item-icon">👍</span>
+                <div class="export-item-info">
+                  <span class="export-item-label">好评消息</span>
+                  <span class="export-item-desc">仅导出标记为有帮助的对话</span>
+                </div>
+              </button>
+              <button class="export-item" @click="doExport('negative')">
+                <span class="export-item-icon">👎</span>
+                <div class="export-item-info">
+                  <span class="export-item-label">差评消息</span>
+                  <span class="export-item-desc">仅导出标记为无帮助的对话</span>
+                </div>
+              </button>
+              <div v-if="exportError" class="export-error">{{ exportError }}</div>
+            </div>
+          </Transition>
+        </div>
+
         <button class="icon-btn" :title="t('chat.newChat')" @click="handleNewChat()">
           <SquarePen :size="14" />
         </button>
@@ -1020,6 +1085,85 @@ async function removeAssistant(id: string) {
 
 .form-btn.save:hover { opacity: 0.88; }
 .form-btn.save:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ─── Export picker ───────────────────────────────────────────────────────── */
+
+.export-picker {
+  position: relative;
+}
+
+.export-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 220px;
+  background: rgba(250, 250, 252, 0.97);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  z-index: 50;
+}
+
+.export-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8e8e93;
+  padding: 2px 8px 6px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.export-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.10s;
+}
+
+.export-item:hover { background: rgba(0, 0, 0, 0.05); }
+
+.export-item-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.export-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.export-item-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #1c1c1e;
+}
+
+.export-item-desc {
+  font-size: 10.5px;
+  color: #8e8e93;
+}
+
+.export-error {
+  margin-top: 4px;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: #ff3b30;
+  background: rgba(255, 59, 48, 0.06);
+  border-radius: 6px;
+}
 
 /* ─── Form transition ─────────────────────────────────────────────────────── */
 

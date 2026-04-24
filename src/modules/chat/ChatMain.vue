@@ -30,6 +30,10 @@ const activeAssistant = computed(() => {
   return id ? assistants.assistants.find(a => a.id === id) : undefined
 })
 
+const activeProviderType = computed(() =>
+  aiSettings.providers.find(p => p.id === aiSettings.activeProviderId)?.type
+)
+
 // ─── Input state ──────────────────────────────────────────────────────────────
 
 const inputText      = ref('')
@@ -398,7 +402,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleReasoningOutsi
                       <span class="toggle-knob" />
                     </button>
                   </div>
-                  <div v-if="chat.useReasoning" class="reasoning-levels">
+                  <div v-if="chat.useReasoning && activeProviderType !== 'ollama'" class="reasoning-levels">
                     <button
                       v-for="lv in (['low', 'medium', 'high'] as const)"
                       :key="lv"
@@ -409,6 +413,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleReasoningOutsi
                       {{ lv === 'low' ? '低' : lv === 'medium' ? '中' : '高' }}
                     </button>
                   </div>
+                  <div v-if="activeProviderType === 'google'" class="reasoning-hint">Google 暂不支持推理模式</div>
                 </div>
               </Transition>
             </div>
@@ -924,6 +929,13 @@ onUnmounted(() => document.removeEventListener('mousedown', handleReasoningOutsi
   display: flex;
   gap: 4px;
   margin-top: 8px;
+}
+
+.reasoning-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #8e8e93;
+  text-align: center;
 }
 
 .level-btn {

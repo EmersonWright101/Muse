@@ -15,7 +15,7 @@ import { reactive, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { webdavPing } from '../utils/webdav'
 import { syncService } from '../services/sync'
-import { DEBOUNCE_MS } from './aiSettings'
+import { useAiSettingsStore } from './aiSettings'
 
 const SYNC_CONFIG_LS_KEY = 'muse-webdav-sync-config'
 
@@ -116,9 +116,9 @@ export const useSyncStore = defineStore('sync', () => {
         return
       }
 
-      // Wait for any debounced store persists before capturing syncedAt
-      // so the timestamps are ordered correctly.
-      await new Promise(r => setTimeout(r, DEBOUNCE_MS + 50))
+      // Flush any pending debounced AI settings persist before recording syncedAt
+      // so the local timestamp is guaranteed to be written before we snapshot it.
+      await useAiSettingsStore().flush()
 
       syncService.saveSyncRecord({ syncedAt: result.syncedAt, remoteTs: result.remoteTs })
 

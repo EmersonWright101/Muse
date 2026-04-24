@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useEditor, EditorContent } from '@tiptap/vue-3'
+import StarterKit from '@tiptap/starter-kit'
+import { Markdown as TiptapMarkdown } from 'tiptap-markdown'
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
 import hljs from 'highlight.js/lib/core'
@@ -15,8 +18,11 @@ import markdown from 'highlight.js/lib/languages/markdown'
 import yaml from 'highlight.js/lib/languages/yaml'
 import plaintext from 'highlight.js/lib/languages/plaintext'
 import L from 'leaflet'
-import { Star, Crosshair, Check, X, Pencil } from 'lucide-vue-next'
+import { Star, Crosshair, Check, X, Pencil, Sparkles } from 'lucide-vue-next'
 import { useTravelStore } from '../../../stores/travel'
+import { useTravelCopilotStore } from '../../../stores/travelCopilot'
+import { useAiSettingsStore } from '../../../stores/aiSettings'
+import { streamCopilotCompletion } from '../../../composables/useCopilotStream'
 import { writeFile, mkdir, exists } from '@tauri-apps/plugin-fs'
 import { travelNotesDir } from '../../../utils/path'
 import { initImageAssetBase, resolveImageUrl } from '../../../utils/imageAsset'
@@ -36,12 +42,205 @@ hljs.registerLanguage('yml', yaml)
 hljs.registerLanguage('plaintext', plaintext)
 
 const { t } = useI18n()
-const store = useTravelStore()
+const store   = useTravelStore()
+const copilot = useTravelCopilotStore()
+const aiStore = useAiSettingsStore()
 
-// Editor layout: 'split' | 'edit' | 'preview'
-const layout = ref<'split' | 'edit' | 'preview'>('split')
+// ─── AI Copilot state ─────────────────────────────────────────────────────────
+
+const textareaRef         = ref<HTMLTextAreaElement | null>(null)
+const ghostRef            = ref<HTMLDivElement | null>(null)
+const suggestion          = ref('')
+const suggestionCursor    = ref(0)
+const showCopilotSettings = ref(false)
+let _copilotAbort: AbortController | null = null
+let _copilotTimer: ReturnType<typeof setTimeout> | null = null
+let _acceptingChunk = false
+
+const configuredProviders = computed(() =>
+  aiStore.providers.filter(p => p.enabled && (p.apiKey || p.type === 'ollama'))
+)
+// Exclude reasoning models from copilot — they are slow/expensive for autocomplete
+const copilotProviderModels = computed(() =>
+  (aiStore.providers.find(p => p.id === copilot.providerId)?.models ?? []).filter(m => !m.reasoning)
+)
+
+const ghostContent = computed(() => {
+  if (!suggestion.value) return ''
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return (
+    `<span style="color:transparent">${esc(body.value)}</span>` +
+    `<span class="copilot-ghost-text">${esc(suggestion.value)}</span>`
+  )
+})
+
+function syncGhostScroll() {
+  if (ghostRef.value && textareaRef.value) {
+    ghostRef.value.scrollTop  = textareaRef.value.scrollTop
+    ghostRef.value.scrollLeft = textareaRef.value.scrollLeft
+  }
+}
+
+function dismissSuggestion() {
+  if (_copilotAbort) { _copilotAbort.abort(); _copilotAbort = null }
+  suggestion.value = ''
+}
+
+function acceptSuggestion() {
+  if (!suggestion.value) return
+  if (_copilotAbort) { _copilotAbort.abort(); _copilotAbort = null }
+  const sugg   = suggestion.value
+  const cursor = suggestionCursor.value
+  suggestion.value = ''
+  body.value = body.value.slice(0, cursor) + sugg + body.value.slice(cursor)
+  nextTick(() => {
+    if (textareaRef.value) {
+      const pos = cursor + sugg.length
+      textareaRef.value.setSelectionRange(pos, pos)
+      textareaRef.value.focus()
+    }
+  })
+}
+
+async function requestCompletion() {
+  if (!copilot.enabled) return
+  const ta = textareaRef.value
+  if (!ta) return
+  const cursor = ta.selectionStart ?? body.value.length
+  if (cursor !== body.value.length) return          // only suggest at end of text
+  if (body.value.trim().length < 8) return          // need some context
+
+  const provider = aiStore.providers.find(p => p.id === copilot.providerId && p.enabled)
+  if (!provider) return
+  if (!provider.apiKey && provider.type !== 'ollama') return
+
+  const modelId = copilot.modelId || provider.selectedModelId
+  if (!modelId) return
+
+  if (_copilotAbort) _copilotAbort.abort()
+  const ac = new AbortController()
+  _copilotAbort   = ac
+  suggestionCursor.value = cursor
+  suggestion.value = ''
+
+  const words       = copilot.completionWords
+  const contextText = body.value.slice(Math.max(0, cursor - copilot.contextChars), cursor)
+  const system = `You are a travel writing assistant. Continue writing naturally in the same language and style. Output ONLY the continuation (max ${words} words), nothing else.`
+
+  try {
+    await streamCopilotCompletion(provider, modelId, contextText, system, words * 6, ac.signal,
+      token => { suggestion.value += token },
+    )
+  } catch {
+    if (!ac.signal.aborted) suggestion.value = ''
+  }
+  if (!ac.signal.aborted) _copilotAbort = null
+}
+
+function onCopilotBodyChange() {
+  if (!copilot.enabled) return
+  if (_acceptingChunk) return   // chunk-accept mutates body without dismissing
+  if (suggestion.value) dismissSuggestion()
+  if (_copilotTimer) clearTimeout(_copilotTimer)
+  _copilotTimer = setTimeout(() => { _copilotTimer = null; requestCompletion() }, copilot.triggerDelay)
+}
+
+function acceptNextChunk() {
+  if (!suggestion.value) return
+  // Match up to and including the next punctuation mark (Chinese + English), plus trailing whitespace.
+  // Falls back to the whole suggestion when no punctuation is found.
+  const match = suggestion.value.match(/^([\s\S]*?[，。！？；：、…—""''【】,!?;:.]+\s*)/)
+  const chunk = match ? match[1] : suggestion.value
+  const cursor = suggestionCursor.value
+  const remaining = suggestion.value.slice(chunk.length)
+
+  _acceptingChunk = true
+  suggestion.value = remaining
+  suggestionCursor.value = cursor + chunk.length
+  body.value = body.value.slice(0, cursor) + chunk + body.value.slice(cursor)
+  nextTick(() => {
+    _acceptingChunk = false
+    if (textareaRef.value) {
+      const pos = cursor + chunk.length
+      textareaRef.value.setSelectionRange(pos, pos)
+    }
+    if (!remaining && _copilotAbort) { _copilotAbort.abort(); _copilotAbort = null }
+  })
+}
+
+function onTextareaKeydown(e: KeyboardEvent) {
+  if (e.key === 'Tab' && suggestion.value) {
+    e.preventDefault()
+    e.stopPropagation()
+    acceptSuggestion()
+    return
+  }
+  // Cmd/Ctrl+→ accepts one word at a time
+  if ((e.metaKey || e.ctrlKey) && e.key === 'ArrowRight' && suggestion.value) {
+    e.preventDefault()
+    e.stopPropagation()
+    acceptNextChunk()
+    return
+  }
+  if (e.key === 'Escape' && suggestion.value) {
+    dismissSuggestion()
+    return
+  }
+  if (suggestion.value && (e.key.length === 1 || ['Backspace', 'Delete', 'Enter'].includes(e.key))) {
+    dismissSuggestion()
+  }
+}
+
+function onCopilotSettingsClickOutside(e: MouseEvent) {
+  if (!showCopilotSettings.value) return
+  const el = (e.target as HTMLElement).closest('.copilot-wrap')
+  if (!el) showCopilotSettings.value = false
+}
+onMounted(()   => document.addEventListener('click', onCopilotSettingsClickOutside))
+onUnmounted(() => document.removeEventListener('click', onCopilotSettingsClickOutside))
+
+// Editor layout: 'split' | 'edit' | 'preview' | 'wysiwyg'
+const layout = ref<'split' | 'edit' | 'preview' | 'wysiwyg'>('split')
+
+// ─── WYSIWYG editor (Tiptap) ──────────────────────────────────────────────────
+let _wysiwygSyncing = false   // guard against feedback loop
+
+const wysiwygEditor = useEditor({
+  extensions: [
+    StarterKit,
+    TiptapMarkdown.configure({ html: false, tightLists: true }),
+  ],
+  content: '',
+  onUpdate({ editor }) {
+    if (_wysiwygSyncing) return
+    _wysiwygSyncing = true
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    body.value = (editor.storage as any).markdown.getMarkdown()
+    _wysiwygSyncing = false
+  },
+})
+
+// Sync body → wysiwyg editor when switching to wysiwyg mode or when the note changes
+watch(layout, (val) => {
+  if (val === 'wysiwyg' && wysiwygEditor.value) {
+    _wysiwygSyncing = true
+    wysiwygEditor.value.commands.setContent(body.value)
+    _wysiwygSyncing = false
+  }
+})
+
+onUnmounted(() => { wysiwygEditor.value?.destroy() })
 
 const note = computed(() => store.activeNote!)
+
+// Reload wysiwyg content when the active note changes
+watch(() => note.value?.id, () => {
+  if (layout.value === 'wysiwyg' && wysiwygEditor.value) {
+    _wysiwygSyncing = true
+    wysiwygEditor.value.commands.setContent(body.value)
+    _wysiwygSyncing = false
+  }
+})
 
 // Body without frontmatter for editing
 const body = computed({
@@ -129,27 +328,61 @@ function renderMarkdown(content: string): string {
 
 const previewHtml = computed(() => renderMarkdown(body.value))
 
-// Category input
-const categoryInput = ref('')
-const showCategorySuggestions = ref(false)
-const categorySuggestions = computed(() => {
-  const q = categoryInput.value.toLowerCase()
-  return store.categories.filter(c => c.toLowerCase().includes(q) && c !== note.value.category)
+// Category L1/L2 editing (pencil-button controlled, same pattern as title)
+const editingCategory = ref(false)
+const categoryL1Draft = ref('')
+const categoryL2Draft = ref('')
+const showL1Suggestions = ref(false)
+const showL2Suggestions = ref(false)
+
+const l1Suggestions = computed(() => {
+  const q = categoryL1Draft.value.toLowerCase()
+  return store.categoriesL1.filter(c => c.toLowerCase().includes(q) && c !== categoryL1Draft.value)
+})
+const l2Suggestions = computed(() => {
+  const q = categoryL2Draft.value.toLowerCase()
+  return store.categoriesL2.filter(c => c.toLowerCase().includes(q) && c !== categoryL2Draft.value)
 })
 
-watch(() => note.value.category, (v) => { categoryInput.value = v }, { immediate: true })
+watch(() => note.value.categoryL1, (v) => { categoryL1Draft.value = v }, { immediate: true })
+watch(() => note.value.categoryL2, (v) => { categoryL2Draft.value = v }, { immediate: true })
 
-function applyCategory(cat: string) {
-  store.setCategory(cat)
-  categoryInput.value = cat
-  showCategorySuggestions.value = false
+function startEditCategory() {
+  categoryL1Draft.value = note.value.categoryL1
+  categoryL2Draft.value = note.value.categoryL2
+  editingCategory.value = true
 }
 
-function onCategoryBlur() {
-  setTimeout(() => { showCategorySuggestions.value = false }, 150)
-  if (categoryInput.value && categoryInput.value !== note.value.category) {
-    store.setCategory(categoryInput.value)
-  }
+function confirmCategory() {
+  store.setCategoryL1(categoryL1Draft.value)
+  store.setCategoryL2(categoryL2Draft.value)
+  editingCategory.value = false
+  showL1Suggestions.value = false
+  showL2Suggestions.value = false
+}
+
+function cancelCategory() {
+  editingCategory.value = false
+  showL1Suggestions.value = false
+  showL2Suggestions.value = false
+}
+
+function applyL1(cat: string) {
+  categoryL1Draft.value = cat
+  showL1Suggestions.value = false
+}
+
+function applyL2(cat: string) {
+  categoryL2Draft.value = cat
+  showL2Suggestions.value = false
+}
+
+function onL1Blur() {
+  setTimeout(() => { showL1Suggestions.value = false }, 150)
+}
+
+function onL2Blur() {
+  setTimeout(() => { showL2Suggestions.value = false }, 150)
 }
 
 // Rating
@@ -177,10 +410,12 @@ function triggerAutoSave() {
 }
 
 watch(() => body.value, triggerAutoSave)
+watch(() => body.value, onCopilotBodyChange)
 watch(() => note.value.title, triggerAutoSave)
 watch(() => note.value.lat, triggerAutoSave)
 watch(() => note.value.lng, triggerAutoSave)
-watch(() => note.value.category, triggerAutoSave)
+watch(() => note.value.categoryL1, triggerAutoSave)
+watch(() => note.value.categoryL2, triggerAutoSave)
 watch(() => note.value.rating, triggerAutoSave)
 watch(() => note.value.date, triggerAutoSave)
 watch(() => note.value.cover, triggerAutoSave)
@@ -304,7 +539,56 @@ function closePicker() {
   <div class="travel-editor" @keydown="onKeydown">
     <!-- Meta bar -->
     <div class="meta-bar">
-      <div class="meta-row">
+      <div class="meta-row title-row">
+        <!-- Category area (left of title) -->
+        <div class="category-area">
+          <template v-if="editingCategory">
+            <div class="cat-input-wrap">
+              <input
+                v-model="categoryL1Draft"
+                class="meta-input category-input"
+                :placeholder="t('travel.categoryPlaceholder')"
+                @focus="showL1Suggestions = true"
+                @blur="onL1Blur"
+              />
+              <div v-if="showL1Suggestions && l1Suggestions.length" class="suggestions">
+                <button
+                  v-for="cat in l1Suggestions"
+                  :key="cat"
+                  class="suggestion-item"
+                  @mousedown.prevent="applyL1(cat)"
+                >{{ cat }}</button>
+              </div>
+            </div>
+            <span class="cat-sep-edit">·</span>
+            <div class="cat-input-wrap">
+              <input
+                v-model="categoryL2Draft"
+                class="meta-input category-input"
+                :placeholder="t('travel.categoryPlaceholder')"
+                @focus="showL2Suggestions = true"
+                @blur="onL2Blur"
+              />
+              <div v-if="showL2Suggestions && l2Suggestions.length" class="suggestions">
+                <button
+                  v-for="cat in l2Suggestions"
+                  :key="cat"
+                  class="suggestion-item"
+                  @mousedown.prevent="applyL2(cat)"
+                >{{ cat }}</button>
+              </div>
+            </div>
+            <button class="title-action-btn" @mousedown.prevent="confirmCategory"><Check :size="13" /></button>
+            <button class="title-action-btn" @mousedown.prevent="cancelCategory"><X :size="13" /></button>
+          </template>
+          <template v-else>
+            <span class="cat-text">{{ note.categoryL1 || '—' }}</span>
+            <span class="cat-sep">·</span>
+            <span class="cat-text">{{ note.categoryL2 || '—' }}</span>
+            <button class="title-action-btn cat-edit-btn" @click="startEditCategory"><Pencil :size="11" /></button>
+          </template>
+        </div>
+
         <!-- Title display / edit -->
         <div class="title-area">
           <template v-if="editingTitle">
@@ -369,28 +653,6 @@ function closePicker() {
           />
         </div>
 
-        <!-- Category -->
-        <div class="meta-field category-field">
-          <span class="meta-label">{{ t('travel.category') }}</span>
-          <input
-            v-model="categoryInput"
-            class="meta-input category-input"
-            :placeholder="t('travel.category')"
-            @focus="showCategorySuggestions = true"
-            @blur="onCategoryBlur"
-          />
-          <div v-if="showCategorySuggestions && categorySuggestions.length" class="suggestions">
-            <button
-              v-for="cat in categorySuggestions"
-              :key="cat"
-              class="suggestion-item"
-              @mousedown.prevent="applyCategory(cat)"
-            >
-              {{ cat }}
-            </button>
-          </div>
-        </div>
-
         <!-- Rating -->
         <div class="meta-field rating-field">
           <span class="meta-label">{{ t('travel.rating') }}</span>
@@ -427,10 +689,109 @@ function closePicker() {
           :class="{ active: layout === 'preview' }"
           @click="layout = 'preview'"
         >{{ t('travel.previewMode') }}</button>
+        <button
+          class="layout-btn"
+          :class="{ active: layout === 'wysiwyg' }"
+          @click="layout = 'wysiwyg'"
+        >{{ t('travel.wysiwygMode') }}</button>
       </div>
       <div class="toolbar-right">
-        <span v-if="autoSaveStatus === 'saving'" class="save-status">{{ t('travel.saving') }}</span>
+        <span v-if="suggestion" class="copilot-hint">
+          <kbd>Tab</kbd> {{ t('travel.copilot.accept') }} &middot;
+          <kbd>⌘→</kbd> {{ t('travel.copilot.acceptWord') }} &middot;
+          <kbd>Esc</kbd> {{ t('travel.copilot.dismiss') }}
+        </span>
+        <span v-else-if="autoSaveStatus === 'saving'" class="save-status">{{ t('travel.saving') }}</span>
         <span v-else-if="autoSaveStatus === 'saved'" class="save-status success">{{ t('travel.saved') }}</span>
+
+        <!-- Copilot toggle + settings -->
+        <div class="copilot-wrap" @click.stop>
+          <button
+            class="copilot-btn"
+            :class="{ active: copilot.enabled }"
+            :title="t('travel.copilot.label')"
+            @click.stop="showCopilotSettings = !showCopilotSettings"
+          >
+            <Sparkles :size="13" />
+          </button>
+          <div v-if="showCopilotSettings" class="copilot-panel">
+            <label class="copilot-toggle-row">
+              <span class="copilot-panel-title">{{ t('travel.copilot.label') }}</span>
+              <input
+                type="checkbox"
+                class="copilot-checkbox"
+                :checked="copilot.enabled"
+                @change="copilot.setEnabled(($event.target as HTMLInputElement).checked)"
+              />
+            </label>
+            <template v-if="copilot.enabled">
+              <div class="copilot-row">
+                <span class="copilot-label">{{ t('travel.copilot.provider') }}</span>
+                <select
+                  class="copilot-select"
+                  :value="copilot.providerId"
+                  @change="copilot.setProvider(($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="" disabled>{{ t('travel.copilot.selectProvider') }}</option>
+                  <option v-for="p in configuredProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
+                </select>
+              </div>
+              <div class="copilot-row">
+                <span class="copilot-label">{{ t('travel.copilot.model') }}</span>
+                <select
+                  class="copilot-select"
+                  :value="copilot.modelId"
+                  @change="copilot.setModel(($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="" disabled>{{ t('travel.copilot.selectModel') }}</option>
+                  <option v-for="m in copilotProviderModels" :key="m.id" :value="m.id">{{ m.name }}</option>
+                </select>
+              </div>
+              <div class="copilot-row">
+                <span class="copilot-label">{{ t('travel.copilot.words') }}</span>
+                <input
+                  type="number"
+                  class="copilot-number"
+                  :value="copilot.completionWords"
+                  min="1"
+                  max="100"
+                  @change="copilot.setWords(Number(($event.target as HTMLInputElement).value))"
+                />
+              </div>
+              <div class="copilot-row">
+                <span class="copilot-label">{{ t('travel.copilot.delay') }}</span>
+                <div class="copilot-delay-wrap">
+                  <input
+                    type="number"
+                    class="copilot-number"
+                    :value="copilot.triggerDelay"
+                    min="200"
+                    max="5000"
+                    step="100"
+                    @change="copilot.setDelay(Number(($event.target as HTMLInputElement).value))"
+                  />
+                  <span class="copilot-unit">ms</span>
+                </div>
+              </div>
+              <div class="copilot-row">
+                <span class="copilot-label">{{ t('travel.copilot.context') }}</span>
+                <div class="copilot-delay-wrap">
+                  <input
+                    type="number"
+                    class="copilot-number copilot-number--wide"
+                    :value="copilot.contextChars"
+                    min="200"
+                    max="10000"
+                    step="200"
+                    @change="copilot.setContext(Number(($event.target as HTMLInputElement).value))"
+                  />
+                  <span class="copilot-unit">{{ t('travel.copilot.chars') }}</span>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
         <button class="save-btn" @click="store.saveActive()">
           {{ t('common.save') }}
         </button>
@@ -460,19 +821,35 @@ function closePicker() {
 
     <!-- Content area -->
     <div class="editor-content" :class="`layout-${layout}`">
+      <!-- WYSIWYG pane (Typora-style) -->
+      <div v-if="layout === 'wysiwyg'" class="wysiwyg-pane">
+        <EditorContent :editor="wysiwygEditor" class="wysiwyg-editor" />
+      </div>
+
       <!-- Edit pane -->
-      <div v-show="layout !== 'preview'" class="edit-pane">
+      <div v-show="layout !== 'preview' && layout !== 'wysiwyg'" class="edit-pane">
+        <div
+          v-if="suggestion"
+          ref="ghostRef"
+          class="ghost-overlay"
+          aria-hidden="true"
+          v-html="ghostContent"
+        />
         <textarea
+          ref="textareaRef"
           v-model="body"
           class="md-textarea"
+          :class="{ 'md-textarea--ghost': !!suggestion }"
           :placeholder="t('travel.editorPlaceholder')"
           spellcheck="false"
           @paste="onPaste"
+          @keydown="onTextareaKeydown"
+          @scroll="syncGhostScroll"
         />
       </div>
 
       <!-- Preview pane -->
-      <div v-show="layout !== 'edit'" class="preview-pane">
+      <div v-show="layout !== 'edit' && layout !== 'wysiwyg'" class="preview-pane">
         <div class="markdown-body" v-html="previewHtml" @click="onPreviewClick" />
       </div>
     </div>
@@ -535,6 +912,45 @@ function closePicker() {
   border-color: rgba(34, 63, 121, 0.35);
 }
 
+.title-row {
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.category-area {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.cat-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: #8e8e93;
+  white-space: nowrap;
+}
+
+.cat-sep {
+  font-size: 12px;
+  color: #c7c7cc;
+}
+
+.cat-sep-edit {
+  font-size: 12px;
+  color: #c7c7cc;
+  flex-shrink: 0;
+}
+
+.cat-edit-btn {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.category-area:hover .cat-edit-btn {
+  opacity: 1;
+}
+
 .title-area {
   display: flex;
   align-items: center;
@@ -583,9 +999,17 @@ function closePicker() {
 
 .coord-input { width: 130px; }
 .date-input { width: 130px; }
-.category-input { width: 110px; }
+.category-input { width: 90px; }
 
-.category-field { position: relative; }
+.category-field { position: relative; flex-wrap: wrap; }
+
+.cat-input-wrap { position: relative; }
+
+.category-display {
+  font-size: 12px;
+  color: #1c1c1e;
+  padding: 0 4px;
+}
 
 .suggestions {
   position: absolute;
@@ -839,6 +1263,8 @@ function closePicker() {
 
 .edit-pane {
   border-right: 1px solid rgba(0, 0, 0, 0.06);
+  position: relative;
+  background: #fafafa;
 }
 
 .layout-edit .edit-pane { border-right: none; }
@@ -856,11 +1282,207 @@ function closePicker() {
   color: #1c1c1e;
   font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
   background: #fafafa;
+  box-sizing: border-box;
+  position: relative;
+  z-index: 1;
 }
+.md-textarea--ghost {
+  background: transparent;
+  caret-color: #1c1c1e;
+}
+
+/* Ghost text overlay — sits behind the textarea and mirrors its layout */
+.ghost-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: auto;
+  scrollbar-width: none;
+  padding: 14px;
+  font-size: 13px;
+  line-height: 1.7;
+  font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-sizing: border-box;
+  color: transparent;
+}
+.ghost-overlay::-webkit-scrollbar { display: none; }
+
+/* Copilot toolbar elements */
+.copilot-hint {
+  font-size: 11px;
+  color: #8e8e93;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.copilot-hint kbd {
+  font-family: inherit;
+  font-size: 10px;
+  background: rgba(0,0,0,0.06);
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 16px;
+}
+.copilot-wrap {
+  position: relative;
+}
+.copilot-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  color: #8e8e93;
+  transition: color 0.15s, background 0.15s;
+}
+.copilot-btn:hover { background: rgba(0,0,0,0.05); color: #3c3c43; }
+.copilot-btn.active { color: #223F79; background: rgba(34,63,121,0.08); border-color: rgba(34,63,121,0.25); }
+
+.copilot-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 200;
+  background: #fff;
+  border: 1px solid rgba(0,0,0,0.1);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+  padding: 12px;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.copilot-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+}
+.copilot-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1c1c1e;
+}
+.copilot-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #223F79;
+}
+.copilot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.copilot-label {
+  font-size: 11px;
+  color: #6e6e73;
+  white-space: nowrap;
+}
+.copilot-select {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 5px;
+  padding: 3px 5px;
+  background: #f5f5f7;
+  color: #1c1c1e;
+  outline: none;
+}
+.copilot-number {
+  width: 52px;
+  font-size: 11px;
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 5px;
+  padding: 3px 5px;
+  background: #f5f5f7;
+  color: #1c1c1e;
+  outline: none;
+  text-align: center;
+}
+.copilot-delay-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.copilot-unit {
+  font-size: 11px;
+  color: #8e8e93;
+}
+.copilot-number--wide { width: 68px; }
 
 .preview-pane {
   background: white;
   padding: 14px;
+}
+
+/* ─── WYSIWYG (Tiptap) ─────────────────────────────────────── */
+.wysiwyg-pane {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background: #ffffff;
+  padding: 14px 20px;
+}
+
+.wysiwyg-editor {
+  height: 100%;
+}
+
+.wysiwyg-editor :deep(.ProseMirror) {
+  outline: none;
+  min-height: 100%;
+  font-size: 14px;
+  line-height: 1.75;
+  color: #1c1c1e;
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  max-width: 720px;
+  margin: 0 auto;
+  padding-bottom: 80px;
+}
+
+.wysiwyg-editor :deep(.ProseMirror h1) { font-size: 26px; font-weight: 700; margin: 20px 0 10px; line-height: 1.3; }
+.wysiwyg-editor :deep(.ProseMirror h2) { font-size: 21px; font-weight: 650; margin: 18px 0 8px; line-height: 1.35; }
+.wysiwyg-editor :deep(.ProseMirror h3) { font-size: 17px; font-weight: 620; margin: 14px 0 6px; }
+.wysiwyg-editor :deep(.ProseMirror p) { margin: 6px 0; }
+.wysiwyg-editor :deep(.ProseMirror ul), .wysiwyg-editor :deep(.ProseMirror ol) { padding-left: 22px; margin: 6px 0; }
+.wysiwyg-editor :deep(.ProseMirror li) { margin: 3px 0; }
+.wysiwyg-editor :deep(.ProseMirror strong) { font-weight: 600; }
+.wysiwyg-editor :deep(.ProseMirror em) { font-style: italic; }
+.wysiwyg-editor :deep(.ProseMirror code) {
+  background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 4px;
+  font-size: 12.5px; font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+.wysiwyg-editor :deep(.ProseMirror pre) {
+  background: #f6f8fa; border: 1px solid rgba(0,0,0,0.08); border-radius: 8px;
+  padding: 10px 14px; margin: 10px 0; overflow-x: auto;
+}
+.wysiwyg-editor :deep(.ProseMirror pre code) {
+  background: none; padding: 0; font-size: 12.5px;
+}
+.wysiwyg-editor :deep(.ProseMirror blockquote) {
+  border-left: 3px solid rgba(34, 63, 121, 0.3); margin: 8px 0; padding-left: 12px; color: #555;
+}
+.wysiwyg-editor :deep(.ProseMirror img) { max-width: 100%; border-radius: 8px; margin: 6px 0; }
+.wysiwyg-editor :deep(.ProseMirror hr) { border: none; border-top: 1px solid rgba(0,0,0,0.08); margin: 14px 0; }
+
+.wysiwyg-editor :deep(.ProseMirror p.is-editor-empty:first-child::before) {
+  content: attr(data-placeholder);
+  color: #aeaeb2;
+  pointer-events: none;
+  float: left;
+  height: 0;
 }
 
 .markdown-body {
@@ -955,6 +1577,9 @@ function closePicker() {
 <style>
 /* highlight.js token colors (light theme) */
 .hljs-keyword, .hljs-selector-tag, .hljs-built_in { color: #d73a49; }
+
+/* Copilot ghost suggestion text — must be global because it lives inside v-html */
+.copilot-ghost-text { color: #b0b7c0; }
 .hljs-string, .hljs-attr { color: #032f62; }
 .hljs-comment { color: #6a737d; font-style: italic; }
 .hljs-number, .hljs-literal { color: #005cc5; }

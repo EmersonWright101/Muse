@@ -385,66 +385,6 @@ function onL2Blur() {
   setTimeout(() => { showL2Suggestions.value = false }, 150)
 }
 
-// Deterministic pastel color from string (same palette as sidebar)
-const PASTELS = [
-  { bg: 'rgba(255,179,186,0.35)', color: '#a93226' },
-  { bg: 'rgba(255,218,185,0.45)', color: '#ba5a00' },
-  { bg: 'rgba(255,240,168,0.50)', color: '#9a7000' },
-  { bg: 'rgba(176,230,198,0.45)', color: '#1a7a45' },
-  { bg: 'rgba(174,214,241,0.45)', color: '#1a5276' },
-  { bg: 'rgba(212,172,242,0.38)', color: '#7048a0' },
-  { bg: 'rgba(248,196,196,0.40)', color: '#b03030' },
-  { bg: 'rgba(163,228,215,0.45)', color: '#0e6655' },
-  { bg: 'rgba(251,210,166,0.45)', color: '#c05a00' },
-  { bg: 'rgba(196,215,248,0.45)', color: '#1f618d' },
-  { bg: 'rgba(220,210,255,0.40)', color: '#6040a0' },
-  { bg: 'rgba(170,235,180,0.45)', color: '#1e7a30' },
-]
-function pastelStyle(str: string) {
-  let h = 0
-  for (const c of str) h = (h * 31 + c.charCodeAt(0)) & 0xFFFF
-  return PASTELS[h % PASTELS.length]
-}
-
-// Tags editing
-const tagInput = ref('')
-const showTagSuggestions = ref(false)
-const tagInputRef = ref<HTMLInputElement>()
-
-const tagSuggestions = computed(() => {
-  const q = tagInput.value.toLowerCase().trim()
-  if (!q) return store.allTags.filter(t => !(note.value.tags ?? []).includes(t))
-  return store.allTags.filter(t => t.toLowerCase().includes(q) && !(note.value.tags ?? []).includes(t))
-})
-
-function addTag(tag: string) {
-  const trimmed = tag.trim()
-  if (!trimmed) return
-  const current = note.value.tags ?? []
-  if (!current.includes(trimmed)) {
-    store.setTags([...current, trimmed])
-  }
-  tagInput.value = ''
-  showTagSuggestions.value = false
-}
-
-function removeTag(tag: string) {
-  store.setTags((note.value.tags ?? []).filter(t => t !== tag))
-}
-
-function onTagInputKeydown(e: KeyboardEvent) {
-  if ((e.key === 'Enter' || e.key === ',') && tagInput.value.trim()) {
-    e.preventDefault()
-    addTag(tagInput.value.replace(',', ''))
-  } else if (e.key === 'Backspace' && !tagInput.value && (note.value.tags ?? []).length) {
-    removeTag((note.value.tags ?? []).at(-1)!)
-  }
-}
-
-function onTagInputBlur() {
-  setTimeout(() => { showTagSuggestions.value = false }, 150)
-}
-
 // Rating
 function setRating(r: number) {
   if (note.value.rating === r) {
@@ -476,7 +416,6 @@ watch(() => note.value.lat, triggerAutoSave)
 watch(() => note.value.lng, triggerAutoSave)
 watch(() => note.value.categoryL1, triggerAutoSave)
 watch(() => note.value.categoryL2, triggerAutoSave)
-watch(() => note.value.tags, triggerAutoSave)
 watch(() => note.value.rating, triggerAutoSave)
 watch(() => note.value.date, triggerAutoSave)
 watch(() => note.value.cover, triggerAutoSave)
@@ -548,36 +487,6 @@ const pickerMapContainer = ref<HTMLElement>()
 let pickerMap: L.Map | null = null
 let pickerMarker: L.Marker | null = null
 
-const mapSearchQuery = ref('')
-const mapSearchResults = ref<Array<{ display_name: string; lat: string; lon: string }>>([])
-const mapSearchLoading = ref(false)
-
-async function searchMapAddress() {
-  const q = mapSearchQuery.value.trim()
-  if (!q) return
-  mapSearchLoading.value = true
-  try {
-    const resp = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5`,
-      { headers: { 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' } }
-    )
-    mapSearchResults.value = await resp.json()
-  } catch {
-    mapSearchResults.value = []
-  } finally {
-    mapSearchLoading.value = false
-  }
-}
-
-function selectMapSearchResult(result: { display_name: string; lat: string; lon: string }) {
-  const lat = parseFloat(result.lat)
-  const lng = parseFloat(result.lon)
-  pickerMap?.setView([lat, lng], 14)
-  pickerMarker?.setLatLng([lat, lng])
-  mapSearchQuery.value = result.display_name
-  mapSearchResults.value = []
-}
-
 function openMapPicker() {
   showMapPicker.value = true
   nextTick(() => {
@@ -618,8 +527,6 @@ function confirmPicker() {
 
 function closePicker() {
   showMapPicker.value = false
-  mapSearchQuery.value = ''
-  mapSearchResults.value = []
   if (pickerMap) {
     pickerMap.remove()
     pickerMap = null
@@ -675,43 +582,11 @@ function closePicker() {
             <button class="title-action-btn" @mousedown.prevent="cancelCategory"><X :size="13" /></button>
           </template>
           <template v-else>
-            <span v-if="note.categoryL1" class="cat-text">{{ note.categoryL1 }}</span>
-            <span v-if="note.categoryL1 && note.categoryL2" class="cat-sep">·</span>
-            <span v-if="note.categoryL2" class="cat-text">{{ note.categoryL2 }}</span>
+            <span class="cat-text">{{ note.categoryL1 || '—' }}</span>
+            <span class="cat-sep">·</span>
+            <span class="cat-text">{{ note.categoryL2 || '—' }}</span>
             <button class="title-action-btn cat-edit-btn" @click="startEditCategory"><Pencil :size="11" /></button>
           </template>
-        </div>
-
-        <!-- Tag chips -->
-        <div class="tag-area">
-          <span
-            v-for="tag in (note.tags ?? [])"
-            :key="tag"
-            class="tag-chip"
-            :style="pastelStyle(tag)"
-          >
-            #{{ tag }}
-            <button class="tag-chip-remove" @mousedown.prevent="removeTag(tag)">×</button>
-          </span>
-          <div class="tag-input-wrap">
-            <input
-              ref="tagInputRef"
-              v-model="tagInput"
-              class="tag-input"
-              :placeholder="(note.tags ?? []).length === 0 ? t('travel.tagPlaceholder') : ''"
-              @focus="showTagSuggestions = true"
-              @blur="onTagInputBlur"
-              @keydown="onTagInputKeydown"
-            />
-            <div v-if="showTagSuggestions && tagSuggestions.length" class="suggestions tag-suggestions">
-              <button
-                v-for="sug in tagSuggestions"
-                :key="sug"
-                class="suggestion-item"
-                @mousedown.prevent="addTag(sug)"
-              >#{{ sug }}</button>
-            </div>
-          </div>
         </div>
 
         <!-- Title display / edit -->
@@ -933,25 +808,6 @@ function closePicker() {
               <X :size="16" />
             </button>
           </div>
-          <div class="picker-search-wrap">
-            <input
-              v-model="mapSearchQuery"
-              class="picker-search-input"
-              :placeholder="t('travel.mapSearch')"
-              @keydown.enter.prevent="searchMapAddress"
-            />
-            <button class="picker-search-btn" :disabled="mapSearchLoading" @click="searchMapAddress">
-              {{ mapSearchLoading ? '…' : '🔍' }}
-            </button>
-            <div v-if="mapSearchResults.length" class="picker-search-results">
-              <button
-                v-for="r in mapSearchResults"
-                :key="r.display_name"
-                class="picker-search-item"
-                @click="selectMapSearchResult(r)"
-              >{{ r.display_name }}</button>
-            </div>
-          </div>
           <div ref="pickerMapContainer" class="picker-map" />
           <div class="picker-footer">
             <button class="picker-confirm" @click="confirmPicker">
@@ -1069,14 +925,14 @@ function closePicker() {
 }
 
 .cat-text {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
-  color: #1c1c1e;
+  color: #8e8e93;
   white-space: nowrap;
 }
 
 .cat-sep {
-  font-size: 13px;
+  font-size: 12px;
   color: #c7c7cc;
 }
 
@@ -1095,61 +951,6 @@ function closePicker() {
   opacity: 1;
 }
 
-.tag-area {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-  flex-shrink: 0;
-  max-width: 260px;
-}
-
-.tag-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  font-size: 11px;
-  border-radius: 5px;
-  padding: 2px 6px;
-  white-space: nowrap;
-}
-
-.tag-chip-remove {
-  border: none;
-  background: none;
-  padding: 0;
-  margin-left: 1px;
-  font-size: 13px;
-  line-height: 1;
-  color: #8e8e93;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-}
-
-.tag-chip-remove:hover { color: #ff3b30; }
-
-.tag-input-wrap {
-  position: relative;
-}
-
-.tag-input {
-  border: none;
-  outline: none;
-  background: transparent;
-  font-size: 11px;
-  color: #1c1c1e;
-  width: 80px;
-  min-width: 60px;
-}
-
-.tag-input::placeholder { color: #aeaeb2; }
-
-.tag-suggestions {
-  left: 0;
-  min-width: 120px;
-}
-
 .title-area {
   display: flex;
   align-items: center;
@@ -1159,8 +960,8 @@ function closePicker() {
 }
 
 .title-display {
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
   color: #1c1c1e;
   white-space: nowrap;
   overflow: hidden;
@@ -1376,13 +1177,8 @@ function closePicker() {
   height: 420px;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
-  /* No overflow:hidden — search results dropdown must escape the box */
-}
-
-.picker-map {
-  border-radius: 0;
   overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
 }
 
 .picker-header {
@@ -1423,75 +1219,6 @@ function closePicker() {
   min-height: 0;
   background: #e5e7eb;
 }
-
-.picker-search-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-  flex-shrink: 0;
-}
-
-.picker-search-input {
-  flex: 1;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  border-radius: 7px;
-  padding: 5px 10px;
-  font-size: 12px;
-  outline: none;
-  background: rgba(0, 0, 0, 0.03);
-  color: #1c1c1e;
-}
-
-.picker-search-input:focus { border-color: rgba(34, 63, 121, 0.35); }
-
-.picker-search-btn {
-  border: none;
-  background: rgba(34, 63, 121, 0.08);
-  border-radius: 7px;
-  padding: 5px 10px;
-  font-size: 12px;
-  cursor: pointer;
-  color: #223F79;
-  flex-shrink: 0;
-}
-
-.picker-search-btn:disabled { opacity: 0.5; cursor: default; }
-
-.picker-search-results {
-  position: absolute;
-  top: calc(100% - 8px);
-  left: 12px;
-  right: 12px;
-  background: white;
-  border: 1px solid rgba(0, 0, 0, 0.10);
-  border-radius: 9px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
-  max-height: 180px;
-  overflow-y: auto;
-  z-index: 2000;
-  padding: 4px;
-}
-
-.picker-search-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  border: none;
-  background: transparent;
-  padding: 6px 10px;
-  font-size: 11.5px;
-  color: #1c1c1e;
-  border-radius: 6px;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.picker-search-item:hover { background: rgba(0, 0, 0, 0.05); }
 
 .picker-footer {
   padding: 10px 16px;

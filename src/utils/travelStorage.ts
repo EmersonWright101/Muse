@@ -48,6 +48,7 @@ export interface TravelNoteMeta {
   lng: number
   categoryL1: string // primary category / 一级分类
   categoryL2: string // secondary category / 二级分类
+  tags: string[]    // free-form tags / 标签
   rating: number
   date: string
   cover: string
@@ -62,6 +63,7 @@ export interface TravelNote {
   lng: number
   categoryL1: string
   categoryL2: string
+  tags: string[]
   rating: number
   date: string
   cover: string
@@ -93,6 +95,7 @@ function parseFrontmatter(raw: string): { meta: Partial<TravelNote>; body: strin
       case 'categoryL1': meta.categoryL1 = val; break
       case 'categoryL2': meta.categoryL2 = val; break
       case 'category':   legacyCategory = val; break  // old field → migrate to L2
+      case 'tags':       meta.tags = val ? val.split(',').map(t => t.trim()).filter(Boolean) : []; break
       case 'rating':     meta.rating = parseFloat(val); break
       case 'date':       meta.date = val; break
       case 'cover':      meta.cover = val; break
@@ -103,6 +106,7 @@ function parseFrontmatter(raw: string): { meta: Partial<TravelNote>; body: strin
   if (!meta.categoryL2 && legacyCategory) meta.categoryL2 = legacyCategory
   if (!meta.categoryL1) meta.categoryL1 = ''
   if (!meta.categoryL2) meta.categoryL2 = ''
+  if (!meta.tags) meta.tags = []
   return { meta, body }
 }
 
@@ -115,6 +119,7 @@ function stringifyFrontmatter(note: TravelNote): string {
     `categoryL1: ${note.categoryL1 ?? ''}`,
     `categoryL2: ${note.categoryL2 ?? ''}`,
     `category: ${note.categoryL2 ?? ''}`,  // legacy compat for sync
+    `tags: ${(note.tags ?? []).join(',')}`,
     `rating: ${note.rating}`,
     `date: ${note.date}`,
     `cover: ${note.cover || ''}`,
@@ -194,6 +199,7 @@ export async function listTravelNotes(): Promise<TravelNoteMeta[]> {
         lng: meta.lng ?? 0,
         categoryL1: meta.categoryL1 ?? '',
         categoryL2: meta.categoryL2 ?? '',
+        tags: meta.tags ?? [],
         rating: meta.rating ?? 0,
         date: meta.date ?? new Date().toISOString().slice(0, 10),
         cover,
@@ -222,6 +228,7 @@ export async function loadTravelNote(id: string): Promise<TravelNote | null> {
       lng: meta.lng ?? 0,
       categoryL1: meta.categoryL1 ?? '',
       categoryL2: meta.categoryL2 ?? '',
+      tags: meta.tags ?? [],
       rating: meta.rating ?? 0,
       date: meta.date ?? new Date().toISOString().slice(0, 10),
       cover,
@@ -319,6 +326,7 @@ export function createEmptyNote(): TravelNote {
     lng: 0,
     categoryL1: '',
     categoryL2: '',
+    tags: [],
     rating: 0,
     date,
     cover: randomTravelEmoji(),

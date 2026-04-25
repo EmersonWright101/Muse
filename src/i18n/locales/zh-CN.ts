@@ -48,7 +48,11 @@ export default {
     filterAll:       '全部',
     editorPlaceholder:'开始记录你的旅行…',
     deleteConfirm:   '确定要删除这篇日记吗？此操作不可撤销。',
+    tags:            '标签',
+    tagPlaceholder:  '添加标签…',
+    tagFilter:       '标签',
     mapPick:         '地图选点',
+    mapSearch:       '搜索地址…',
     saving:          '保存中…',
     saved:           '已保存',
     copilot: {

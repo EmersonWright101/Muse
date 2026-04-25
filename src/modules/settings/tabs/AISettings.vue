@@ -233,7 +233,11 @@ interface PickerModel {
   id:            string
   name?:         string
   context_length?: number
-  architecture?: { modality?: string }
+  architecture?: {
+    modality?:          string     // legacy single-string field
+    input_modalities?:  string[]   // newer array field (OpenRouter v2)
+    output_modalities?: string[]
+  }
   pricing?:      { prompt?: string | number }
 }
 
@@ -247,15 +251,28 @@ interface PickerCaps {
 }
 
 function getPickerCaps(m: PickerModel): PickerCaps {
-  const inferred = inferModelCaps(m.id, m.architecture?.modality)
-  const id  = m.id.toLowerCase()
-  const mod = (m.architecture?.modality ?? '').toLowerCase()
+  const id        = m.id.toLowerCase()
+  const arch      = m.architecture ?? {}
+  const inputMods = arch.input_modalities ?? []
+  const outputMods = arch.output_modalities ?? []
+  // Prefer new array fields when available; fall back to legacy modality string
+  const hasInputArray = inputMods.length > 0
+  const legacyMod = (arch.modality ?? '').toLowerCase()
+
+  const vision      = hasInputArray ? inputMods.includes('image') : (legacyMod.includes('image') && legacyMod.includes('->text'))
+  const imageOutput = hasInputArray ? outputMods.includes('image') : legacyMod.includes('->image')
+  const video       = hasInputArray ? inputMods.includes('video') : (legacyMod.includes('video'))
+  const embedding   = hasInputArray
+    ? (outputMods.includes('embeddings') || outputMods.includes('embedding'))
+    : (legacyMod.includes('embed') || /embed/.test(id))
+
+  const inferred = inferModelCaps(m.id, hasInputArray ? undefined : arch.modality)
   return {
-    reasoning:   inferred.reasoning   ?? false,
-    vision:      inferred.multimodal  ?? false,
-    imageOutput: inferred.imageOutput ?? false,
-    video:       inferred.video       ?? false,
-    embedding:   mod.includes('embed') || /embed/.test(id),
+    reasoning:   inferred.reasoning ?? false,
+    vision,
+    imageOutput,
+    video,
+    embedding:   embedding || /embed/.test(id),
     reranking:   /rerank/.test(id),
   }
 }
@@ -329,7 +346,10 @@ function confirmPickerSelection() {
   const fetchedIds = new Set(pickerModels.value.map(m => m.id))
   for (const m of pickerModels.value) {
     if (pickerSelected.value.has(m.id) && !prov.models.find(x => x.id === m.id)) {
-      const caps = inferModelCaps(m.id, m.architecture?.modality)
+      const inputMods = m.architecture?.input_modalities ?? []
+      const caps = inputMods.length
+        ? { ...inferModelCaps(m.id), ...getPickerCaps(m), multimodal: getPickerCaps(m).vision }
+        : inferModelCaps(m.id, m.architecture?.modality)
       ai.addCustomModel(prov.id, {
         id:            m.id,
         name:          m.name || m.id,

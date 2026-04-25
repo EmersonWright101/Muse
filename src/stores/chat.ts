@@ -985,10 +985,27 @@ export const useChatStore = defineStore('chat', () => {
     const conv = activeConv.value
 
     if (idx === 0) {
-      // Delete the whole assistant message (original + all variants)
-      const msgIdx = conv.messages.findIndex(m => m.id === messageId)
-      if (msgIdx < 0) return
-      conv.messages.splice(msgIdx, 1)
+      const msg = conv.messages.find(m => m.id === messageId)
+      if (!msg) return
+      if (!msg.variants?.length) {
+        // No variants — delete the entire assistant message
+        const msgIdx = conv.messages.findIndex(m => m.id === messageId)
+        if (msgIdx >= 0) conv.messages.splice(msgIdx, 1)
+      } else {
+        // Promote the first variant to become the main message body
+        const first = msg.variants[0]
+        msg.content    = first.content
+        msg.model      = first.model
+        msg.providerId = first.providerId
+        msg.reasoning  = first.reasoning
+        msg.usage      = first.usage
+        msg.feedback   = first.feedback ?? msg.feedback
+        msg.error      = first.error
+        msg.variants.splice(0, 1)
+        // Adjust active index: the promoted slot (was 1) is now 0
+        const active = msg.activeVariantIdx ?? 0
+        msg.activeVariantIdx = active <= 1 ? 0 : active - 1
+      }
       saveConversation(conv)
       return
     }

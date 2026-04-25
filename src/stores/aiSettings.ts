@@ -153,6 +153,7 @@ const DEEPSEEK_MODELS: AIModel[] = [
   { id: 'deepseek-reasoner', name: 'DeepSeek R1',        contextLength: 64_000,  reasoning: true, inputPrice: 4, outputPrice: 16, priceCurrency: 'cny' },
 ]
 
+
 const DEFAULT_PROVIDERS: AIProvider[] = [
   { id: 'openai',    type: 'openai',    name: 'OpenAI',              apiKey: '', baseUrl: 'https://api.openai.com/v1',                       models: OPENAI_MODELS,    enabled: true,  selectedModelId: 'gpt-4o',              builtIn: true },
   { id: 'anthropic', type: 'anthropic', name: 'Anthropic',           apiKey: '', baseUrl: 'https://api.anthropic.com',                        models: ANTHROPIC_MODELS, enabled: true,  selectedModelId: 'claude-sonnet-4-5',   builtIn: true },

@@ -1,12 +1,33 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Search, Plus, Star, FileText, ChevronDown, MapPin, Trash2, LayoutList, Paperclip } from 'lucide-vue-next'
+import { Search, Plus, Star, FileText, ChevronDown, MapPin, Trash2, LayoutList, Paperclip, Tag } from 'lucide-vue-next'
 import { useTravelStore } from '../../stores/travel'
 import { initImageAssetBase, resolveImageUrl } from '../../utils/imageAsset'
 
 const { t } = useI18n()
 const store = useTravelStore()
+
+// Deterministic pastel color from string
+const PASTELS = [
+  { bg: 'rgba(255,179,186,0.35)', color: '#a93226' },
+  { bg: 'rgba(255,218,185,0.45)', color: '#ba5a00' },
+  { bg: 'rgba(255,240,168,0.50)', color: '#9a7000' },
+  { bg: 'rgba(176,230,198,0.45)', color: '#1a7a45' },
+  { bg: 'rgba(174,214,241,0.45)', color: '#1a5276' },
+  { bg: 'rgba(212,172,242,0.38)', color: '#7048a0' },
+  { bg: 'rgba(248,196,196,0.40)', color: '#b03030' },
+  { bg: 'rgba(163,228,215,0.45)', color: '#0e6655' },
+  { bg: 'rgba(251,210,166,0.45)', color: '#c05a00' },
+  { bg: 'rgba(196,215,248,0.45)', color: '#1f618d' },
+  { bg: 'rgba(220,210,255,0.40)', color: '#6040a0' },
+  { bg: 'rgba(170,235,180,0.45)', color: '#1e7a30' },
+]
+function pastelStyle(str: string) {
+  let h = 0
+  for (const c of str) h = (h * 31 + c.charCodeAt(0)) & 0xFFFF
+  return PASTELS[h % PASTELS.length]
+}
 
 const hasEntries = computed(() => store.notes.length > 0)
 
@@ -27,12 +48,30 @@ function onDeleteEntry(e: MouseEvent, id: string) {
   }
 }
 
+// ─── Tag filter picker ────────────────────────────────────────────────────────
+
+const tagPickerOpen = ref(false)
+const tagPickerRoot = ref<HTMLElement>()
+
+function selectTag(tag: string) {
+  store.selectedTag = tag
+  tagPickerOpen.value = false
+}
+
+function clearTag() {
+  store.selectedTag = ''
+  tagPickerOpen.value = false
+}
+
 // ─── L1 category picker ──────────────────────────────────────────────────────
 
 const pickerL1Open = ref(false)
 const pickerL1Root = ref<HTMLElement>()
 
 function handlePickerOutside(e: MouseEvent) {
+  if (tagPickerRoot.value && !tagPickerRoot.value.contains(e.target as Node)) {
+    tagPickerOpen.value = false
+  }
   if (pickerL1Root.value && !pickerL1Root.value.contains(e.target as Node)) {
     pickerL1Open.value = false
   }
@@ -112,6 +151,34 @@ function keepAllAttachments() {
     <div class="panel-header">
       <div class="header-title">{{ t('travel.title') }}</div>
       <div class="header-actions">
+        <!-- Tag filter picker -->
+        <div ref="tagPickerRoot" class="tag-filter-wrap">
+          <button
+            class="icon-btn"
+            :class="{ 'icon-btn--active': !!store.selectedTag }"
+            :title="t('travel.tagFilter')"
+            @click="tagPickerOpen = !tagPickerOpen"
+          >
+            <Tag :size="14" />
+          </button>
+          <Transition name="picker-drop">
+            <div v-if="tagPickerOpen" class="tag-picker-dropdown">
+              <button class="picker-item" :class="{ active: !store.selectedTag }" @click="clearTag">
+                <span class="picker-item-name">{{ t('travel.filterAll') }}</span>
+              </button>
+              <div v-if="store.allTags.length" class="picker-divider" />
+              <button
+                v-for="tag in store.allTags"
+                :key="tag"
+                class="picker-item"
+                :class="{ active: store.selectedTag === tag }"
+                @click="selectTag(tag)"
+              >
+                <span class="picker-item-name"># {{ tag }}</span>
+              </button>
+            </div>
+          </Transition>
+        </div>
         <button
           class="icon-btn"
           :title="store.viewMode === 'editor' ? t('travel.mapView') : t('travel.editorView')"
@@ -246,7 +313,17 @@ function keepAllAttachments() {
           </div>
           <div class="item-preview">{{ entry.preview || t('travel.noPreview') }}</div>
           <div class="item-meta-row">
-            <span v-if="entry.categoryL1" class="item-category">{{ entry.categoryL1 }}</span>
+            <span
+              v-if="entry.categoryL1"
+              class="item-category"
+              :style="pastelStyle(entry.categoryL1)"
+            >{{ entry.categoryL1 }}</span>
+            <span
+              v-for="tag in (entry.tags ?? []).slice(0, 2)"
+              :key="tag"
+              class="item-tag"
+              :style="pastelStyle(tag)"
+            >#{{ tag }}</span>
             <span class="item-rating" v-if="entry.rating > 0">
               <Star :size="9" class="star-icon" />
               {{ entry.rating }}
@@ -474,6 +551,30 @@ function keepAllAttachments() {
   color: #3c3c43;
 }
 
+.icon-btn--active {
+  color: #223F79 !important;
+  background: rgba(34, 63, 121, 0.08) !important;
+}
+
+.tag-filter-wrap {
+  position: relative;
+}
+
+.tag-picker-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 140px;
+  background: rgba(250, 250, 252, 0.96);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  padding: 5px;
+  z-index: 50;
+}
+
 /* ─── Search ──────────────────────────────────────────────────────────────── */
 
 .search-bar {
@@ -645,8 +746,12 @@ function keepAllAttachments() {
 
 .item-category {
   font-size: 10px;
-  color: #223F79;
-  background: rgba(34, 63, 121, 0.08);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.item-tag {
+  font-size: 10px;
   padding: 1px 5px;
   border-radius: 4px;
 }

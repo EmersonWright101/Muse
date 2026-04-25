@@ -48,7 +48,11 @@ export default {
     filterAll:       'All',
     editorPlaceholder:'Start writing your travel notes…',
     deleteConfirm:   'Are you sure you want to delete this entry? This action cannot be undone.',
+    tags:            'Tags',
+    tagPlaceholder:  'Add tag…',
+    tagFilter:       'Tags',
     mapPick:         'Pick on map',
+    mapSearch:       'Search address…',
     saving:          'Saving…',
     saved:           'Saved',
     copilot: {

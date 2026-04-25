@@ -30,6 +30,7 @@ export const useTravelStore = defineStore('travel', () => {
   const searchQuery = ref('')
   const selectedCategoryL1 = ref<string>('')
   const selectedCategoryL2 = ref<string>('')
+  const selectedTag = ref<string>('')
   const isLoading = ref(false)
   const viewMode = ref<'map' | 'editor' | 'powerMap'>('map')
   const orphanedAttachments = ref<string[]>([])
@@ -38,6 +39,12 @@ export const useTravelStore = defineStore('travel', () => {
   const categoriesL1 = computed(() => {
     const set = new Set<string>()
     for (const n of notes.value) if (n.categoryL1) set.add(n.categoryL1)
+    return Array.from(set).sort()
+  })
+
+  const allTags = computed(() => {
+    const set = new Set<string>()
+    for (const n of notes.value) for (const tag of (n.tags ?? [])) if (tag) set.add(tag)
     return Array.from(set).sort()
   })
 
@@ -59,6 +66,9 @@ export const useTravelStore = defineStore('travel', () => {
     if (selectedCategoryL2.value) {
       list = list.filter(n => n.categoryL2 === selectedCategoryL2.value)
     }
+    if (selectedTag.value) {
+      list = list.filter(n => (n.tags ?? []).includes(selectedTag.value))
+    }
     if (searchQuery.value.trim()) {
       const q = searchQuery.value.toLowerCase()
       list = list.filter(
@@ -66,7 +76,8 @@ export const useTravelStore = defineStore('travel', () => {
           n.title.toLowerCase().includes(q) ||
           n.preview.toLowerCase().includes(q) ||
           n.categoryL1.toLowerCase().includes(q) ||
-          n.categoryL2.toLowerCase().includes(q)
+          n.categoryL2.toLowerCase().includes(q) ||
+          (n.tags ?? []).some(t => t.toLowerCase().includes(q))
       )
     }
     return list
@@ -168,6 +179,10 @@ export const useTravelStore = defineStore('travel', () => {
     if (activeNote.value) activeNote.value.categoryL2 = cat
   }
 
+  function setTags(tags: string[]) {
+    if (activeNote.value) activeNote.value.tags = tags
+  }
+
   function setRating(rating: number) {
     if (activeNote.value) activeNote.value.rating = rating
   }
@@ -197,10 +212,12 @@ export const useTravelStore = defineStore('travel', () => {
     searchQuery,
     selectedCategoryL1,
     selectedCategoryL2,
+    selectedTag,
     isLoading,
     viewMode,
     categoriesL1,
     categoriesL2,
+    allTags,
     filteredNotes,
     orphanedAttachments,
     loadList,
@@ -214,6 +231,7 @@ export const useTravelStore = defineStore('travel', () => {
     setLatLng,
     setCategoryL1,
     setCategoryL2,
+    setTags,
     setRating,
     setDate,
     setCover,

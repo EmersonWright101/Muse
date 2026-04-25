@@ -204,7 +204,7 @@ function closeVariantMenu() {
 
 function confirmDeleteVariant() {
   const idx = variantMenuIdx.value
-  if (idx > 0 && confirm('确定要删除这个模型的回答吗？')) {
+  if (confirm('确定要删除这个模型的回答吗？')) {
     chat.deleteVariant(props.message.id, idx)
   }
   variantMenuOpen.value = false

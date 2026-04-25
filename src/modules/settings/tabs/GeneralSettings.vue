@@ -1,13 +1,140 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { FolderOpen, AlertTriangle, Check, X } from 'lucide-vue-next'
+import { FolderOpen, AlertTriangle, Check, X, ChevronDown, Pencil, Trash2, Plus, RotateCcw } from 'lucide-vue-next'
 import { open } from '@tauri-apps/plugin-dialog'
 import { readDir, remove } from '@tauri-apps/plugin-fs'
 import { getDataRoot, setDataRoot, resolveDataRoot, migrateData } from '../../../utils/path'
 import { getTrashRetentionDays } from '../../../utils/travelStorage'
+import { useHomeStore, DEFAULT_PROMPT, FREQUENCY_OPTIONS } from '../../../stores/home'
+import { useAiSettingsStore } from '../../../stores/aiSettings'
 
 const { locale, t } = useI18n()
+
+// ── Poster wall settings ────────────────────────────────────────────────────
+
+const homeStore = useHomeStore()
+const aiStore   = useAiSettingsStore()
+
+const posterEnabled       = ref(homeStore.settings.enabled)
+const posterProviderId    = ref(homeStore.settings.providerId)
+const posterModelId       = ref(homeStore.settings.modelId)
+const posterFrequency     = ref(homeStore.settings.frequency)
+const posterPrompt        = ref(homeStore.settings.promptTemplate || DEFAULT_PROMPT)
+const posterMaxPosters    = ref(homeStore.settings.maxPosters)
+
+const imageProviders = computed(() =>
+  aiStore.providers.filter(p => p.enabled && p.apiKey && p.models.some(m => m.imageOutput))
+)
+
+const imageModels = computed(() => {
+  const provider = aiStore.providers.find(p => p.id === posterProviderId.value)
+  return provider?.models.filter(m => m.imageOutput) ?? []
+})
+
+function savePosterSettings() {
+  homeStore.updateSettings({
+    enabled:        posterEnabled.value,
+    providerId:     posterProviderId.value,
+    modelId:        posterModelId.value,
+    frequency:      posterFrequency.value,
+    promptTemplate: posterPrompt.value,
+    maxPosters:     posterMaxPosters.value,
+  })
+}
+
+function onPosterProviderChange() {
+  const models = imageModels.value
+  if (models.length > 0 && !models.find(m => m.id === posterModelId.value)) {
+    posterModelId.value = models[0].id
+  }
+  savePosterSettings()
+}
+
+function resetPrompt() {
+  posterPrompt.value = DEFAULT_PROMPT
+  savePosterSettings()
+}
+
+// ── Animal list editor ──────────────────────────────────────────────────────
+
+const showAnimalList  = ref(false)
+const editingIndex    = ref(-1)
+const editZh          = ref('')
+const editEn          = ref('')
+// 'single' = one-by-one inline form, 'bulk' = textarea paste mode
+const addMode         = ref<'single' | 'bulk'>('single')
+const showAddForm     = ref(false)
+const newZh           = ref('')
+const newEn           = ref('')
+const bulkText        = ref('')
+
+// Set of animal zh names that have already appeared in posters
+const usedAnimalNames = computed(() => new Set(homeStore.posters.map(p => p.animalName)))
+
+// Preview parse of bulk input: each non-empty line → { zh, en }
+const bulkPreview = computed(() => {
+  return bulkText.value
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+    .map(line => {
+      const idx = line.indexOf(',')
+      const zh = idx >= 0 ? line.slice(0, idx).trim() : line.trim()
+      const en = idx >= 0 ? line.slice(idx + 1).trim() : ''
+      return { zh, en, valid: zh.length > 0 && en.length > 0 }
+    })
+})
+
+const bulkValidCount = computed(() => bulkPreview.value.filter(r => r.valid).length)
+
+function startEdit(index: number) {
+  editingIndex.value = index
+  editZh.value = homeStore.animals[index].zh
+  editEn.value = homeStore.animals[index].en
+  showAddForm.value = false
+}
+
+function saveEdit(index: number) {
+  homeStore.updateAnimal(index, { zh: editZh.value, en: editEn.value })
+  editingIndex.value = -1
+}
+
+function cancelEdit() {
+  editingIndex.value = -1
+}
+
+function confirmAdd() {
+  if (!newZh.value.trim() || !newEn.value.trim()) return
+  homeStore.addAnimal({ zh: newZh.value, en: newEn.value })
+  newZh.value = ''
+  newEn.value = ''
+  showAddForm.value = false
+}
+
+function cancelAdd() {
+  newZh.value = ''
+  newEn.value = ''
+  bulkText.value = ''
+  showAddForm.value = false
+}
+
+function confirmBulkImport() {
+  for (const row of bulkPreview.value) {
+    if (row.valid) homeStore.addAnimal({ zh: row.zh, en: row.en })
+  }
+  bulkText.value = ''
+  showAddForm.value = false
+}
+
+function confirmReset() {
+  homeStore.resetAnimals()
+}
+
+function deleteAnimal(index: number) {
+  if (editingIndex.value === index) editingIndex.value = -1
+  homeStore.deleteAnimal(index)
+}
 
 // Trash retention
 const LS_TRASH_RETENTION = 'muse-trash-retention-days'
@@ -157,6 +284,260 @@ async function confirmDeleteOld() {
       <div class="info-row">
         <span class="info-label">加密方式</span>
         <span class="info-value">API Key 使用 AES-256-GCM 加密存储</span>
+      </div>
+    </div>
+
+    <!-- ── Animal Poster Wall ─────────────────────────────────────── -->
+    <div class="section-card">
+      <h2 class="section-title">{{ t('settings.poster.title') }}</h2>
+      <p class="section-desc">{{ t('settings.poster.description') }}</p>
+
+      <!-- Enable toggle -->
+      <div class="toggle-row">
+        <span class="toggle-label">{{ t('settings.poster.enabled') }}</span>
+        <button
+          class="toggle-btn"
+          :class="{ active: posterEnabled }"
+          @click="posterEnabled = !posterEnabled; savePosterSettings()"
+        >
+          <div class="toggle-thumb" />
+        </button>
+      </div>
+
+      <!-- Provider selector -->
+      <div class="form-row">
+        <span class="form-label">{{ t('settings.poster.provider') }}</span>
+        <div class="form-control">
+          <select
+            v-if="imageProviders.length > 0"
+            v-model="posterProviderId"
+            class="select-input"
+            @change="onPosterProviderChange"
+          >
+            <option value="">{{ t('settings.poster.selectProvider') }}</option>
+            <option
+              v-for="p in imageProviders"
+              :key="p.id"
+              :value="p.id"
+            >{{ p.name }}</option>
+          </select>
+          <span v-else class="no-models-hint">{{ t('settings.poster.noImageModels') }}</span>
+        </div>
+      </div>
+
+      <!-- Model selector -->
+      <div v-if="imageModels.length > 0" class="form-row">
+        <span class="form-label">{{ t('settings.poster.model') }}</span>
+        <div class="form-control">
+          <select
+            v-model="posterModelId"
+            class="select-input"
+            @change="savePosterSettings"
+          >
+            <option value="">{{ t('settings.poster.selectModel') }}</option>
+            <option
+              v-for="m in imageModels"
+              :key="m.id"
+              :value="m.id"
+            >{{ m.name }}</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Frequency -->
+      <div class="form-row">
+        <span class="form-label">{{ t('settings.poster.frequency') }}</span>
+        <div class="freq-options">
+          <button
+            v-for="opt in FREQUENCY_OPTIONS"
+            :key="opt.value"
+            class="freq-btn"
+            :class="{ active: posterFrequency === opt.value }"
+            @click="posterFrequency = opt.value; savePosterSettings()"
+          >
+            {{ locale === 'zh-CN' ? opt.labelZh : opt.labelEn }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Max posters -->
+      <div class="form-row">
+        <span class="form-label">{{ t('settings.poster.maxPosters') }}</span>
+        <div class="form-control number-row">
+          <input
+            v-model.number="posterMaxPosters"
+            type="number"
+            min="5"
+            max="100"
+            class="number-input"
+            @change="savePosterSettings"
+          />
+          <span class="number-unit">{{ t('settings.poster.maxPostersUnit') }}</span>
+        </div>
+      </div>
+
+      <!-- Prompt template -->
+      <div class="prompt-section">
+        <div class="prompt-header">
+          <span class="form-label">{{ t('settings.poster.promptTitle') }}</span>
+          <button class="reset-btn" @click="resetPrompt">重置</button>
+        </div>
+        <p class="section-desc" style="margin-bottom: 6px">{{ t('settings.poster.promptHint') }}</p>
+        <textarea
+          v-model="posterPrompt"
+          class="prompt-textarea"
+          rows="4"
+          @blur="savePosterSettings"
+        />
+      </div>
+
+      <!-- Animal list -->
+      <div class="animal-section">
+        <button class="animal-toggle-row" @click="showAnimalList = !showAnimalList">
+          <span class="form-label" style="pointer-events:none">动物列表</span>
+          <div class="animal-toggle-right">
+            <span class="animal-count-badge">{{ homeStore.animals.length }} 种</span>
+            <ChevronDown :size="14" :class="['chevron', { rotated: showAnimalList }]" />
+          </div>
+        </button>
+
+        <div v-if="showAnimalList" class="animal-list-wrap">
+          <!-- Toolbar -->
+          <div class="animal-toolbar">
+            <span class="animal-legend">
+              <span class="used-dot" /> 已出现过
+            </span>
+            <button class="icon-text-btn danger-text" @click="confirmReset">
+              <RotateCcw :size="12" />
+              重置默认
+            </button>
+          </div>
+
+          <!-- List -->
+          <div class="animal-list">
+            <div
+              v-for="(animal, idx) in homeStore.animals"
+              :key="idx"
+              class="animal-row"
+              :class="{ editing: editingIndex === idx }"
+            >
+              <!-- Edit mode -->
+              <template v-if="editingIndex === idx">
+                <input
+                  v-model="editZh"
+                  class="animal-input"
+                  placeholder="中文名"
+                  @keydown.enter="saveEdit(idx)"
+                  @keydown.escape="cancelEdit"
+                />
+                <input
+                  v-model="editEn"
+                  class="animal-input wide"
+                  placeholder="English name"
+                  @keydown.enter="saveEdit(idx)"
+                  @keydown.escape="cancelEdit"
+                />
+                <button class="row-action-btn confirm" @click="saveEdit(idx)">
+                  <Check :size="12" />
+                </button>
+                <button class="row-action-btn cancel" @click="cancelEdit">
+                  <X :size="12" />
+                </button>
+              </template>
+
+              <!-- Display mode -->
+              <template v-else>
+                <span class="used-dot" :class="{ visible: usedAnimalNames.has(animal.zh) }" />
+                <span class="animal-zh">{{ animal.zh }}</span>
+                <span class="animal-en">{{ animal.en }}</span>
+                <div class="row-actions">
+                  <button class="row-action-btn edit" @click="startEdit(idx)" :title="'编辑'">
+                    <Pencil :size="11" />
+                  </button>
+                  <button class="row-action-btn delete" @click="deleteAnimal(idx)" :title="'删除'">
+                    <Trash2 :size="11" />
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Add panel -->
+          <template v-if="showAddForm">
+            <!-- Mode tabs -->
+            <div class="add-mode-tabs">
+              <button
+                class="add-mode-tab"
+                :class="{ active: addMode === 'single' }"
+                @click="addMode = 'single'"
+              >单个添加</button>
+              <button
+                class="add-mode-tab"
+                :class="{ active: addMode === 'bulk' }"
+                @click="addMode = 'bulk'"
+              >批量导入</button>
+            </div>
+
+            <!-- Single mode -->
+            <div v-if="addMode === 'single'" class="animal-add-row">
+              <input
+                v-model="newZh"
+                class="animal-input"
+                placeholder="中文名"
+                @keydown.enter="confirmAdd"
+                @keydown.escape="cancelAdd"
+              />
+              <input
+                v-model="newEn"
+                class="animal-input wide"
+                placeholder="English name for AI prompt"
+                @keydown.enter="confirmAdd"
+                @keydown.escape="cancelAdd"
+              />
+              <button class="row-action-btn confirm" :disabled="!newZh.trim() || !newEn.trim()" @click="confirmAdd">
+                <Check :size="12" />
+              </button>
+              <button class="row-action-btn cancel" @click="cancelAdd">
+                <X :size="12" />
+              </button>
+            </div>
+
+            <!-- Bulk mode -->
+            <div v-else class="bulk-import-panel">
+              <p class="bulk-hint">每行一个动物，中文名与英文名之间用逗号分隔：</p>
+              <p class="bulk-example">例：<code>北极熊,Polar Bear</code></p>
+              <textarea
+                v-model="bulkText"
+                class="bulk-textarea"
+                placeholder="北极熊,Polar Bear&#10;东北虎,Amur Tiger&#10;宽吻海豚,Bottlenose Dolphin"
+                rows="6"
+              />
+              <!-- Preview count -->
+              <div class="bulk-preview-bar">
+                <span v-if="bulkText.trim()" class="bulk-count">
+                  解析到 <strong>{{ bulkValidCount }}</strong> 条有效数据
+                  <template v-if="bulkPreview.length > bulkValidCount">
+                    （{{ bulkPreview.length - bulkValidCount }} 条格式有误已忽略）
+                  </template>
+                </span>
+                <div class="bulk-actions">
+                  <button class="bulk-btn secondary" @click="cancelAdd">取消</button>
+                  <button
+                    class="bulk-btn primary"
+                    :disabled="bulkValidCount === 0"
+                    @click="confirmBulkImport"
+                  >导入 {{ bulkValidCount > 0 ? bulkValidCount + ' 条' : '' }}</button>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- Add button (collapsed state) -->
+          <button v-else class="add-animal-btn" @click="showAddForm = true; editingIndex = -1">
+            <Plus :size="13" />
+            添加动物
+          </button>
+        </div>
       </div>
     </div>
 
@@ -543,6 +924,564 @@ async function confirmDeleteOld() {
   display: flex;
   align-items: flex-start;
   gap: 12px;
+}
+
+/* Poster settings */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+
+.toggle-label {
+  font-size: 13px;
+  color: #1c1c1e;
+}
+
+.toggle-btn {
+  width: 44px;
+  height: 26px;
+  border-radius: 13px;
+  border: none;
+  background: rgba(0,0,0,0.12);
+  cursor: pointer;
+  transition: background 0.2s;
+  padding: 3px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.toggle-btn.active {
+  background: #223F79;
+  justify-content: flex-end;
+}
+
+.toggle-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: none;
+}
+
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.form-label {
+  font-size: 13px;
+  color: #3c3c43;
+  width: 100px;
+  flex-shrink: 0;
+}
+
+.form-control {
+  flex: 1;
+}
+
+.select-input {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(0,0,0,0.12);
+  background: white;
+  font-size: 13px;
+  color: #1c1c1e;
+  cursor: pointer;
+  outline: none;
+}
+
+.select-input:focus {
+  border-color: rgba(34, 63, 121, 0.35);
+}
+
+.no-models-hint {
+  font-size: 12px;
+  color: #ff9500;
+  line-height: 1.4;
+}
+
+.freq-options {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.freq-btn {
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1.5px solid transparent;
+  background: rgba(0,0,0,0.04);
+  color: #3c3c43;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.freq-btn:hover {
+  background: rgba(0,0,0,0.08);
+}
+
+.freq-btn.active {
+  background: rgba(34, 63, 121, 0.08);
+  border-color: rgba(34, 63, 121, 0.25);
+  color: #223F79;
+}
+
+.number-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.number-input {
+  width: 70px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(0,0,0,0.12);
+  background: white;
+  font-size: 13px;
+  color: #1c1c1e;
+  text-align: center;
+  outline: none;
+}
+
+.number-input:focus {
+  border-color: rgba(34, 63, 121, 0.35);
+}
+
+.number-unit {
+  font-size: 13px;
+  color: #8e8e93;
+}
+
+.prompt-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prompt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.reset-btn {
+  font-size: 12px;
+  color: #8e8e93;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 5px;
+  transition: color 0.12s, background 0.12s;
+}
+
+.reset-btn:hover {
+  color: #3c3c43;
+  background: rgba(0,0,0,0.05);
+}
+
+.prompt-textarea {
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(0,0,0,0.12);
+  background: white;
+  font-size: 12px;
+  color: #1c1c1e;
+  font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.prompt-textarea:focus {
+  border-color: rgba(34, 63, 121, 0.35);
+}
+
+/* ── Animal list ─────────────────────────────────────────────────────────── */
+
+.animal-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.animal-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 4px 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.1s;
+}
+
+.animal-toggle-row:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.animal-toggle-right {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.animal-count-badge {
+  font-size: 11px;
+  color: #8e8e93;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 2px 7px;
+  border-radius: 10px;
+}
+
+.chevron {
+  color: #8e8e93;
+  transition: transform 0.18s;
+}
+
+.chevron.rotated {
+  transform: rotate(180deg);
+}
+
+.animal-list-wrap {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.animal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 11px;
+  background: rgba(0, 0, 0, 0.02);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.animal-legend {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #8e8e93;
+}
+
+.icon-text-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 5px;
+  transition: background 0.1s;
+}
+
+.icon-text-btn.danger-text { color: #ff3b30; }
+
+.icon-text-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.animal-list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.animal-list::-webkit-scrollbar { width: 3px; }
+.animal-list::-webkit-scrollbar-track { background: transparent; }
+.animal-list::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.10); border-radius: 2px; }
+
+.animal-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 11px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+  min-height: 36px;
+  transition: background 0.1s;
+}
+
+.animal-row:last-child { border-bottom: none; }
+
+.animal-row:not(.editing):hover {
+  background: rgba(0, 0, 0, 0.025);
+}
+
+.animal-row.editing {
+  background: rgba(34, 63, 121, 0.04);
+}
+
+.used-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: transparent;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.used-dot.visible {
+  background: #34c759;
+}
+
+.animal-zh {
+  font-size: 13px;
+  color: #1c1c1e;
+  font-weight: 500;
+  width: 72px;
+  flex-shrink: 0;
+}
+
+.animal-en {
+  font-size: 12px;
+  color: #8e8e93;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.animal-row:hover .row-actions {
+  opacity: 1;
+}
+
+.row-action-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+  flex-shrink: 0;
+}
+
+.row-action-btn.edit   { color: #8e8e93; }
+.row-action-btn.edit:hover { background: rgba(0,0,0,0.07); color: #3c3c43; }
+
+.row-action-btn.delete { color: #8e8e93; }
+.row-action-btn.delete:hover { background: rgba(255,59,48,0.08); color: #ff3b30; }
+
+.row-action-btn.confirm { color: #34c759; }
+.row-action-btn.confirm:hover { background: rgba(52,199,89,0.10); }
+
+.row-action-btn.cancel { color: #8e8e93; }
+.row-action-btn.cancel:hover { background: rgba(0,0,0,0.07); }
+
+.animal-input {
+  height: 26px;
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid rgba(34, 63, 121, 0.25);
+  background: white;
+  font-size: 12px;
+  color: #1c1c1e;
+  outline: none;
+  width: 76px;
+  flex-shrink: 0;
+}
+
+.animal-input.wide {
+  flex: 1;
+  width: auto;
+}
+
+.animal-input:focus {
+  border-color: rgba(34, 63, 121, 0.45);
+}
+
+.animal-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 11px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  background: rgba(34, 63, 121, 0.03);
+}
+
+.add-animal-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  padding: 9px 0;
+  border: none;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  background: transparent;
+  color: #223F79;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.add-animal-btn:hover {
+  background: rgba(34, 63, 121, 0.05);
+}
+
+/* ── Add mode tabs ─────────────────────────────────────────────────────────── */
+
+.add-mode-tabs {
+  display: flex;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.add-mode-tab {
+  flex: 1;
+  padding: 7px 0;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: #8e8e93;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+  border-bottom: 2px solid transparent;
+}
+
+.add-mode-tab.active {
+  color: #223F79;
+  background: rgba(34, 63, 121, 0.04);
+  border-bottom-color: #223F79;
+}
+
+/* ── Bulk import panel ─────────────────────────────────────────────────────── */
+
+.bulk-import-panel {
+  padding: 10px 11px 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bulk-hint {
+  font-size: 12px;
+  color: #3c3c43;
+  margin: 0;
+}
+
+.bulk-example {
+  font-size: 11px;
+  color: #8e8e93;
+  margin: 0;
+}
+
+.bulk-example code {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
+}
+
+.bulk-textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: white;
+  font-size: 12px;
+  color: #1c1c1e;
+  font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
+  line-height: 1.7;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.bulk-textarea:focus {
+  border-color: rgba(34, 63, 121, 0.35);
+}
+
+.bulk-preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  gap: 8px;
+}
+
+.bulk-count {
+  font-size: 11px;
+  color: #8e8e93;
+  flex: 1;
+}
+
+.bulk-count strong {
+  color: #34c759;
+  font-weight: 600;
+}
+
+.bulk-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.bulk-btn {
+  padding: 5px 14px;
+  border-radius: 8px;
+  border: none;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.12s, background 0.12s;
+}
+
+.bulk-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.bulk-btn.secondary {
+  background: rgba(0, 0, 0, 0.06);
+  color: #3c3c43;
+}
+
+.bulk-btn.secondary:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.10);
+}
+
+.bulk-btn.primary {
+  background: rgba(34, 63, 121, 0.10);
+  color: #223F79;
+}
+
+.bulk-btn.primary:hover:not(:disabled) {
+  background: rgba(34, 63, 121, 0.18);
 }
 
 .info-label {

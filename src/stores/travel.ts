@@ -165,6 +165,17 @@ export const useTravelStore = defineStore('travel', () => {
     viewMode.value = 'editor'
   }
 
+  async function newNoteAt(lat: number, lng: number) {
+    const note = createEmptyNote()
+    note.lat = lat
+    note.lng = lng
+    note.content = rebuildContent(note)
+    await saveTravelNote(note)
+    await loadList()
+    await openNote(note.id)
+    viewMode.value = 'editor'
+  }
+
   // ─── Save active note ──────────────────────────────────────────────────────
 
   async function saveActive() {
@@ -270,6 +281,7 @@ export const useTravelStore = defineStore('travel', () => {
     clearAllTrash,
     openNote,
     newNote,
+    newNoteAt,
     saveActive,
     deleteOne,
     setTitle,

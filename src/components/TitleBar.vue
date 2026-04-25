@@ -33,13 +33,13 @@ async function onMouseDown(e: MouseEvent) {
 
     <!-- Windows custom window controls (macOS gets OS-native traffic lights) -->
     <div v-if="isWindows" class="win-controls">
-      <button class="win-btn" title="最小化" @click="win.minimize()">
+      <button class="win-btn" title="最小化" @mousedown.stop @click="win.minimize()">
         <Minus :size="12" />
       </button>
-      <button class="win-btn" title="最大化 / 还原" @click="win.toggleMaximize()">
+      <button class="win-btn" title="最大化 / 还原" @mousedown.stop @click="win.toggleMaximize()">
         <Square :size="10" />
       </button>
-      <button class="win-btn close-btn" title="关闭" @click="win.close()">
+      <button class="win-btn close-btn" title="关闭" @mousedown.stop @click="win.close()">
         <X :size="12" />
       </button>
     </div>

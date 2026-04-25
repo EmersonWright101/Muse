@@ -5,7 +5,14 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: '/chat',
+      redirect: '/home',
+    },
+    {
+      path: '/home',
+      components: {
+        sidebar: () => import('../modules/home/HomeSidebar.vue'),
+        main: () => import('../modules/home/HomeMain.vue'),
+      },
     },
     {
       path: '/chat',

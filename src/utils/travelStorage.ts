@@ -33,6 +33,8 @@
 import {
   readTextFile,
   writeTextFile,
+  readFile,
+  writeFile,
   exists,
   mkdir,
   remove,
@@ -487,18 +489,87 @@ export function rebuildContent(note: TravelNote): string {
 // ─── Sync module ─────────────────────────────────────────────────────────────
 
 import { syncService } from '../services/sync'
-import type { SyncModule } from '../services/sync/types'
+import type { SyncModule, SyncContext } from '../services/sync/types'
 
 const MOD_TRAVEL = 'travelNotes'
+const IMAGE_EXTS = /\.(jpe?g|png|gif|webp|avif|svg|bmp|tiff?)$/i
 
 interface TravelPayload {
   list: TravelNoteMeta[]
   deletedTravelNotes: Record<string, string>
 }
 
+async function syncImages(ctx: SyncContext, localChanged: boolean): Promise<void> {
+  const dir = await travelNotesDir()
+  const imgDir = `${dir}/images`
+
+  // Collect local images
+  const localImages: string[] = []
+  if (await exists(imgDir)) {
+    const entries = await readDir(imgDir)
+    for (const e of entries) {
+      if (e.name && !e.isDirectory && IMAGE_EXTS.test(e.name)) {
+        localImages.push(e.name)
+      }
+    }
+  }
+
+  // Get remote image index (list of filenames known to be on remote)
+  const remoteIndex = await ctx.getEncrypted<string[]>(ctx.rp('travel/images_index.enc'), [])
+  const remoteSet = new Set(Array.isArray(remoteIndex) ? remoteIndex : [])
+  const localSet = new Set(localImages)
+  let indexChanged = false
+
+  // Upload local images not yet on remote (only when local data changed)
+  if (localChanged) {
+    for (const filename of localImages) {
+      if (remoteSet.has(filename)) continue
+      try {
+        ctx.setProgress(`上传图片 ${filename}…`)
+        const bytes = await readFile(`${imgDir}/${filename}`)
+        let binary = ''
+        for (let i = 0; i < bytes.length; i += 8192) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
+        }
+        await ctx.putEncrypted(ctx.rp(`travel/images/${filename}.enc`), btoa(binary))
+        remoteSet.add(filename)
+        indexChanged = true
+      } catch {
+        // skip failed image
+      }
+    }
+  }
+
+  // Download remote images not available locally (always)
+  const toDownload = Array.from(remoteSet).filter(f => !localSet.has(f))
+  if (toDownload.length > 0) {
+    if (!(await exists(imgDir))) await mkdir(imgDir, { recursive: true })
+    for (const filename of toDownload) {
+      try {
+        ctx.setProgress(`下载图片 ${filename}…`)
+        const base64 = await ctx.getEncrypted<string | null>(
+          ctx.rp(`travel/images/${filename}.enc`), null,
+        )
+        if (!base64 || typeof base64 !== 'string') continue
+        const binary = atob(base64)
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+        await writeFile(`${imgDir}/${filename}`, bytes)
+      } catch {
+        // skip failed image
+      }
+    }
+  }
+
+  // Update remote index when new images were uploaded
+  if (indexChanged) {
+    await ctx.putEncrypted(ctx.rp('travel/images_index.enc'), Array.from(remoteSet))
+  }
+}
+
 const travelSyncModule: SyncModule = {
   id: MOD_TRAVEL,
-  remoteDirs: ['travel'],
+  remoteDirs: ['travel', 'travel/images'],
   getLocalTimestamp() {
     return localStorage.getItem('muse-ts-travel-notes') ?? new Date(0).toISOString()
   },
@@ -583,6 +654,9 @@ const travelSyncModule: SyncModule = {
         indexChanged = true
       }
     }
+
+    // Sync image attachments (always, so remote images are downloaded even when no notes changed)
+    await syncImages(ctx, localChanged)
 
     if (!localChanged && !indexChanged) return
 

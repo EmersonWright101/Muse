@@ -43,16 +43,30 @@ const kpiCards = computed(() => {
 })
 
 /* ─── Top models with sort ──────────────────────────────────── */
-const topModels = computed(() =>
-  [...stats.modelStats].sort((a, b) => b.totalTokens - a.totalTokens).slice(0, 5)
-)
-const topModelsTotal = computed(() => topModels.value.reduce((s, m) => s + m.totalTokens, 0) || 1)
+const keyMap: Record<string, 'totalTokens' | 'cost' | 'requests'> = {
+  tokens: 'totalTokens',
+  cost: 'cost',
+  requests: 'requests',
+}
 
 const sortOptions: { key: SortBy; label: string }[] = [
   { key: 'tokens', label: 'Token' },
   { key: 'cost', label: '花费' },
   { key: 'requests', label: '请求' },
 ]
+
+const topModels = computed(() => {
+  const key = keyMap[stats.sortBy]
+  return [...stats.modelStats].sort((a, b) => b[key] - a[key]).slice(0, 5)
+})
+const topModelsTotal = computed(() => {
+  const key = keyMap[stats.sortBy]
+  return topModels.value.reduce((s, m) => s + m[key], 0) || 1
+})
+
+function getTopModelPct(m: typeof stats.modelStats[number]): string {
+  return ((m[keyMap[stats.sortBy]] / topModelsTotal.value) * 100).toFixed(1)
+}
 
 /* ─── Provider pie chart ───────────────────────────────────── */
 const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#ec4899']
@@ -197,7 +211,6 @@ const ICON_MIN_PX = 18
 const iconThreshold = ICON_MIN_PX / CHART_HEIGHT
 
 /* ─── Ranking ───────────────────────────────────────────────── */
-const keyMap: Record<string, keyof typeof stats.modelStats[number]> = { tokens: 'totalTokens', cost: 'cost', requests: 'requests' }
 const ranked = computed(() => stats.filteredRankedModels)
 const maxRankValue = computed(() => {
   const key = keyMap[stats.sortBy]
@@ -321,9 +334,7 @@ const monthColLabels = computed(() => {
                 <span class="top-model-rank">{{ idx + 1 }}</span>
                 <ModelIcon :model-id="m.modelId" :size="18" />
                 <span class="top-model-name">{{ m.modelName }}</span>
-                <span class="top-model-pct">
-                  {{ ((m.totalTokens / topModelsTotal) * 100).toFixed(1) }}%
-                </span>
+                <span class="top-model-pct">{{ getTopModelPct(m) }}%</span>
               </div>
             </div>
           </div>

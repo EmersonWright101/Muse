@@ -10,11 +10,12 @@ const { t } = useI18n()
 const win = getCurrentWindow()
 
 const navItems = computed(() => [
-  { path: '/chat', icon: MessageSquare, labelKey: 'nav.chat' },
-  { path: '/travel', icon: MapPin, labelKey: 'nav.travel' },
+  { path: '/chat',   icon: MessageSquare, labelKey: 'nav.chat' },
+  { path: '/travel', icon: MapPin,        labelKey: 'nav.travel' },
 ])
 
 const isActive = (path: string) => route.path.startsWith(path)
+const isHome = computed(() => route.path.startsWith('/home'))
 
 async function onHeaderMouseDown(e: MouseEvent) {
   if (e.button === 0 && !(e.target as HTMLElement).closest('button')) {
@@ -46,11 +47,13 @@ async function onHeaderMouseDown(e: MouseEvent) {
       </div>
     </div>
 
-    <!-- Logo mark -->
+    <!-- Logo mark — click to go home -->
     <div class="sidebar-logo">
-      <div class="logo-mark">
-        <span>M</span>
-      </div>
+      <router-link to="/home" class="logo-link" :title="t('nav.home')">
+        <div class="logo-mark" :class="{ active: isHome }">
+          <span>M</span>
+        </div>
+      </router-link>
     </div>
 
     <!-- Main navigation -->
@@ -167,6 +170,20 @@ async function onHeaderMouseDown(e: MouseEvent) {
   flex-shrink: 0;
 }
 
+.logo-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  border-radius: 11px;
+  padding: 3px;
+  transition: background 0.12s;
+}
+
+.logo-link:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
 .logo-mark {
   width: 36px;
   height: 36px;
@@ -176,6 +193,15 @@ async function onHeaderMouseDown(e: MouseEvent) {
   align-items: center;
   justify-content: center;
   box-shadow: 0 2px 8px rgba(34, 63, 121, 0.30);
+  transition: box-shadow 0.15s, transform 0.12s;
+}
+
+.logo-mark.active {
+  box-shadow: 0 0 0 3px rgba(34, 63, 121, 0.20), 0 2px 8px rgba(34, 63, 121, 0.30);
+}
+
+.logo-link:hover .logo-mark {
+  transform: scale(1.06);
 }
 
 .logo-mark span {

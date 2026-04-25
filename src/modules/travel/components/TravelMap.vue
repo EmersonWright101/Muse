@@ -11,13 +11,52 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'select', id: string): void
+  (e: 'create-at', lat: number, lng: number): void
 }>()
+
+// Context menu state
+const ctxMenu = ref<{ x: number; y: number; lat: number; lng: number } | null>(null)
+
+function openCtxMenu(e: L.LeafletMouseEvent) {
+  const container = map!.getContainer()
+  const rect = container.getBoundingClientRect()
+  ctxMenu.value = {
+    x: e.originalEvent.clientX - rect.left,
+    y: e.originalEvent.clientY - rect.top,
+    lat: e.latlng.lat,
+    lng: e.latlng.lng,
+  }
+}
+
+function closeCtxMenu() {
+  ctxMenu.value = null
+}
+
+function handleCreateAt() {
+  if (!ctxMenu.value) return
+  const { lat, lng } = ctxMenu.value
+  closeCtxMenu()
+  emit('create-at', lat, lng)
+}
 
 const CLUSTER_RADIUS_PX = 40
 
 const mapContainer = ref<HTMLElement>()
 let map: L.Map | null = null
 let markers: Map<string, L.Marker> = new Map() // key = seed note id
+let lastClusters: Cluster[] = []
+
+// Sticky-tooltip state: delay hiding so mouse can reach the tooltip element
+let _tipTimer: ReturnType<typeof setTimeout> | null = null
+
+function _clearTipTimer() {
+  if (_tipTimer !== null) { clearTimeout(_tipTimer); _tipTimer = null }
+}
+
+function _scheduleTipClose(m: L.Marker, delay = 500) {
+  _clearTipTimer()
+  _tipTimer = setTimeout(() => { m.closeTooltip(); _tipTimer = null }, delay)
+}
 
 interface Cluster {
   key: string
@@ -111,23 +150,28 @@ function initMap() {
   }).addTo(map)
 
   L.control.zoom({ position: 'bottomright' }).addTo(map)
-  map.on('zoomend', rebuildMarkers)
+  map.on('zoomend', rebuildMarkers)  // only rebuild clusters on zoom, no pan
+  map.on('contextmenu', openCtxMenu)
+  map.on('click', closeCtxMenu)
   rebuildMarkers()
 }
 
 function rebuildMarkers() {
   if (!map) return
 
+  _clearTipTimer()
+
   // Clear all existing markers — cluster composition changes on each zoom
   for (const m of markers.values()) map.removeLayer(m)
   markers.clear()
 
-  const clusters = buildDynamicClusters()
+  lastClusters = buildDynamicClusters()
 
-  for (const { key, notes, lat, lng } of clusters) {
+  for (const { key, notes, lat, lng } of lastClusters) {
     const isActive = notes.some(n => n.id === props.activeNoteId)
     const icon = makeIcon(isActive, notes.length)
     const tooltip = buildClusterTooltip(notes)
+    const firstId = notes[0].id
 
     const marker = L.marker([lat, lng], { icon })
       .addTo(map)
@@ -138,29 +182,55 @@ function rebuildMarkers() {
         offset: [0, -36],
         opacity: 1,
       })
-    marker.on('click', () => emit('select', notes[0].id))
-    markers.set(key, marker)
-  }
 
-  // Pan to active note and open its cluster tooltip
-  if (props.activeNoteId) {
-    const active = props.notes.find(n => n.id === props.activeNoteId)
-    if (active && active.lat !== 0 && active.lng !== 0) {
-      map.setView([active.lat, active.lng], Math.max(map.getZoom(), 10), {
-        animate: true,
-        duration: 0.5,
-      })
-      const cluster = clusters.find(c => c.notes.some(n => n.id === props.activeNoteId))
-      if (cluster) markers.get(cluster.key)?.openTooltip()
-    }
+    // Sticky-tooltip: on mouseover cancel any pending close
+    marker.on('mouseover', () => _clearTipTimer())
+
+    // Sticky-tooltip: Leaflet closes tooltip on mouseout — reopen it immediately,
+    // then schedule a delayed close so the mouse has time to reach the card.
+    marker.on('mouseout', () => {
+      marker.openTooltip()
+      _scheduleTipClose(marker)
+    })
+
+    // When tooltip opens, make it interactive so mouse events reach it
+    marker.on('tooltipopen', () => {
+      const el = marker.getTooltip()?.getElement()
+      if (!el) return
+      el.style.pointerEvents = 'auto'
+      el.style.cursor = 'pointer'
+      el.onmouseenter = () => _clearTipTimer()
+      el.onmouseleave = () => _scheduleTipClose(marker, 300)
+      el.onclick = () => emit('select', firstId)
+    })
+
+    marker.on('click', () => emit('select', firstId))
+    markers.set(key, marker)
   }
 }
 
+// Pan to active note once when selection changes — not on every zoom
+function panToActive() {
+  if (!map || !props.activeNoteId) return
+  const active = props.notes.find(n => n.id === props.activeNoteId)
+  if (!active || (active.lat === 0 && active.lng === 0)) return
+  map.setView([active.lat, active.lng], Math.max(map.getZoom(), 10), {
+    animate: true,
+    duration: 0.5,
+  })
+  const cluster = lastClusters.find(c => c.notes.some(n => n.id === props.activeNoteId))
+  if (cluster) markers.get(cluster.key)?.openTooltip()
+}
+
 watch(() => props.notes, rebuildMarkers, { deep: true })
-watch(() => props.activeNoteId, rebuildMarkers)
+watch(() => props.activeNoteId, () => {
+  rebuildMarkers()
+  panToActive()
+})
 
 onMounted(initMap)
 onUnmounted(() => {
+  _clearTipTimer()
   if (map) {
     map.remove()
     map = null
@@ -170,7 +240,18 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="mapContainer" class="travel-map" />
+  <div ref="mapContainer" class="travel-map">
+    <div
+      v-if="ctxMenu"
+      class="map-ctx-menu"
+      :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
+    >
+      <button class="ctx-item" @click="handleCreateAt">
+        <span class="ctx-icon">📍</span>
+        在此处新建笔记
+      </button>
+    </div>
+  </div>
 </template>
 
 <style>
@@ -349,5 +430,45 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Right-click context menu */
+.map-ctx-menu {
+  position: absolute;
+  z-index: 1000;
+  background: rgba(30, 30, 32, 0.92);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border-radius: 10px;
+  padding: 4px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.28), 0 0 0 0.5px rgba(255,255,255,0.08) inset;
+  min-width: 160px;
+  pointer-events: auto;
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: #f2f2f7;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.ctx-item:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.ctx-icon {
+  font-size: 15px;
+  line-height: 1;
 }
 </style>

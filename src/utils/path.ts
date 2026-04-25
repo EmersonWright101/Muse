@@ -20,8 +20,11 @@ const LS_DATA_PATH_KEY = 'muse-data-path'
 const APP_ENTRIES = new Set([
   'conversations',
   'travel_notes',
+  'home_posters',
   'assistants.json',
   'stats-cache.json',
+  'copilot-stats.json',
+  'poster-stats.json',
 ])
 
 let _cachedRoot: string | null = null
@@ -61,6 +64,10 @@ export async function conversationsDir(): Promise<string> {
 
 export async function travelNotesDir(): Promise<string> {
   return `${await resolveDataRoot()}/travel_notes`
+}
+
+export async function homePostersDir(): Promise<string> {
+  return `${await resolveDataRoot()}/home_posters`
 }
 
 // ─── Safety helpers ──────────────────────────────────────────────────────────

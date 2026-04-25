@@ -10,6 +10,10 @@ const props = defineProps<{
   notes: TravelNoteMeta[]
 }>()
 
+const emit = defineEmits<{
+  (e: 'select', id: string): void
+}>()
+
 const mapContainer = ref<HTMLElement>()
 let map: L.Map | null = null
 let geoLayer: L.GeoJSON | null = null
@@ -105,24 +109,26 @@ async function loadCounties() {
     const validNotes = getValidNotes()
     const g = granularity.value
 
-    // Build a map: region code -> visit count
+    // Build maps: region code -> visit count / matching notes
     const visitMap = new Map<string, number>()
+    const notesMap = new Map<string, TravelNoteMeta[]>()
 
     for (const f of data.features) {
       const code = getCode(f, g)
       if (!code) continue
-      let count = 0
+      const matchingNotes: TravelNoteMeta[] = []
       for (const note of validNotes) {
         try {
           if (booleanPointInPolygon([note.lng, note.lat], f.geometry)) {
-            count++
+            matchingNotes.push(note)
           }
         } catch {
           // ignore invalid geometries
         }
       }
-      if (count > 0) {
-        visitMap.set(String(code), count)
+      if (matchingNotes.length > 0) {
+        visitMap.set(String(code), matchingNotes.length)
+        notesMap.set(String(code), matchingNotes)
       }
     }
 
@@ -145,6 +151,7 @@ async function loadCounties() {
             color: '#b45309',
             weight: 1.2,
             opacity: 1,
+            className: 'power-map-visited',
           }
         }
         // Unvisited: transparent, let the grey basemap show through
@@ -174,7 +181,7 @@ async function loadCounties() {
         })
 
         pathLayer.on('mouseover', () => {
-          pathLayer.setStyle({ weight: 2, color: '#78350f' })
+          if (count > 0) pathLayer.setStyle({ weight: 2, color: '#78350f' })
         })
         pathLayer.on('mouseout', () => {
           const c = visitMap.get(code) || 0
@@ -196,6 +203,17 @@ async function loadCounties() {
             })
           }
         })
+
+        const regionNotes = notesMap.get(code)
+        if (regionNotes && regionNotes.length > 0) {
+          pathLayer.on('click', () => {
+            // Open the most recently updated note in this region
+            const sorted = [...regionNotes].sort((a, b) =>
+              (b.updatedAt ?? b.date).localeCompare(a.updatedAt ?? a.date)
+            )
+            emit('select', sorted[0].id)
+          })
+        }
       },
     }).addTo(map)
 
@@ -350,6 +368,10 @@ onUnmounted(() => {
 </style>
 
 <style>
+.power-map-visited {
+  cursor: pointer;
+}
+
 .power-map-tooltip {
   background: rgba(255, 255, 255, 0.96) !important;
   border: 1px solid rgba(0, 0, 0, 0.08) !important;

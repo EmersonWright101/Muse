@@ -11,6 +11,15 @@ const { t } = useI18n()
 const store = useTravelStore()
 
 const hasActive = computed(() => !!store.activeNoteId)
+
+function onPowerMapSelect(id: string) {
+  store.openNote(id)
+  store.viewMode = 'editor'
+}
+
+function onMapCreateAt(lat: number, lng: number) {
+  store.newNoteAt(lat, lng)
+}
 </script>
 
 <template>
@@ -41,11 +50,13 @@ const hasActive = computed(() => !!store.activeNoteId)
         v-if="store.viewMode === 'map'"
         :notes="store.notes"
         :active-note-id="store.activeNoteId"
-        @select="store.openNote"
+        @select="(id) => { store.openNote(id); store.viewMode = 'editor' }"
+        @create-at="onMapCreateAt"
       />
       <TravelPowerMap
         v-else-if="store.viewMode === 'powerMap'"
         :notes="store.notes"
+        @select="onPowerMapSelect"
       />
       <div v-else-if="!hasActive" class="placeholder-state">
         <div class="placeholder-icon">

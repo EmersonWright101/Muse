@@ -5,6 +5,7 @@ import { useAiSettingsStore } from './aiSettings'
 import { resolveDataRoot } from '../utils/path'
 import { readTextFile, writeTextFile, exists, mkdir } from '@tauri-apps/plugin-fs'
 import type { CopilotDailyStat } from './travelCopilot'
+import { loadPosterStatsFile } from './home'
 
 async function loadCopilotStatsFile(): Promise<Record<string, CopilotDailyStat>> {
   try {
@@ -620,6 +621,36 @@ export const useStatisticsStore = defineStore('statistics', () => {
         }
       }
       if (copilotTotal) merged.modelStats.push(copilotTotal)
+
+      // Merge poster stats as a virtual "poster" model entry
+      const posterDailyStats = await loadPosterStatsFile()
+      const POSTER_MODEL_ID = '__poster__'
+      let posterTotal: ModelStat | undefined
+      for (const [date, ps] of Object.entries(posterDailyStats)) {
+        if (!ps.requests) continue
+        if (!posterTotal) {
+          posterTotal = { modelId: POSTER_MODEL_ID, modelName: '动物海报 (AI 生成)', provider: 'Home', inputTokens: 0, outputTokens: 0, totalTokens: 0, uploadsMB: 0, downloadsMB: 0, cost: 0, requests: 0 }
+        }
+        posterTotal.cost     += ps.costUsd
+        posterTotal.requests += ps.requests
+
+        let ds = merged.dailyStatsAll.find(d => d.date === date)
+        if (!ds) {
+          ds = { date, inputTokens: 0, outputTokens: 0, totalTokens: 0, uploadsMB: 0, downloadsMB: 0, cost: 0, requests: 0, models: [] }
+          merged.dailyStatsAll.push(ds)
+          merged.dailyStatsAll.sort((a, b) => a.date.localeCompare(b.date))
+        }
+        ds.cost     += ps.costUsd
+        ds.requests += ps.requests
+        const existing = ds.models.find(m => m.modelId === POSTER_MODEL_ID)
+        if (existing) {
+          existing.cost     += ps.costUsd
+          existing.requests += ps.requests
+        } else {
+          ds.models.push({ modelId: POSTER_MODEL_ID, modelName: '动物海报 (AI 生成)', inputTokens: 0, outputTokens: 0, totalTokens: 0, uploadsMB: 0, downloadsMB: 0, cost: ps.costUsd, requests: ps.requests })
+        }
+      }
+      if (posterTotal) merged.modelStats.push(posterTotal)
 
       modelStats.value = merged.modelStats
       dailyStatsAll.value = merged.dailyStatsAll

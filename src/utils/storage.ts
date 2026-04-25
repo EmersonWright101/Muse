@@ -38,6 +38,7 @@ export interface MessageUsage {
   reasoningTokens?: number;
   durationMs?:      number;
   costUsd?:         number;
+  tokensPerSecond?: number;  // generation speed reported by provider (Ollama eval_count / eval_duration)
 }
 
 export interface MessageVariant {

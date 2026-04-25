@@ -5,8 +5,27 @@ import { FolderOpen, AlertTriangle, Check, X } from 'lucide-vue-next'
 import { open } from '@tauri-apps/plugin-dialog'
 import { readDir, remove } from '@tauri-apps/plugin-fs'
 import { getDataRoot, setDataRoot, resolveDataRoot, migrateData } from '../../../utils/path'
+import { getTrashRetentionDays } from '../../../utils/travelStorage'
 
 const { locale, t } = useI18n()
+
+// Trash retention
+const LS_TRASH_RETENTION = 'muse-trash-retention-days'
+const trashRetentionDays = ref<number>(getTrashRetentionDays())
+
+const RETENTION_OPTIONS = [
+  { value: 7,  label: () => t('settings.trash.days7') },
+  { value: 14, label: () => t('settings.trash.days14') },
+  { value: 30, label: () => t('settings.trash.days30') },
+  { value: 60, label: () => t('settings.trash.days60') },
+  { value: 90, label: () => t('settings.trash.days90') },
+  { value: 0,  label: () => t('settings.trash.never') },
+]
+
+function setTrashRetention(days: number) {
+  trashRetentionDays.value = days
+  localStorage.setItem(LS_TRASH_RETENTION, String(days))
+}
 
 const languages = [
   { code: 'zh-CN', label: '简体中文', flag: '🇨🇳' },
@@ -138,6 +157,22 @@ async function confirmDeleteOld() {
       <div class="info-row">
         <span class="info-label">加密方式</span>
         <span class="info-value">API Key 使用 AES-256-GCM 加密存储</span>
+      </div>
+    </div>
+
+    <div class="section-card">
+      <h2 class="section-title">{{ t('settings.trash.title') }}</h2>
+      <p class="section-desc">{{ t('settings.trash.description') }}</p>
+      <div class="retention-options">
+        <button
+          v-for="opt in RETENTION_OPTIONS"
+          :key="opt.value"
+          class="retention-btn"
+          :class="{ active: trashRetentionDays === opt.value }"
+          @click="setTrashRetention(opt.value)"
+        >
+          {{ opt.label() }}
+        </button>
       </div>
     </div>
 
@@ -473,6 +508,35 @@ async function confirmDeleteOld() {
 
 .old-dir-name {
   word-break: break-all;
+}
+
+/* Trash retention */
+.retention-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.retention-btn {
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1.5px solid transparent;
+  background: rgba(0, 0, 0, 0.04);
+  color: #3c3c43;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.retention-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.retention-btn.active {
+  background: rgba(34, 63, 121, 0.08);
+  border-color: rgba(34, 63, 121, 0.25);
+  color: #223F79;
 }
 
 .info-row {

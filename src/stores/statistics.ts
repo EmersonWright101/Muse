@@ -4,6 +4,15 @@ import { listConversations, loadConversation, type ChatMessage, type Conversatio
 import { useAiSettingsStore } from './aiSettings'
 import { resolveDataRoot } from '../utils/path'
 import { readTextFile, writeTextFile, exists, mkdir } from '@tauri-apps/plugin-fs'
+import type { CopilotDailyStat } from './travelCopilot'
+
+async function loadCopilotStatsFile(): Promise<Record<string, CopilotDailyStat>> {
+  try {
+    const path = `${await resolveDataRoot()}/copilot-stats.json`
+    if (!(await exists(path))) return {}
+    return JSON.parse(await readTextFile(path)) as Record<string, CopilotDailyStat>
+  } catch { return {} }
+}
 
 export type TimeRange = 'today' | 'week' | 'month' | 'year'
 export type SortBy = 'tokens' | 'cost' | 'requests' | 'provider' | 'name'
@@ -571,6 +580,46 @@ export const useStatisticsStore = defineStore('statistics', () => {
           m.modelName = getModelDisplayName(m.modelId)
         }
       }
+
+      // Merge copilot stats as a virtual "copilot" model entry
+      const copilotDailyStats = await loadCopilotStatsFile()
+      const COPILOT_MODEL_ID = '__copilot__'
+      let copilotTotal: ModelStat | undefined
+      for (const [date, cs] of Object.entries(copilotDailyStats)) {
+        if (!cs.requests) continue
+        if (!copilotTotal) {
+          copilotTotal = { modelId: COPILOT_MODEL_ID, modelName: 'Copilot (写作助手)', provider: 'Travel Notes', inputTokens: 0, outputTokens: 0, totalTokens: 0, uploadsMB: 0, downloadsMB: 0, cost: 0, requests: 0 }
+        }
+        copilotTotal.inputTokens  += cs.inputTokens
+        copilotTotal.outputTokens += cs.outputTokens
+        copilotTotal.totalTokens  += cs.inputTokens + cs.outputTokens
+        copilotTotal.cost         += cs.costUsd
+        copilotTotal.requests     += cs.requests
+
+        // Inject into daily stats
+        let ds = merged.dailyStatsAll.find(d => d.date === date)
+        if (!ds) {
+          ds = { date, inputTokens: 0, outputTokens: 0, totalTokens: 0, uploadsMB: 0, downloadsMB: 0, cost: 0, requests: 0, models: [] }
+          merged.dailyStatsAll.push(ds)
+          merged.dailyStatsAll.sort((a, b) => a.date.localeCompare(b.date))
+        }
+        ds.inputTokens  += cs.inputTokens
+        ds.outputTokens += cs.outputTokens
+        ds.totalTokens  += cs.inputTokens + cs.outputTokens
+        ds.cost         += cs.costUsd
+        ds.requests     += cs.requests
+        const existing = ds.models.find(m => m.modelId === COPILOT_MODEL_ID)
+        if (existing) {
+          existing.inputTokens  += cs.inputTokens
+          existing.outputTokens += cs.outputTokens
+          existing.totalTokens  += cs.inputTokens + cs.outputTokens
+          existing.cost         += cs.costUsd
+          existing.requests     += cs.requests
+        } else {
+          ds.models.push({ modelId: COPILOT_MODEL_ID, modelName: 'Copilot (写作助手)', inputTokens: cs.inputTokens, outputTokens: cs.outputTokens, totalTokens: cs.inputTokens + cs.outputTokens, uploadsMB: 0, downloadsMB: 0, cost: cs.costUsd, requests: cs.requests })
+        }
+      }
+      if (copilotTotal) merged.modelStats.push(copilotTotal)
 
       modelStats.value = merged.modelStats
       dailyStatsAll.value = merged.dailyStatsAll

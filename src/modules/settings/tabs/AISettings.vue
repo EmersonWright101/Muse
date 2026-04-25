@@ -139,17 +139,20 @@ import type { AIModel } from '../../../stores/aiSettings'
 
 const editingModelId = ref<string | null>(null)
 const editDraft = ref<Partial<AIModel>>({})
+const editBillingMode = ref<'token' | 'request'>('token')
 
 function startEditModel(m: AIModel) {
   editingModelId.value = m.id
+  editBillingMode.value = m.pricePerRequest != null && m.pricePerRequest > 0 ? 'request' : 'token'
   editDraft.value = {
     reasoning: m.reasoning ?? false,
     multimodal: m.multimodal ?? false,
     imageOutput: m.imageOutput ?? false,
     audio: m.audio ?? false,
     video: m.video ?? false,
-    inputPrice: m.inputPrice ?? undefined,
-    outputPrice: m.outputPrice ?? undefined,
+    inputPrice: editBillingMode.value === 'request' ? undefined : (m.inputPrice ?? undefined),
+    outputPrice: editBillingMode.value === 'request' ? undefined : (m.outputPrice ?? undefined),
+    pricePerRequest: editBillingMode.value === 'token' ? undefined : (m.pricePerRequest ?? undefined),
     priceCurrency: m.priceCurrency ?? 'usd',
     contextLength: m.contextLength ?? undefined,
   }
@@ -159,6 +162,12 @@ function saveEditModel(m: AIModel) {
   if (!selected.value) return
   const model = selected.value.models.find(x => x.id === m.id)
   if (!model) return
+  if (editBillingMode.value === 'token') {
+    editDraft.value.pricePerRequest = undefined
+  } else {
+    editDraft.value.inputPrice = undefined
+    editDraft.value.outputPrice = undefined
+  }
   Object.assign(model, editDraft.value)
   ai.persist()
   editingModelId.value = null
@@ -808,30 +817,51 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
                 </div>
 
                 <div class="edit-panel-section">
-                  <div class="edit-panel-label">价格 <span class="edit-panel-hint">/ 1M tokens</span></div>
+                  <div class="edit-panel-label">
+                    价格
+                    <select v-model="editBillingMode" class="billing-mode-select">
+                      <option value="token">按 Token</option>
+                      <option value="request">按次</option>
+                    </select>
+                  </div>
                   <div class="price-edit-row">
-                    <div class="price-field">
-                      <span class="price-field-label">输入</span>
-                      <input
-                        v-model.number="editDraft.inputPrice"
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        class="price-edit-input"
-                        placeholder="0.00 / 1M"
-                      />
-                    </div>
-                    <div class="price-field">
-                      <span class="price-field-label">输出</span>
-                      <input
-                        v-model.number="editDraft.outputPrice"
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        class="price-edit-input"
-                        placeholder="0.00 / 1M"
-                      />
-                    </div>
+                    <template v-if="editBillingMode === 'token'">
+                      <div class="price-field">
+                        <span class="price-field-label">输入</span>
+                        <input
+                          v-model.number="editDraft.inputPrice"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          class="price-edit-input"
+                          placeholder="0.00 / 1M"
+                        />
+                      </div>
+                      <div class="price-field">
+                        <span class="price-field-label">输出</span>
+                        <input
+                          v-model.number="editDraft.outputPrice"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          class="price-edit-input"
+                          placeholder="0.00 / 1M"
+                        />
+                      </div>
+                    </template>
+                    <template v-else>
+                      <div class="price-field">
+                        <span class="price-field-label">单次请求</span>
+                        <input
+                          v-model.number="editDraft.pricePerRequest"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          class="price-edit-input"
+                          placeholder="0.00 / 次"
+                        />
+                      </div>
+                    </template>
                     <div class="price-field">
                       <span class="price-field-label">货币</span>
                       <select v-model="editDraft.priceCurrency" class="price-edit-select">
@@ -1684,6 +1714,19 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
   color: #b0b0b5;
   text-transform: none;
   letter-spacing: 0;
+}
+
+.billing-mode-select {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #3c3c43;
+  background: #f2f2f7;
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 6px;
+  padding: 2px 6px;
+  cursor: pointer;
+  outline: none;
 }
 
 .cap-toggle-group {

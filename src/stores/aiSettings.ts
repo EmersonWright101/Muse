@@ -53,17 +53,19 @@ export function applyRemoteDeletedProviders(remote: Record<string, string>) {
 }
 
 export interface AIModel {
-  id:            string;
-  name:          string;
-  contextLength?: number;
-  multimodal?:   boolean;  // supports image/video INPUT
-  reasoning?:    boolean;  // is a reasoning/thinking model
-  imageOutput?:  boolean;  // generates images as output
-  audio?:        boolean;  // supports audio input
-  video?:        boolean;  // supports video input
-  inputPrice?:   number;   // per 1M input tokens (in priceCurrency)
-  outputPrice?:  number;   // per 1M output tokens (in priceCurrency)
-  priceCurrency?: 'usd' | 'cny';
+  id:              string;
+  name:            string;
+  contextLength?:  number;
+  multimodal?:     boolean;  // supports image/video INPUT
+  reasoning?:      boolean;  // is a reasoning/thinking model
+  imageOutput?:    boolean;  // generates images as output
+  audio?:          boolean;  // supports audio input
+  video?:          boolean;  // supports video input
+  inputPrice?:     number;   // per 1M input tokens (in priceCurrency)
+  outputPrice?:    number;   // per 1M output tokens (in priceCurrency)
+  pricePerRequest?: number;  // fixed cost per request (in priceCurrency), used for image-gen models
+  imageSize?:      string;   // default image size, e.g. '1024x1024', '1792x1024'
+  priceCurrency?:  'usd' | 'cny';
 }
 
 /** Infer model capabilities from model ID and optional OpenRouter modality string. */
@@ -79,8 +81,12 @@ export function calculateModelCost(
   const provider = providers.find(p => p.id === providerId)
   const model = provider?.models.find(m => m.id === modelId)
   if (!model) return undefined
-  if (model.inputPrice == null && model.outputPrice == null) return undefined
   const rate = model.priceCurrency === 'cny' ? EXCHANGE_RATE_CNY_TO_USD : 1
+  // Fixed per-request cost (e.g. image generation models)
+  if (model.pricePerRequest != null) {
+    return model.pricePerRequest / rate
+  }
+  if (model.inputPrice == null && model.outputPrice == null) return undefined
   const inputCost = ((inputTokens ?? 0) / 1_000_000) * (model.inputPrice ?? 0) / rate
   const outputCost = ((outputTokens ?? 0) / 1_000_000) * (model.outputPrice ?? 0) / rate
   return inputCost + outputCost

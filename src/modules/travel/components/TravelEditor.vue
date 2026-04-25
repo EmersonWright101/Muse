@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted, h } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useEditor, EditorContent } from '@tiptap/vue-3'
+import { useEditor, EditorContent, VueNodeViewRenderer, NodeViewWrapper, NodeViewContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
+import CodeBlock from '@tiptap/extension-code-block'
 import { Markdown as TiptapMarkdown } from 'tiptap-markdown'
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
@@ -18,7 +19,7 @@ import markdown from 'highlight.js/lib/languages/markdown'
 import yaml from 'highlight.js/lib/languages/yaml'
 import plaintext from 'highlight.js/lib/languages/plaintext'
 import L from 'leaflet'
-import { Star, Crosshair, Check, X, Pencil, Sparkles } from 'lucide-vue-next'
+import { Star, Crosshair, Check, X, Pencil, Sparkles, Loader2 } from 'lucide-vue-next'
 import { useTravelStore } from '../../../stores/travel'
 import { useTravelCopilotStore } from '../../../stores/travelCopilot'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
@@ -46,147 +47,229 @@ const store   = useTravelStore()
 const copilot = useTravelCopilotStore()
 const aiStore = useAiSettingsStore()
 
-// ─── AI Copilot state ─────────────────────────────────────────────────────────
+// ─── AI Copilot + Editor state ───────────────────────────────────────────────
 
-const textareaRef         = ref<HTMLTextAreaElement | null>(null)
-const ghostRef            = ref<HTMLDivElement | null>(null)
-const suggestion          = ref('')
-const suggestionCursor    = ref(0)
+const editableRef         = ref<HTMLDivElement | null>(null)
 const showCopilotSettings = ref(false)
+const isGenerating        = ref(false)
+const hasGhostSuggestion  = ref(false)
+let _ghostSpan:    HTMLSpanElement | null = null
 let _copilotAbort: AbortController | null = null
 let _copilotTimer: ReturnType<typeof setTimeout> | null = null
-let _acceptingChunk = false
+let _skipBodyWatch  = false   // prevents body-watch from overwriting DOM while user is typing
+let _acceptingChunk = false   // prevents onCopilotBodyChange from dismissing ghost during chunk accept
 
 const configuredProviders = computed(() =>
   aiStore.providers.filter(p => p.enabled && (p.apiKey || p.type === 'ollama'))
 )
-// Exclude reasoning models from copilot — they are slow/expensive for autocomplete
 const copilotProviderModels = computed(() =>
   (aiStore.providers.find(p => p.id === copilot.providerId)?.models ?? []).filter(m => !m.reasoning)
 )
 
-const ghostContent = computed(() => {
-  if (!suggestion.value) return ''
-  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  return (
-    `<span style="color:transparent">${esc(body.value)}</span>` +
-    `<span class="copilot-ghost-text">${esc(suggestion.value)}</span>`
-  )
-})
+// Read the contenteditable text, stripping the ghost span
+function getCleanText(): string {
+  const el = editableRef.value
+  if (!el) return ''
+  if (!_ghostSpan) return el.innerText.replace(/\n$/, '')
+  const clone = el.cloneNode(true) as HTMLDivElement
+  clone.querySelectorAll('.copilot-ghost-text').forEach(n => n.remove())
+  return clone.innerText.replace(/\n$/, '')
+}
 
-function syncGhostScroll() {
-  if (ghostRef.value && textareaRef.value) {
-    ghostRef.value.scrollTop  = textareaRef.value.scrollTop
-    ghostRef.value.scrollLeft = textareaRef.value.scrollLeft
+// Returns byte-offset of cursor in the clean body text (ghost span excluded)
+function getBodyCursorOffset(): number {
+  const el = editableRef.value
+  if (!el) return body.value.length
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0) return body.value.length
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  range.setEnd(sel.getRangeAt(0).startContainer, sel.getRangeAt(0).startOffset)
+  const frag = document.createElement('div')
+  frag.appendChild(range.cloneContents())
+  frag.querySelectorAll('.copilot-ghost-text').forEach(n => n.remove())
+  return frag.innerText.replace(/\n$/, '').length
+}
+
+// Insert an empty ghost span at the current cursor; returns false if no selection
+function insertGhostAtCursor(): boolean {
+  removeGhostSpan(false)
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0) return false
+  const range = sel.getRangeAt(0)
+  if (!range.collapsed) range.deleteContents()
+  _ghostSpan = document.createElement('span')
+  _ghostSpan.className = 'copilot-ghost-text'
+  _ghostSpan.setAttribute('contenteditable', 'false')
+  _ghostSpan.textContent = ''
+  range.insertNode(_ghostSpan)
+  // Keep caret just before the ghost span
+  const newRange = document.createRange()
+  newRange.setStartBefore(_ghostSpan)
+  newRange.setEndBefore(_ghostSpan)
+  sel.removeAllRanges()
+  sel.addRange(newRange)
+  hasGhostSuggestion.value = true
+  return true
+}
+
+function removeGhostSpan(accept: boolean) {
+  if (!_ghostSpan) return
+  hasGhostSuggestion.value = false
+  if (accept) {
+    // Move caret to after the ghost text, then unwrap
+    const sel = window.getSelection()
+    const textNode = document.createTextNode(_ghostSpan.textContent ?? '')
+    _ghostSpan.parentNode?.replaceChild(textNode, _ghostSpan)
+    if (sel) {
+      const r = document.createRange()
+      r.setStartAfter(textNode)
+      r.setEndAfter(textNode)
+      sel.removeAllRanges()
+      sel.addRange(r)
+    }
+  } else {
+    _ghostSpan.parentNode?.removeChild(_ghostSpan)
   }
+  _ghostSpan = null
 }
 
 function dismissSuggestion() {
   if (_copilotAbort) { _copilotAbort.abort(); _copilotAbort = null }
-  suggestion.value = ''
+  removeGhostSpan(false)
+  isGenerating.value = false
 }
 
 function acceptSuggestion() {
-  if (!suggestion.value) return
+  if (!_ghostSpan) return
   if (_copilotAbort) { _copilotAbort.abort(); _copilotAbort = null }
-  const sugg   = suggestion.value
-  const cursor = suggestionCursor.value
-  suggestion.value = ''
-  body.value = body.value.slice(0, cursor) + sugg + body.value.slice(cursor)
-  nextTick(() => {
-    if (textareaRef.value) {
-      const pos = cursor + sugg.length
-      textareaRef.value.setSelectionRange(pos, pos)
-      textareaRef.value.focus()
-    }
-  })
+  removeGhostSpan(true)
+  const text = getCleanText()
+  _skipBodyWatch = true
+  body.value = text
+  nextTick(() => { _skipBodyWatch = false; editableRef.value?.focus() })
+  isGenerating.value = false
+}
+
+function acceptNextChunk() {
+  if (!_ghostSpan) return
+  const full = _ghostSpan.textContent ?? ''
+  const match = full.match(/^([\s\S]*?[，。！？；：、…—""''【】,!?;:.]+\s*)/)
+  const chunk     = match ? match[1] : full
+  const remaining = full.slice(chunk.length)
+  if (!remaining) { acceptSuggestion(); return }
+
+  // Replace ghost content with accepted chunk (as text) and keep rest in ghost span
+  const chunkNode = document.createTextNode(chunk)
+  _ghostSpan.parentNode?.insertBefore(chunkNode, _ghostSpan)
+  _ghostSpan.textContent = remaining
+
+  // Move caret between chunk and ghost span
+  const sel = window.getSelection()
+  if (sel) {
+    const r = document.createRange()
+    r.setStartAfter(chunkNode)
+    r.setEndAfter(chunkNode)
+    sel.removeAllRanges()
+    sel.addRange(r)
+  }
+
+  const text = getCleanText()
+  _acceptingChunk = true
+  _skipBodyWatch  = true
+  body.value = text
+  nextTick(() => { _skipBodyWatch = false; _acceptingChunk = false })
 }
 
 async function requestCompletion() {
   if (!copilot.enabled) return
-  const ta = textareaRef.value
-  if (!ta) return
-  const cursor = ta.selectionStart ?? body.value.length
-  if (cursor !== body.value.length) return          // only suggest at end of text
-  if (body.value.trim().length < 8) return          // need some context
+  if (!editableRef.value) return
+  if (body.value.trim().length < 8) return
 
   const provider = aiStore.providers.find(p => p.id === copilot.providerId && p.enabled)
   if (!provider) return
   if (!provider.apiKey && provider.type !== 'ollama') return
-
   const modelId = copilot.modelId || provider.selectedModelId
   if (!modelId) return
 
+  // Capture cursor context before inserting ghost span
+  const cursorOffset = getBodyCursorOffset()
+  const contextText  = body.value.slice(Math.max(0, cursorOffset - copilot.contextChars), cursorOffset)
+
   if (_copilotAbort) _copilotAbort.abort()
   const ac = new AbortController()
-  _copilotAbort   = ac
-  suggestionCursor.value = cursor
-  suggestion.value = ''
+  _copilotAbort = ac
+  isGenerating.value = true
 
-  const words       = copilot.completionWords
-  const contextText = body.value.slice(Math.max(0, cursor - copilot.contextChars), cursor)
-  const system = `You are a travel writing assistant. Continue writing naturally in the same language and style. Output ONLY the continuation (max ${words} words), nothing else.`
+  if (!insertGhostAtCursor()) { isGenerating.value = false; _copilotAbort = null; return }
+
+  const words  = copilot.completionWords
+  const system = `You are a travel writing assistant. Your job is to continue the text the user has already written. Output ONLY the NEW continuation text (max ${words} words). Do NOT repeat, echo, or restate any text that already exists. Begin your output with the very next character or word that comes after the existing text.`
 
   try {
     await streamCopilotCompletion(provider, modelId, contextText, system, words * 6, ac.signal,
-      token => { suggestion.value += token },
+      token => { if (_ghostSpan) _ghostSpan.textContent = (_ghostSpan.textContent ?? '') + token },
     )
   } catch {
-    if (!ac.signal.aborted) suggestion.value = ''
+    if (!ac.signal.aborted) removeGhostSpan(false)
   }
-  if (!ac.signal.aborted) _copilotAbort = null
+
+  // Strip any leading repetition the model may have echoed from the context
+  if (!ac.signal.aborted && _ghostSpan) {
+    const raw  = _ghostSpan.textContent ?? ''
+    const tail = contextText.slice(-Math.min(60, contextText.length))
+    let stripped = raw
+    for (let len = Math.min(tail.length, raw.length); len > 2; len--) {
+      if (raw.startsWith(tail.slice(-len))) { stripped = raw.slice(len); break }
+    }
+    if (stripped !== raw) _ghostSpan.textContent = stripped
+    if (!stripped) removeGhostSpan(false)
+  }
+
+  if (!ac.signal.aborted) { _copilotAbort = null; isGenerating.value = false }
 }
 
 function onCopilotBodyChange() {
   if (!copilot.enabled) return
-  if (_acceptingChunk) return   // chunk-accept mutates body without dismissing
-  if (suggestion.value) dismissSuggestion()
+  if (_acceptingChunk) return
+  if (_ghostSpan) dismissSuggestion()
   if (_copilotTimer) clearTimeout(_copilotTimer)
   _copilotTimer = setTimeout(() => { _copilotTimer = null; requestCompletion() }, copilot.triggerDelay)
 }
 
-function acceptNextChunk() {
-  if (!suggestion.value) return
-  // Match up to and including the next punctuation mark (Chinese + English), plus trailing whitespace.
-  // Falls back to the whole suggestion when no punctuation is found.
-  const match = suggestion.value.match(/^([\s\S]*?[，。！？；：、…—""''【】,!?;:.]+\s*)/)
-  const chunk = match ? match[1] : suggestion.value
-  const cursor = suggestionCursor.value
-  const remaining = suggestion.value.slice(chunk.length)
-
-  _acceptingChunk = true
-  suggestion.value = remaining
-  suggestionCursor.value = cursor + chunk.length
-  body.value = body.value.slice(0, cursor) + chunk + body.value.slice(cursor)
-  nextTick(() => {
-    _acceptingChunk = false
-    if (textareaRef.value) {
-      const pos = cursor + chunk.length
-      textareaRef.value.setSelectionRange(pos, pos)
-    }
-    if (!remaining && _copilotAbort) { _copilotAbort.abort(); _copilotAbort = null }
-  })
+// Called on every input event from the contenteditable
+function onEditableInput() {
+  if (_ghostSpan) removeGhostSpan(false)
+  const text = getCleanText()
+  _skipBodyWatch = true
+  body.value = text
+  nextTick(() => { _skipBodyWatch = false })
 }
 
-function onTextareaKeydown(e: KeyboardEvent) {
-  if (e.key === 'Tab' && suggestion.value) {
-    e.preventDefault()
-    e.stopPropagation()
-    acceptSuggestion()
-    return
+function onEditableBeforeInput(e: InputEvent) {
+  if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') {
+    if (_ghostSpan) removeGhostSpan(false)
   }
-  // Cmd/Ctrl+→ accepts one word at a time
-  if ((e.metaKey || e.ctrlKey) && e.key === 'ArrowRight' && suggestion.value) {
-    e.preventDefault()
-    e.stopPropagation()
-    acceptNextChunk()
-    return
+}
+
+// Dismiss ghost span the moment IME composition starts — the caret sits right
+// before a contenteditable=false span which confuses the IME and causes pinyin
+// to be output raw instead of converted.
+function onEditableCompositionStart() {
+  if (_ghostSpan) dismissSuggestion()
+}
+
+function onEditableKeydown(e: KeyboardEvent) {
+  if (e.key === 'Tab' && _ghostSpan) {
+    e.preventDefault(); e.stopPropagation()
+    acceptSuggestion(); return
   }
-  if (e.key === 'Escape' && suggestion.value) {
-    dismissSuggestion()
-    return
+  if ((e.metaKey || e.ctrlKey) && e.key === 'ArrowRight' && _ghostSpan) {
+    e.preventDefault(); e.stopPropagation()
+    acceptNextChunk(); return
   }
-  if (suggestion.value && (e.key.length === 1 || ['Backspace', 'Delete', 'Enter'].includes(e.key))) {
+  if (e.key === 'Escape' && _ghostSpan) { dismissSuggestion(); return }
+  if (_ghostSpan && (e.key.length === 1 || ['Backspace', 'Delete', 'Enter'].includes(e.key))) {
     dismissSuggestion()
   }
 }
@@ -203,12 +286,51 @@ onUnmounted(() => document.removeEventListener('click', onCopilotSettingsClickOu
 const layout = ref<'split' | 'edit' | 'preview' | 'wysiwyg'>('split')
 
 // ─── WYSIWYG editor (Tiptap) ──────────────────────────────────────────────────
-let _wysiwygSyncing = false   // guard against feedback loop
+let _wysiwygSyncing = false
+
+// Code block NodeView — adds a copy button to every code block in the WYSIWYG editor
+const _copySvg = `<svg viewBox="0 0 14 14" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" style="display:inline-block;vertical-align:middle"><rect x="4" y="4" width="8" height="8" rx="1.2"/><path d="M2 10V2.8A.8.8 0 0 1 2.8 2H10"/></svg>`
+const _checkSvg = `<svg viewBox="0 0 14 14" width="11" height="11" fill="none" stroke="#34c759" stroke-width="2.2" style="display:inline-block;vertical-align:middle"><path d="M1.5 7l3.5 3.5L12.5 3"/></svg>`
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const CodeBlockView = {
+  props: ['node', 'extension', 'getPos', 'editor', 'decorations', 'innerDecorations', 'selected', 'updateAttributes'],
+  setup(props: any) {
+    const copied = ref(false)
+    function doCopy(e: MouseEvent) {
+      e.stopPropagation()
+      navigator.clipboard.writeText(props.node?.textContent ?? '')
+      copied.value = true
+      setTimeout(() => { copied.value = false }, 2000)
+    }
+    return () => h(NodeViewWrapper, { class: 'md-code-wrap', as: 'div' }, () => [
+      h('div', { class: 'md-code-header' }, [
+        h('span', { class: 'md-code-lang' }, props.node?.attrs?.language || 'code'),
+        h('button', {
+          class: 'md-code-copy',
+          contenteditable: 'false',
+          'data-copied': copied.value ? '' : null,
+          onClick: doCopy,
+        }, [
+          copied.value
+            ? h('span', { innerHTML: _checkSvg + ' 已复制', style: { color: '#34c759' } })
+            : h('span', { innerHTML: _copySvg + ' 复制' }),
+        ]),
+      ]),
+      h('pre', null, h(NodeViewContent, { as: 'code' })),
+    ])
+  },
+}
+
+const CustomCodeBlock = CodeBlock.extend({
+  addNodeView() { return VueNodeViewRenderer(CodeBlockView as any) },
+})
 
 const wysiwygEditor = useEditor({
   extensions: [
-    StarterKit,
+    StarterKit.configure({ codeBlock: false }),
     TiptapMarkdown.configure({ html: false, tightLists: true }),
+    CustomCodeBlock,
   ],
   content: '',
   onUpdate({ editor }) {
@@ -233,13 +355,16 @@ onUnmounted(() => { wysiwygEditor.value?.destroy() })
 
 const note = computed(() => store.activeNote!)
 
-// Reload wysiwyg content when the active note changes
+// Reload wysiwyg content and reset editable when the active note changes
 watch(() => note.value?.id, () => {
   if (layout.value === 'wysiwyg' && wysiwygEditor.value) {
     _wysiwygSyncing = true
     wysiwygEditor.value.commands.setContent(body.value)
     _wysiwygSyncing = false
   }
+  // Sync new note content into contenteditable
+  const el = editableRef.value
+  if (el) el.innerText = body.value
 })
 
 // Body without frontmatter for editing
@@ -262,7 +387,8 @@ md.renderer.rules.fence = (tokens, idx) => {
   const lang = token.info.trim() || 'plaintext'
   const validLang = hljs.getLanguage(lang) ? lang : 'plaintext'
   const highlighted = hljs.highlight(token.content, { language: validLang }).value
-  return `<div class="md-code-wrap"><div class="md-code-header"><span class="md-code-lang">${validLang}</span><button class="md-code-copy">复制</button></div><pre><code class="hljs">${highlighted}</code></pre></div>`
+  const btn = `<button class="md-code-copy"><span class="copy-label">${_copySvg} 复制</span><span class="copy-done">${_checkSvg} 已复制</span></button>`
+  return `<div class="md-code-wrap"><div class="md-code-header"><span class="md-code-lang">${validLang}</span>${btn}</div><pre><code class="hljs">${highlighted}</code></pre></div>`
 }
 
 md.renderer.rules.code_inline = (tokens, idx) => {
@@ -298,14 +424,14 @@ function cancelTitle() {
   editingTitle.value = false
 }
 
-// Copy code block
+// Copy code block (preview pane)
 function onPreviewClick(e: MouseEvent) {
   const btn = (e.target as HTMLElement).closest('.md-code-copy') as HTMLElement | null
   if (!btn) return
   const code = btn.closest('.md-code-wrap')?.querySelector('code')?.textContent ?? ''
   navigator.clipboard.writeText(code)
-  btn.textContent = '已复制'
-  setTimeout(() => { btn.textContent = '复制' }, 1500)
+  btn.setAttribute('data-copied', '')
+  setTimeout(() => btn.removeAttribute('data-copied'), 2000)
 }
 
 function renderMarkdown(content: string): string {
@@ -411,6 +537,17 @@ function triggerAutoSave() {
 
 watch(() => body.value, triggerAutoSave)
 watch(() => body.value, onCopilotBodyChange)
+// Sync external body changes (note switch, programmatic) → contenteditable DOM
+watch(() => body.value, (val) => {
+  if (_skipBodyWatch) return
+  const el = editableRef.value
+  if (!el) return
+  const cur = el.innerText.replace(/\n$/, '')
+  if (cur !== val) {
+    if (_ghostSpan) removeGhostSpan(false)
+    el.innerText = val
+  }
+}, { flush: 'sync' })
 watch(() => note.value.title, triggerAutoSave)
 watch(() => note.value.lat, triggerAutoSave)
 watch(() => note.value.lng, triggerAutoSave)
@@ -428,54 +565,59 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-// Paste image handler
+// Paste handler (image files → markdown; plain text → insert at cursor)
 async function onPaste(e: ClipboardEvent) {
   const items = e.clipboardData?.items
   if (!items) return
 
-  for (const item of items) {
+  // Image paste: save file and insert markdown
+  for (const item of Array.from(items)) {
     if (!item.type.startsWith('image/')) continue
-
     const file = item.getAsFile()
     if (!file) continue
 
-    e.preventDefault()
-
-    const buffer = await file.arrayBuffer()
-    const bytes = new Uint8Array(buffer)
-
-    const ext = item.type === 'image/jpeg' ? 'jpg' : item.type.replace('image/', '')
+    const buffer   = await file.arrayBuffer()
+    const bytes    = new Uint8Array(buffer)
+    const ext      = item.type === 'image/jpeg' ? 'jpg' : item.type.replace('image/', '')
     const filename = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`
 
     const baseDir = await travelNotesDir()
-    const imgDir = `${baseDir}/images`
-    if (!(await exists(imgDir))) {
-      await mkdir(imgDir, { recursive: true })
-    }
+    const imgDir  = `${baseDir}/images`
+    if (!(await exists(imgDir))) await mkdir(imgDir, { recursive: true })
+    await writeFile(`${imgDir}/${filename}`, bytes)
 
-    const filePath = `${imgDir}/${filename}`
-    await writeFile(filePath, bytes)
-
-    // Insert markdown at cursor position
-    const textarea = e.target as HTMLTextAreaElement
-    const start = textarea.selectionStart
-    const end = textarea.selectionEnd
-    const md = `![${filename}](images/${filename})`
-
-    const before = body.value.slice(0, start)
-    const after = body.value.slice(end)
-    const newBody = before + md + after
-    body.value = newBody
-
+    const mdText    = `![${filename}](images/${filename})`
+    const offset    = getBodyCursorOffset()
+    const newBody   = body.value.slice(0, offset) + mdText + body.value.slice(offset)
+    const el        = editableRef.value
+    _skipBodyWatch  = true
+    body.value      = newBody
+    if (el) el.innerText = newBody
     nextTick(() => {
-      const pos = start + md.length
-      textarea.selectionStart = pos
-      textarea.selectionEnd = pos
-      textarea.focus()
+      _skipBodyWatch = false
+      el?.focus()
     })
-
-    break // Handle first image only
+    return
   }
+
+  // Plain-text paste: insert at cursor as text node
+  const text = e.clipboardData?.getData('text/plain')
+  if (!text) return
+  if (_ghostSpan) removeGhostSpan(false)
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0) return
+  const range = sel.getRangeAt(0)
+  range.deleteContents()
+  const node = document.createTextNode(text)
+  range.insertNode(node)
+  range.setStartAfter(node)
+  range.setEndAfter(node)
+  sel.removeAllRanges()
+  sel.addRange(range)
+  const newText  = getCleanText()
+  _skipBodyWatch = true
+  body.value     = newText
+  nextTick(() => { _skipBodyWatch = false })
 }
 
 // Image asset base
@@ -696,7 +838,7 @@ function closePicker() {
         >{{ t('travel.wysiwygMode') }}</button>
       </div>
       <div class="toolbar-right">
-        <span v-if="suggestion" class="copilot-hint">
+        <span v-if="hasGhostSuggestion" class="copilot-hint">
           <kbd>Tab</kbd> {{ t('travel.copilot.accept') }} &middot;
           <kbd>⌘→</kbd> {{ t('travel.copilot.acceptWord') }} &middot;
           <kbd>Esc</kbd> {{ t('travel.copilot.dismiss') }}
@@ -708,11 +850,12 @@ function closePicker() {
         <div class="copilot-wrap" @click.stop>
           <button
             class="copilot-btn"
-            :class="{ active: copilot.enabled }"
+            :class="{ active: copilot.enabled, generating: isGenerating }"
             :title="t('travel.copilot.label')"
             @click.stop="showCopilotSettings = !showCopilotSettings"
           >
-            <Sparkles :size="13" />
+            <Loader2 v-if="isGenerating" :size="14" />
+            <Sparkles v-else :size="13" />
           </button>
           <div v-if="showCopilotSettings" class="copilot-panel">
             <label class="copilot-toggle-row">
@@ -829,22 +972,16 @@ function closePicker() {
       <!-- Edit pane -->
       <div v-show="layout !== 'preview' && layout !== 'wysiwyg'" class="edit-pane">
         <div
-          v-if="suggestion"
-          ref="ghostRef"
-          class="ghost-overlay"
-          aria-hidden="true"
-          v-html="ghostContent"
-        />
-        <textarea
-          ref="textareaRef"
-          v-model="body"
-          class="md-textarea"
-          :class="{ 'md-textarea--ghost': !!suggestion }"
-          :placeholder="t('travel.editorPlaceholder')"
+          ref="editableRef"
+          class="md-editor"
+          contenteditable="true"
           spellcheck="false"
-          @paste="onPaste"
-          @keydown="onTextareaKeydown"
-          @scroll="syncGhostScroll"
+          :data-placeholder="t('travel.editorPlaceholder')"
+          @input="onEditableInput"
+          @beforeinput="onEditableBeforeInput"
+          @compositionstart="onEditableCompositionStart"
+          @keydown="onEditableKeydown"
+          @paste.prevent="onPaste"
         />
       </div>
 
@@ -1270,45 +1407,25 @@ function closePicker() {
 .layout-edit .edit-pane { border-right: none; }
 .layout-preview .preview-pane { border-right: none; }
 
-.md-textarea {
-  width: 100%;
-  height: 100%;
-  border: none;
+.md-editor {
+  min-height: 100%;
   outline: none;
-  resize: none;
   padding: 14px;
   font-size: 13px;
   line-height: 1.7;
   color: #1c1c1e;
   font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
-  background: #fafafa;
-  box-sizing: border-box;
-  position: relative;
-  z-index: 1;
-}
-.md-textarea--ghost {
-  background: transparent;
-  caret-color: #1c1c1e;
-}
-
-/* Ghost text overlay — sits behind the textarea and mirrors its layout */
-.ghost-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  overflow: auto;
-  scrollbar-width: none;
-  padding: 14px;
-  font-size: 13px;
-  line-height: 1.7;
-  font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: break-word;
   box-sizing: border-box;
-  color: transparent;
+  caret-color: #1c1c1e;
 }
-.ghost-overlay::-webkit-scrollbar { display: none; }
+.md-editor:empty::before {
+  content: attr(data-placeholder);
+  color: #aeaeb2;
+  pointer-events: none;
+}
 
 /* Copilot toolbar elements */
 .copilot-hint {
@@ -1345,6 +1462,26 @@ function closePicker() {
 }
 .copilot-btn:hover { background: rgba(0,0,0,0.05); color: #3c3c43; }
 .copilot-btn.active { color: #223F79; background: rgba(34,63,121,0.08); border-color: rgba(34,63,121,0.25); }
+
+@keyframes copilot-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes rainbow-btn {
+  0%   { border-color: #ff3b30; color: #ff3b30; box-shadow: 0 0 8px 2px #ff3b3040; background: #ff3b3012; }
+  16%  { border-color: #ff9500; color: #ff9500; box-shadow: 0 0 8px 2px #ff950040; background: #ff950012; }
+  33%  { border-color: #ffcc00; color: #b38600; box-shadow: 0 0 8px 2px #ffcc0040; background: #ffcc0012; }
+  50%  { border-color: #34c759; color: #34c759; box-shadow: 0 0 8px 2px #34c75940; background: #34c75912; }
+  66%  { border-color: #007aff; color: #007aff; box-shadow: 0 0 8px 2px #007aff40; background: #007aff12; }
+  83%  { border-color: #af52de; color: #af52de; box-shadow: 0 0 8px 2px #af52de40; background: #af52de12; }
+  100% { border-color: #ff3b30; color: #ff3b30; box-shadow: 0 0 8px 2px #ff3b3040; background: #ff3b3012; }
+}
+.copilot-btn.generating {
+  animation: rainbow-btn 1.8s linear infinite;
+}
+.copilot-btn.generating :deep(svg) {
+  animation: copilot-spin 0.7s linear infinite;
+}
 
 .copilot-panel {
   position: absolute;
@@ -1536,16 +1673,18 @@ function closePicker() {
   padding: 2px 6px;
   border-radius: 4px;
   opacity: 0;
-  transition: opacity 0.15s, background 0.12s;
+  transition: opacity 0.15s, background 0.12s, color 0.15s;
   font-family: inherit;
+  display: flex;
+  align-items: center;
+  gap: 3px;
 }
-.markdown-body :deep(.md-code-wrap:hover .md-code-copy) {
-  opacity: 1;
-}
-.markdown-body :deep(.md-code-copy:hover) {
-  background: rgba(0,0,0,0.06);
-  color: #3c3c43;
-}
+.markdown-body :deep(.md-code-wrap:hover .md-code-copy) { opacity: 1; }
+.markdown-body :deep(.md-code-copy:hover) { background: rgba(0,0,0,0.06); color: #3c3c43; }
+.markdown-body :deep(.md-code-copy .copy-done) { display: none; color: #34c759; }
+.markdown-body :deep(.md-code-copy[data-copied]) { opacity: 1; color: #34c759; }
+.markdown-body :deep(.md-code-copy[data-copied] .copy-label) { display: none; }
+.markdown-body :deep(.md-code-copy[data-copied] .copy-done) { display: flex; align-items: center; gap: 3px; }
 .markdown-body :deep(.md-code-wrap pre) {
   margin: 0;
   padding: 10px 12px;
@@ -1580,6 +1719,17 @@ function closePicker() {
 
 /* Copilot ghost suggestion text — must be global because it lives inside v-html */
 .copilot-ghost-text { color: #b0b7c0; }
+
+/* WYSIWYG code block copy button (NodeView renders outside scoped CSS) */
+.wysiwyg-editor .md-code-wrap { background: #f6f8fa; border: 1px solid rgba(0,0,0,0.08); border-radius: 8px; margin: 10px 0; overflow: hidden; }
+.wysiwyg-editor .md-code-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px 4px 12px; border-bottom: 1px solid rgba(0,0,0,0.06); }
+.wysiwyg-editor .md-code-lang { font-size: 10px; font-weight: 500; color: #8e8e93; font-family: ui-monospace, 'SF Mono', Menlo, monospace; text-transform: uppercase; letter-spacing: 0.06em; }
+.wysiwyg-editor .md-code-copy { font-size: 10px; color: #8e8e93; background: transparent; border: none; cursor: pointer; padding: 2px 6px; border-radius: 4px; opacity: 0; transition: opacity 0.15s, color 0.15s; font-family: inherit; display: flex; align-items: center; gap: 3px; }
+.wysiwyg-editor .md-code-wrap:hover .md-code-copy { opacity: 1; }
+.wysiwyg-editor .md-code-copy:hover { background: rgba(0,0,0,0.06); }
+.wysiwyg-editor .md-code-copy[data-copied] { opacity: 1; color: #34c759; }
+.wysiwyg-editor .md-code-wrap pre { margin: 0; padding: 10px 12px; background: transparent; overflow-x: auto; }
+.wysiwyg-editor .md-code-wrap pre code { background: none; padding: 0; font-size: 12px; font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace; }
 .hljs-string, .hljs-attr { color: #032f62; }
 .hljs-comment { color: #6a737d; font-style: italic; }
 .hljs-number, .hljs-literal { color: #005cc5; }

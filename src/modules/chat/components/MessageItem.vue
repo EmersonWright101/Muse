@@ -116,13 +116,26 @@ renderer.code = ({ text, lang }: Tokens.Code) => {
 renderer.codespan = ({ text }: Tokens.Codespan) =>
   `<code class="inline-code">${text}</code>`
 
+const COPY_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`
+const DOWNLOAD_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>`
+
+function escapeHtmlAttr(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+
+renderer.image = ({ href, text }: Tokens.Image) => {
+  const safeHref = escapeHtmlAttr(href)
+  const safeText = escapeHtmlAttr(text)
+  return `<span class="markdown-img-wrap" style="display:inline-block;vertical-align:bottom;position:relative;width:min(480px,100%)"><img src="${safeHref}" alt="${safeText}" class="markdown-img" style="display:block;width:100%;height:auto;max-height:520px;border-radius:12px;cursor:zoom-in;object-fit:contain" /><button class="markdown-copy-btn" data-action="copy-image" data-src="${safeHref}" title="复制图片">${COPY_SVG}</button><button class="markdown-download-btn" data-action="download-image" data-src="${safeHref}" title="下载原图">${DOWNLOAD_SVG}</button></span>`
+}
+
 marked.setOptions({ renderer, breaks: true })
 
 function renderMarkdown(content: string): string {
   try {
     const raw = marked.parse(content) as string
     if (typeof raw !== 'string') return content
-    return DOMPurify.sanitize(raw, { ADD_ATTR: ['onclick'] })
+    return DOMPurify.sanitize(raw, { ADD_ATTR: ['onclick', 'data-action', 'data-src', 'title'] })
   } catch {
     return content
   }
@@ -167,6 +180,11 @@ function lookupLogoUrl(model: string, providerId: string): string | null {
   const mid = model.toLowerCase()
   const pid = providerId.toLowerCase()
   const svgMap = buildSvgMap(modelSvgModules)
+  // GPT-* models (e.g. gpt-image-2) are OpenAI models even when served through other providers
+  if (mid.startsWith('gpt-')) {
+    const openaiSvg = svgMap['openai']
+    if (openaiSvg) return openaiSvg
+  }
   for (const name of Object.keys(svgMap)) { if (mid.includes(name)) return svgMap[name] }
   for (const name of Object.keys(svgMap)) { if (pid.includes(name)) return svgMap[name] }
   return null
@@ -321,6 +339,27 @@ async function copyImageToClipboard(src: string) {
     showSaveToast('图片已复制到剪贴板')
   } catch {
     showSaveToast('复制失败，请尝试下载')
+  }
+}
+
+function onMarkdownBodyClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  const btn = target.closest('button[data-action]') as HTMLButtonElement | null
+  if (btn) {
+    e.preventDefault()
+    e.stopPropagation()
+    const src = btn.dataset.src
+    if (!src) return
+    if (btn.dataset.action === 'copy-image') {
+      copyImageToClipboard(src)
+    } else if (btn.dataset.action === 'download-image') {
+      downloadImage(src)
+    }
+    return
+  }
+  const img = target.closest('img') as HTMLImageElement | null
+  if (img && img.closest('.markdown-img-wrap')) {
+    openLightboxUrl(img.src)
   }
 }
 
@@ -486,6 +525,7 @@ function showSaveToast(msg: string) {
           class="bubble assistant-bubble markdown-body"
           :class="{ error: displayedError, streaming }"
           v-html="renderedContent"
+          @click="onMarkdownBodyClick"
         />
       </template>
 
@@ -584,8 +624,9 @@ function showSaveToast(msg: string) {
           </span>
           <span v-if="displayedUsage?.inputTokens != null">↑{{ displayedUsage.inputTokens }}</span>
           <span v-if="displayedUsage?.outputTokens != null">↓{{ displayedUsage.outputTokens }}</span>
+          <span v-if="displayedUsage?.tokensPerSecond != null">{{ displayedUsage.tokensPerSecond }} t/s</span>
           <span
-            v-if="displayedUsage?.outputTokens != null && displayedUsage?.durationMs != null && displayedUsage.durationMs > 0"
+            v-else-if="displayedUsage?.outputTokens != null && displayedUsage?.durationMs != null && displayedUsage.durationMs > 0"
           >{{ Math.round(((displayedUsage.outputTokens ?? 0) + (displayedUsage.reasoningTokens ?? 0)) / (displayedUsage.durationMs / 1000)) }} t/s</span>
           <span v-if="displayedUsage?.durationMs != null" class="msg-duration">
             <Clock :size="9" />{{ (displayedUsage.durationMs / 1000).toFixed(1) }}s
@@ -641,7 +682,7 @@ function showSaveToast(msg: string) {
 <style scoped>
 .message-row {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   max-width: 860px;
   margin: 0 auto;
   width: 100%;
@@ -1142,12 +1183,11 @@ function showSaveToast(msg: string) {
 }
 
 .media-img {
-  max-width: 480px;
-  max-height: 480px;
-  width: auto;
+  display: block;
+  width: 100%;
   height: auto;
+  max-height: 520px;
   border-radius: 12px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
   cursor: zoom-in;
   object-fit: contain;
   transition: opacity 0.12s;
@@ -1159,7 +1199,6 @@ function showSaveToast(msg: string) {
   max-width: 520px;
   width: 100%;
   border-radius: 12px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
   background: #000;
   outline: none;
 }
@@ -1210,8 +1249,8 @@ function showSaveToast(msg: string) {
 
 .lightbox-copy {
   position: absolute;
-  top: 20px;
-  right: 116px;
+  bottom: 20px;
+  right: 64px;
   width: 36px;
   height: 36px;
   border-radius: 50%;
@@ -1228,8 +1267,8 @@ function showSaveToast(msg: string) {
 
 .lightbox-download {
   position: absolute;
-  top: 20px;
-  right: 68px;
+  bottom: 20px;
+  right: 20px;
   width: 36px;
   height: 36px;
   border-radius: 50%;
@@ -1262,7 +1301,8 @@ function showSaveToast(msg: string) {
 
 .media-img-wrap {
   position: relative;
-  display: inline-block;
+  display: block;
+  max-width: min(480px, 100%);
 }
 .media-img-wrap:hover .media-download-btn,
 .media-img-wrap:hover .media-copy-btn { opacity: 1; }
@@ -1344,6 +1384,53 @@ function showSaveToast(msg: string) {
 .markdown-body th { background: rgba(0, 0, 0, 0.03); font-weight: 600; }
 .markdown-body a { color: #223F79; text-decoration: underline; }
 .markdown-body hr { border: none; border-top: 1px solid rgba(0,0,0,0.10); margin: 12px 0; }
+.markdown-body img { max-width: 100%; height: auto; border-radius: 12px; display: block; }
+
+.markdown-img-wrap { position: relative; display: inline-block; vertical-align: bottom; width: min(480px, 100%); }
+.markdown-img-wrap:hover .markdown-download-btn,
+.markdown-img-wrap:hover .markdown-copy-btn { opacity: 1; }
+
+.markdown-copy-btn {
+  position: absolute;
+  bottom: 8px;
+  right: 46px;
+  opacity: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s, background 0.12s;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.markdown-copy-btn:hover { background: rgba(0, 0, 0, 0.75); }
+
+.markdown-download-btn {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  opacity: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s, background 0.12s;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.markdown-download-btn:hover { background: rgba(0, 0, 0, 0.75); }
 
 /* Inline code */
 .inline-code {

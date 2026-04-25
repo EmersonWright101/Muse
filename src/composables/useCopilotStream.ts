@@ -6,6 +6,12 @@
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import type { AIProvider } from '../stores/aiSettings'
 
+export interface CopilotUsage {
+  inputTokens?:  number
+  outputTokens?: number
+  costUsd?:      number
+}
+
 export async function streamCopilotCompletion(
   provider: AIProvider,
   modelId: string,
@@ -14,7 +20,7 @@ export async function streamCopilotCompletion(
   maxTokens: number,
   signal: AbortSignal,
   onToken: (token: string) => void,
-): Promise<void> {
+): Promise<CopilotUsage> {
   switch (provider.type) {
     case 'anthropic': return streamAnthropic(provider, modelId, prompt, systemPrompt, maxTokens, signal, onToken)
     case 'google':    return streamGoogle(provider, modelId, prompt, systemPrompt, maxTokens, signal, onToken)
@@ -30,6 +36,7 @@ async function readSSE(
   signal: AbortSignal,
   extractToken: (parsed: unknown) => string | undefined,
   onToken: (token: string) => void,
+  onUsage?: (parsed: unknown) => void,
 ): Promise<void> {
   const reader  = resp.body!.getReader()
   const decoder = new TextDecoder()
@@ -47,8 +54,10 @@ async function readSSE(
       const data = t.slice(6)
       if (data === '[DONE]') return
       try {
-        const token = extractToken(JSON.parse(data))
+        const parsed = JSON.parse(data)
+        const token = extractToken(parsed)
         if (token) onToken(token)
+        if (onUsage) onUsage(parsed)
       } catch { /* skip malformed lines */ }
     }
   }
@@ -64,7 +73,8 @@ async function streamOpenAI(
   maxTokens: number,
   signal: AbortSignal,
   onToken: (token: string) => void,
-): Promise<void> {
+): Promise<CopilotUsage> {
+  const usage: CopilotUsage = {}
   const resp = await tauriFetch(`${provider.baseUrl}/chat/completions`, {
     method:  'POST',
     signal,
@@ -75,13 +85,27 @@ async function streamOpenAI(
         { role: 'system', content: systemPrompt },
         { role: 'user',   content: prompt },
       ],
-      stream:     true,
-      max_tokens: maxTokens,
-      temperature: 0.7,
+      stream:              true,
+      stream_options:      { include_usage: true },
+      max_tokens:          maxTokens,
+      temperature:         0.7,
     }),
   })
-  if (!resp.ok) return
-  await readSSE(resp, signal, (d) => (d as { choices?: { delta?: { content?: string } }[] })?.choices?.[0]?.delta?.content, onToken)
+  if (!resp.ok) throw new Error(`OpenAI API error: ${resp.status} ${resp.statusText}`)
+  await readSSE(
+    resp, signal,
+    (d) => (d as { choices?: { delta?: { content?: string } }[] })?.choices?.[0]?.delta?.content,
+    onToken,
+    (d) => {
+      const u = (d as { usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number; total_cost?: number } }).usage
+      if (!u) return
+      if (u.prompt_tokens     != null) usage.inputTokens  = u.prompt_tokens
+      if (u.completion_tokens != null) usage.outputTokens = u.completion_tokens
+      if (u.cost              != null) usage.costUsd       = u.cost
+      if (u.total_cost        != null) usage.costUsd       = u.total_cost
+    },
+  )
+  return usage
 }
 
 // ─── Anthropic ────────────────────────────────────────────────────────────────
@@ -94,7 +118,8 @@ async function streamAnthropic(
   maxTokens: number,
   signal: AbortSignal,
   onToken: (token: string) => void,
-): Promise<void> {
+): Promise<CopilotUsage> {
+  const usage: CopilotUsage = {}
   const resp = await tauriFetch(`${provider.baseUrl}/v1/messages`, {
     method:  'POST',
     signal,
@@ -111,11 +136,16 @@ async function streamAnthropic(
       max_tokens: maxTokens,
     }),
   })
-  if (!resp.ok) return
+  if (!resp.ok) throw new Error(`Anthropic API error: ${resp.status} ${resp.statusText}`)
   await readSSE(resp, signal, (d) => {
-    const ev = d as { type?: string; delta?: { type?: string; text?: string } }
+    const ev = d as { type?: string; delta?: { type?: string; text?: string }; usage?: { input_tokens?: number; output_tokens?: number } }
+    if (ev.usage) {
+      if (ev.usage.input_tokens  != null) usage.inputTokens  = ev.usage.input_tokens
+      if (ev.usage.output_tokens != null) usage.outputTokens = (usage.outputTokens ?? 0) + ev.usage.output_tokens
+    }
     return ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' ? ev.delta.text : undefined
   }, onToken)
+  return usage
 }
 
 // ─── Google Gemini ────────────────────────────────────────────────────────────
@@ -128,7 +158,8 @@ async function streamGoogle(
   maxTokens: number,
   signal: AbortSignal,
   onToken: (token: string) => void,
-): Promise<void> {
+): Promise<CopilotUsage> {
+  const usage: CopilotUsage = {}
   const resp = await tauriFetch(
     `${provider.baseUrl}/models/${modelId}:streamGenerateContent?alt=sse&key=${provider.apiKey}`,
     {
@@ -142,12 +173,16 @@ async function streamGoogle(
       }),
     },
   )
-  if (!resp.ok) return
-  await readSSE(resp, signal, (d) =>
-    (d as { candidates?: { content?: { parts?: { text?: string }[] } }[] })
-      ?.candidates?.[0]?.content?.parts?.[0]?.text,
-    onToken,
-  )
+  if (!resp.ok) throw new Error(`Google API error: ${resp.status} ${resp.statusText}`)
+  await readSSE(resp, signal, (d) => {
+    const chunk = d as { candidates?: { content?: { parts?: { text?: string }[] } }[]; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number } }
+    if (chunk.usageMetadata) {
+      if (chunk.usageMetadata.promptTokenCount     != null) usage.inputTokens  = chunk.usageMetadata.promptTokenCount
+      if (chunk.usageMetadata.candidatesTokenCount != null) usage.outputTokens = chunk.usageMetadata.candidatesTokenCount
+    }
+    return chunk.candidates?.[0]?.content?.parts?.[0]?.text
+  }, onToken)
+  return usage
 }
 
 // ─── Ollama ───────────────────────────────────────────────────────────────────
@@ -160,7 +195,7 @@ async function streamOllama(
   maxTokens: number,
   signal: AbortSignal,
   onToken: (token: string) => void,
-): Promise<void> {
+): Promise<CopilotUsage> {
   const resp = await tauriFetch(`${provider.baseUrl}/api/chat`, {
     method:  'POST',
     signal,
@@ -179,12 +214,12 @@ async function streamOllama(
   if (resp.status === 404) {
     return streamOpenAI(provider, modelId, prompt, systemPrompt, maxTokens, signal, onToken)
   }
-  if (!resp.ok) return
+  if (!resp.ok) throw new Error(`Ollama API error: ${resp.status} ${resp.statusText}`)
   const reader  = resp.body!.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
   while (true) {
-    if (signal.aborted) { reader.cancel(); return }
+    if (signal.aborted) { reader.cancel(); return {} }
     const { done, value } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
@@ -195,8 +230,9 @@ async function streamOllama(
       try {
         const ev = JSON.parse(line) as { message?: { content?: string }; done?: boolean }
         if (ev.message?.content) onToken(ev.message.content)
-        if (ev.done) return
+        if (ev.done) return {}
       } catch { /* skip */ }
     }
   }
+  return {}
 }

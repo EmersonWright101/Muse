@@ -12,6 +12,12 @@ import {
   loadTravelNote,
   saveTravelNote,
   deleteTravelNote,
+  moveNoteToTrash,
+  listTrashItems,
+  restoreNoteFromTrash,
+  permanentlyDeleteFromTrash,
+  purgeExpiredTrash,
+  getTrashRetentionDays,
   createEmptyNote,
   rebuildContent,
   extractFirstImage,
@@ -19,9 +25,10 @@ import {
   deleteAttachment,
   type TravelNoteMeta,
   type TravelNote,
+  type TravelTrashMeta,
 } from '../utils/travelStorage'
 
-export type { TravelNoteMeta, TravelNote }
+export type { TravelNoteMeta, TravelNote, TravelTrashMeta }
 
 export const useTravelStore = defineStore('travel', () => {
   const notes = ref<TravelNoteMeta[]>([])
@@ -34,6 +41,7 @@ export const useTravelStore = defineStore('travel', () => {
   const isLoading = ref(false)
   const viewMode = ref<'map' | 'editor' | 'powerMap'>('map')
   const orphanedAttachments = ref<string[]>([])
+  const trashItems = ref<TravelTrashMeta[]>([])
   let _openNoteReqId = 0
 
   const categoriesL1 = computed(() => {
@@ -89,6 +97,35 @@ export const useTravelStore = defineStore('travel', () => {
     isLoading.value = true
     notes.value = await listTravelNotes()
     isLoading.value = false
+  }
+
+  // ─── Trash ─────────────────────────────────────────────────────────────────
+
+  async function loadTrash() {
+    trashItems.value = await listTrashItems()
+  }
+
+  async function purgeExpiredTrashItems() {
+    await purgeExpiredTrash(getTrashRetentionDays())
+    trashItems.value = await listTrashItems()
+  }
+
+  async function restoreTrashItem(id: string) {
+    await restoreNoteFromTrash(id)
+    await loadList()
+    await loadTrash()
+  }
+
+  async function permanentlyDeleteTrashItem(id: string) {
+    await permanentlyDeleteFromTrash(id)
+    await loadTrash()
+  }
+
+  async function clearAllTrash() {
+    for (const item of trashItems.value) {
+      await permanentlyDeleteFromTrash(item.id)
+    }
+    trashItems.value = []
   }
 
   // ─── Scan orphaned attachments ─────────────────────────────────────────────
@@ -147,15 +184,16 @@ export const useTravelStore = defineStore('travel', () => {
     await loadList()
   }
 
-  // ─── Delete note ───────────────────────────────────────────────────────────
+  // ─── Delete note (moves to trash) ─────────────────────────────────────────
 
   async function deleteOne(id: string) {
-    await deleteTravelNote(id)
+    await moveNoteToTrash(id)
     if (activeNoteId.value === id) {
       activeNoteId.value = null
       activeNote.value = null
     }
     await loadList()
+    await loadTrash()
   }
 
   // ─── Update meta helpers ───────────────────────────────────────────────────
@@ -204,6 +242,8 @@ export const useTravelStore = defineStore('travel', () => {
 
   // Init
   loadList()
+  loadTrash()
+  purgeExpiredTrashItems()
 
   return {
     notes,
@@ -220,9 +260,14 @@ export const useTravelStore = defineStore('travel', () => {
     allTags,
     filteredNotes,
     orphanedAttachments,
+    trashItems,
     loadList,
+    loadTrash,
     scanAttachments,
     deleteOrphanedAttachment,
+    restoreTrashItem,
+    permanentlyDeleteTrashItem,
+    clearAllTrash,
     openNote,
     newNote,
     saveActive,

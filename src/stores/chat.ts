@@ -50,6 +50,37 @@ function isOpenRouter(baseUrl: string): boolean {
   return baseUrl.includes('openrouter.ai')
 }
 
+async function callImageGeneration(
+  baseUrl: string, apiKey: string, model: string,
+  prompt: string, size: string,
+  handler: StreamChunkHandler,
+  signal: AbortSignal,
+): Promise<void> {
+  const resp = await tauriFetch(`${baseUrl}/images/generations`, {
+    method:  'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ model, prompt, n: 1, size }),
+    signal,
+  })
+  if (!resp.ok) {
+    const err = await resp.text()
+    handler.onError(`API error ${resp.status}: ${err}`)
+    return
+  }
+  try {
+    const data = await resp.json() as { data?: Array<{ url?: string; b64_json?: string }> }
+    const img = data.data?.[0]
+    if (img?.url) {
+      handler.onMediaOutput?.('image/png', img.url, true)
+    } else if (img?.b64_json) {
+      handler.onMediaOutput?.('image/png', img.b64_json)
+    }
+    handler.onDone({})
+  } catch (e) {
+    handler.onError(e instanceof Error ? e.message : String(e))
+  }
+}
+
 function handleMediaUrl(url: string, handler: StreamChunkHandler) {
   if (!handler.onMediaOutput) return
   if (url.startsWith('data:')) {
@@ -167,6 +198,100 @@ async function streamOpenAI(
     }
   }
   // Fallback: estimate reasoning tokens when API does not include them in outputTokens
+  if (!usage.reasoningTokens && reasoningText) {
+    usage.reasoningTokens = Math.max(1, Math.ceil(reasoningText.length / 4))
+  }
+  handler.onDone(usage)
+}
+
+// ─── DeepSeek (OpenAI-compatible with thinking mode) ──────────────────────────
+
+async function streamDeepSeek(
+  baseUrl: string, apiKey: string, model: string,
+  messages: { role: string; content: unknown }[],
+  handler: StreamChunkHandler,
+  signal: AbortSignal,
+  systemPrompt?: string,
+  useReasoning?: boolean,
+  reasoningEffort?: 'low' | 'medium' | 'high',
+  temperature?: number,
+  maxTokens?: number,
+) {
+  const allMessages = systemPrompt
+    ? [{ role: 'system', content: systemPrompt }, ...messages]
+    : messages
+
+  const reqBody: Record<string, unknown> = {
+    model,
+    messages: allMessages,
+    stream: true,
+    stream_options: { include_usage: true },
+  }
+
+  if (useReasoning) {
+    reqBody.thinking = { type: 'enabled' }
+    // DeepSeek maps: low/medium -> high, high -> max
+    const effortMap = { low: 'high', medium: 'high', high: 'max' } as const
+    reqBody.reasoning_effort = effortMap[reasoningEffort ?? 'high']
+  } else {
+    reqBody.thinking = { type: 'disabled' }
+    if (temperature !== undefined) {
+      reqBody.temperature = temperature
+    }
+  }
+  if (maxTokens !== undefined) reqBody.max_tokens = maxTokens
+
+  const resp = await tauriFetch(`${baseUrl}/chat/completions`, {
+    method:  'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body:    JSON.stringify(reqBody),
+    signal,
+  })
+  if (!resp.ok) {
+    const err = await resp.text()
+    handler.onError(`API error ${resp.status}: ${err}`)
+    return
+  }
+
+  const reader  = resp.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let reasoningText = ''
+  const usage: MessageUsage = {}
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data: ')) continue
+      const data = trimmed.slice(6)
+      if (data === '[DONE]') { handler.onDone(usage); return }
+      try {
+        const parsed = JSON.parse(data)
+        const rawContent = parsed.choices?.[0]?.delta?.content
+        if (rawContent && typeof rawContent === 'string') {
+          handler.onToken(rawContent)
+        }
+        const reasoningContent = parsed.choices?.[0]?.delta?.reasoning_content
+        if (reasoningContent && handler.onReasoningToken) {
+          reasoningText += reasoningContent
+          handler.onReasoningToken(reasoningContent)
+        }
+        if (parsed.usage) {
+          usage.inputTokens  = parsed.usage.prompt_tokens
+          usage.outputTokens = parsed.usage.completion_tokens
+          if (parsed.usage.completion_tokens_details?.reasoning_tokens != null) {
+            usage.reasoningTokens = parsed.usage.completion_tokens_details.reasoning_tokens
+          }
+          if (parsed.usage.cost != null)       usage.costUsd = parsed.usage.cost
+          if (parsed.usage.total_cost != null) usage.costUsd = parsed.usage.total_cost
+        }
+      } catch { /* skip malformed */ }
+    }
+  }
   if (!usage.reasoningTokens && reasoningText) {
     usage.reasoningTokens = Math.max(1, Math.ceil(reasoningText.length / 4))
   }
@@ -377,7 +502,13 @@ async function streamOllama(
           handler.onToken(parsed.message.content)
         }
         if (parsed.done) {
-          handler.onDone({})
+          const usage: MessageUsage = {}
+          if (parsed.prompt_eval_count != null) usage.inputTokens  = parsed.prompt_eval_count
+          if (parsed.eval_count        != null) usage.outputTokens = parsed.eval_count
+          if (parsed.eval_count != null && parsed.eval_duration > 0) {
+            usage.tokensPerSecond = Math.round(parsed.eval_count / (parsed.eval_duration / 1e9))
+          }
+          handler.onDone(usage)
           return
         }
       } catch { /* skip malformed */ }
@@ -476,6 +607,12 @@ function buildPayload(
           return { role: m.role, content: contentParts }
         }
         return { role: m.role, content: fullText }
+      }
+
+      // DeepSeek: reasoning_content is ignored by API for non-tool-calling turns,
+      // but required for tool-calling turns, so it's safe to always include it.
+      if (baseUrl?.includes('deepseek') && m.role === 'assistant' && m.reasoning) {
+        return { role: m.role, content: m.content, reasoning_content: m.reasoning }
       }
 
       return { role: m.role, content: m.content }
@@ -814,18 +951,33 @@ export const useChatStore = defineStore('chat', () => {
         await streamGoogle(provider.baseUrl, provider.apiKey, mid, payload, handler, ac.signal, systemPrompt, temperature, maxTokens)
       } else if (provider.type === 'ollama') {
         await streamOllama(provider.baseUrl, mid, payload, handler, ac.signal, systemPrompt, temperature, maxTokens, useReasoning.value)
+      } else if (provider.id === 'deepseek' || provider.baseUrl.includes('deepseek')) {
+        // DeepSeek uses OpenAI-compatible endpoint with extra thinking/reasoning_effort params
+        const modelInfo = provider.models.find(m => m.id === mid)
+        if (modelInfo?.imageOutput) {
+          const userPrompt = (payload.filter(m => m.role === 'user').at(-1)?.content as string) ?? ''
+          const size = modelInfo.imageSize ?? '1024x1024'
+          await callImageGeneration(provider.baseUrl, provider.apiKey, mid, userPrompt, size, handler, ac.signal)
+        } else {
+          await streamDeepSeek(provider.baseUrl, provider.apiKey, mid, payload, handler, ac.signal, systemPrompt, useReasoning.value, reasoningLevel.value, temperature, maxTokens)
+        }
       } else {
         // openai / custom — pass reasoning_effort for o-series and compatible providers
         const effort = useReasoning.value ? reasoningLevel.value : undefined
-        // OpenRouter image-output models require the modalities parameter
-        let modalities: string[] | undefined
-        if (isOpenRouter(provider.baseUrl)) {
-          const modelInfo = provider.models.find(m => m.id === mid)
-          if (modelInfo?.imageOutput) {
+        const modelInfo = provider.models.find(m => m.id === mid)
+        if (!isOpenRouter(provider.baseUrl) && modelInfo?.imageOutput) {
+          // Non-OpenRouter image-generation models use /images/generations endpoint
+          const userPrompt = (payload.filter(m => m.role === 'user').at(-1)?.content as string) ?? ''
+          const size = modelInfo.imageSize ?? '1024x1024'
+          await callImageGeneration(provider.baseUrl, provider.apiKey, mid, userPrompt, size, handler, ac.signal)
+        } else {
+          // OpenRouter image-output models require the modalities parameter
+          let modalities: string[] | undefined
+          if (isOpenRouter(provider.baseUrl) && modelInfo?.imageOutput) {
             modalities = modelInfo.multimodal ? ['image', 'text'] : ['image']
           }
+          await streamOpenAI(provider.baseUrl, provider.apiKey, mid, payload, handler, ac.signal, systemPrompt, effort, modalities, temperature, maxTokens)
         }
-        await streamOpenAI(provider.baseUrl, provider.apiKey, mid, payload, handler, ac.signal, systemPrompt, effort, modalities, temperature, maxTokens)
       }
     } catch (e: unknown) {
       if ((e as Error).name !== 'AbortError') {
@@ -893,7 +1045,7 @@ export const useChatStore = defineStore('chat', () => {
 
     // Context = everything before this assistant message
     const msgsForApi = conv.messages.slice(0, msgIdx)
-    const payload    = buildPayload(msgsForApi, provider.type)
+    const payload    = buildPayload(msgsForApi, provider.type, provider.baseUrl)
 
     const msg = conv.messages[msgIdx]
     if (!msg.variants) msg.variants = []
@@ -960,9 +1112,27 @@ export const useChatStore = defineStore('chat', () => {
         await streamGoogle(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, chatSettings.temperature, chatSettings.maxTokens)
       } else if (provider.type === 'ollama') {
         await streamOllama(provider.baseUrl, modelId, payload, handler, ac.signal, systemPrompt, chatSettings.temperature, chatSettings.maxTokens, useReasoning.value)
+      } else if (provider.id === 'deepseek' || provider.baseUrl.includes('deepseek')) {
+        const mInfo = provider.models.find(m => m.id === modelId)
+        if (mInfo?.imageOutput) {
+          const userPrompt = (payload.filter(m => m.role === 'user').at(-1)?.content as string) ?? ''
+          await callImageGeneration(provider.baseUrl, provider.apiKey, modelId, userPrompt, mInfo.imageSize ?? '1024x1024', handler, ac.signal)
+        } else {
+          await streamDeepSeek(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, useReasoning.value, reasoningLevel.value, chatSettings.temperature, chatSettings.maxTokens)
+        }
       } else {
         const effort = useReasoning.value ? reasoningLevel.value : undefined
-        await streamOpenAI(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, effort, undefined, chatSettings.temperature, chatSettings.maxTokens)
+        const mInfo = provider.models.find(m => m.id === modelId)
+        if (!isOpenRouter(provider.baseUrl) && mInfo?.imageOutput) {
+          const userPrompt = (payload.filter(m => m.role === 'user').at(-1)?.content as string) ?? ''
+          await callImageGeneration(provider.baseUrl, provider.apiKey, modelId, userPrompt, mInfo.imageSize ?? '1024x1024', handler, ac.signal)
+        } else {
+          let modalities: string[] | undefined
+          if (isOpenRouter(provider.baseUrl) && mInfo?.imageOutput) {
+            modalities = mInfo.multimodal ? ['image', 'text'] : ['image']
+          }
+          await streamOpenAI(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, effort, modalities, chatSettings.temperature, chatSettings.maxTokens)
+        }
       }
     } catch (e: unknown) {
       if ((e as Error).name !== 'AbortError') {

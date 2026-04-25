@@ -34,6 +34,13 @@ const activeProviderType = computed(() =>
   aiSettings.providers.find(p => p.id === aiSettings.activeProviderId)?.type
 )
 
+const isDeepSeek = computed(() => {
+  const p = aiSettings.providers.find(pr => pr.id === aiSettings.activeProviderId)
+  return p?.id === 'deepseek' || p?.baseUrl?.includes('deepseek')
+})
+
+
+
 // ─── Input state ──────────────────────────────────────────────────────────────
 
 const inputText      = ref('')
@@ -403,15 +410,28 @@ onUnmounted(() => document.removeEventListener('mousedown', handleReasoningOutsi
                     </button>
                   </div>
                   <div v-if="chat.useReasoning && activeProviderType !== 'ollama'" class="reasoning-levels">
-                    <button
-                      v-for="lv in (['low', 'medium', 'high'] as const)"
-                      :key="lv"
-                      class="level-btn"
-                      :class="{ active: chat.reasoningLevel === lv }"
-                      @click="chat.setReasoningLevel(lv)"
-                    >
-                      {{ lv === 'low' ? '低' : lv === 'medium' ? '中' : '高' }}
-                    </button>
+                    <template v-if="isDeepSeek">
+                      <button
+                        v-for="lv in (['high', 'max'] as const)"
+                        :key="lv"
+                        class="level-btn"
+                        :class="{ active: lv === 'high' ? chat.reasoningLevel === 'medium' : chat.reasoningLevel === 'high' }"
+                        @click="chat.setReasoningLevel(lv === 'high' ? 'medium' : 'high')"
+                      >
+                        {{ lv }}
+                      </button>
+                    </template>
+                    <template v-else>
+                      <button
+                        v-for="lv in (['low', 'medium', 'high'] as const)"
+                        :key="lv"
+                        class="level-btn"
+                        :class="{ active: chat.reasoningLevel === lv }"
+                        @click="chat.setReasoningLevel(lv)"
+                      >
+                        {{ lv === 'low' ? '低' : lv === 'medium' ? '中' : '高' }}
+                      </button>
+                    </template>
                   </div>
                   <div v-if="activeProviderType === 'google'" class="reasoning-hint">Google 暂不支持推理模式</div>
                 </div>
@@ -589,7 +609,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleReasoningOutsi
 .messages-inner {
   max-width: 860px;
   margin: 0 auto;
-  padding: 24px 24px 0;
+  padding: 24px 16px 0;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -957,6 +977,21 @@ onUnmounted(() => document.removeEventListener('mousedown', handleReasoningOutsi
   border-color: rgba(34, 63, 121, 0.30);
   color: #223F79;
   font-weight: 500;
+}
+
+.effort-tag {
+  font-size: 9px;
+  font-weight: 600;
+  color: #8e8e93;
+  margin-left: 3px;
+  background: rgba(0,0,0,0.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+  line-height: 1;
+}
+.level-btn.active .effort-tag {
+  color: rgba(255,255,255,0.85);
+  background: rgba(34, 63, 121, 0.25);
 }
 
 .reasoning-drop-enter-active, .reasoning-drop-leave-active {

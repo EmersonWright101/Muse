@@ -69,6 +69,11 @@ export interface TravelNote {
   cover: string
   content: string // raw markdown including frontmatter
   updatedAt?: string
+  deletedAt?: string // only set for trash items
+}
+
+export interface TravelTrashMeta extends TravelNoteMeta {
+  deletedAt: string
 }
 
 // ─── Frontmatter helpers ─────────────────────────────────────────────────────
@@ -100,6 +105,7 @@ function parseFrontmatter(raw: string): { meta: Partial<TravelNote>; body: strin
       case 'date':       meta.date = val; break
       case 'cover':      meta.cover = val; break
       case 'updatedAt':  meta.updatedAt = val; break
+      case 'deletedAt':  meta.deletedAt = val; break
     }
   }
   // Migrate old single-category field to L2 if L2 not explicitly set
@@ -125,6 +131,7 @@ function stringifyFrontmatter(note: TravelNote): string {
     `cover: ${note.cover || ''}`,
   ]
   if (note.updatedAt) lines.push(`updatedAt: ${note.updatedAt}`)
+  if (note.deletedAt) lines.push(`deletedAt: ${note.deletedAt}`)
   lines.push('---', '', note.content.replace(/^---[\s\S]*?---\s*\n?/, '').trimStart())
   return lines.join('\n')
 }
@@ -259,6 +266,144 @@ export async function deleteTravelNote(id: string): Promise<void> {
   map[id] = new Date().toISOString()
   localStorage.setItem(LS_DELETED_TRAVEL_KEY, JSON.stringify(map))
   localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
+}
+
+// ─── Trash ───────────────────────────────────────────────────────────────────
+
+const LS_TRASH_RETENTION = 'muse-trash-retention-days'
+
+export function getTrashRetentionDays(): number {
+  return parseInt(localStorage.getItem(LS_TRASH_RETENTION) ?? '30') || 30
+}
+
+async function trashDir(): Promise<string> {
+  const dir = await travelNotesDir()
+  return `${dir}/trash`
+}
+
+async function ensureTrashDir(): Promise<void> {
+  const d = await trashDir()
+  if (!(await exists(d))) await mkdir(d, { recursive: true })
+}
+
+/** Move a note to the trash folder. Adds a tombstone to prevent sync re-download. */
+export async function moveNoteToTrash(id: string): Promise<void> {
+  const srcPath = await notePath(id)
+  const deletedAt = new Date().toISOString()
+
+  if (await exists(srcPath)) {
+    await ensureTrashDir()
+    const trash = await trashDir()
+    const dstPath = `${trash}/${id}.md`
+    const note = await loadTravelNote(id)
+    if (note) {
+      note.deletedAt = deletedAt
+      const tmp = `${dstPath}.tmp`
+      await writeTextFile(tmp, stringifyFrontmatter(note))
+      await rename(tmp, dstPath)
+    }
+    await remove(srcPath)
+  }
+
+  const map = getDeletedTravelNotes()
+  map[id] = deletedAt
+  localStorage.setItem(LS_DELETED_TRAVEL_KEY, JSON.stringify(map))
+  localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
+}
+
+/** List all notes currently in the trash folder. */
+export async function listTrashItems(): Promise<TravelTrashMeta[]> {
+  const dir = await trashDir()
+  if (!(await exists(dir))) return []
+  const entries = await readDir(dir)
+  const items: TravelTrashMeta[] = []
+
+  for (const entry of entries) {
+    if (!entry.name?.endsWith('.md')) continue
+    const id = entry.name.slice(0, -3)
+    try {
+      const raw = await readTextFile(`${dir}/${entry.name}`)
+      const { meta, body } = parseFrontmatter(raw)
+      const cover = extractFirstImage(body) || meta.cover || '🗑️'
+      items.push({
+        id,
+        title: meta.title ?? id,
+        lat: meta.lat ?? 0,
+        lng: meta.lng ?? 0,
+        categoryL1: meta.categoryL1 ?? '',
+        categoryL2: meta.categoryL2 ?? '',
+        tags: meta.tags ?? [],
+        rating: meta.rating ?? 0,
+        date: meta.date ?? '',
+        cover,
+        preview: buildPreview(body),
+        updatedAt: meta.updatedAt ?? '',
+        deletedAt: meta.deletedAt ?? new Date().toISOString(),
+      })
+    } catch { /* skip malformed */ }
+  }
+
+  return items.sort((a, b) => b.deletedAt.localeCompare(a.deletedAt))
+}
+
+/** Restore a note from trash back to the notes folder. Removes its tombstone. */
+export async function restoreNoteFromTrash(id: string): Promise<void> {
+  const dir = await trashDir()
+  const srcPath = `${dir}/${id}.md`
+  if (!(await exists(srcPath))) return
+
+  const raw = await readTextFile(srcPath)
+  const { meta } = parseFrontmatter(raw)
+
+  const note: TravelNote = {
+    id,
+    title: meta.title ?? id,
+    lat: meta.lat ?? 0,
+    lng: meta.lng ?? 0,
+    categoryL1: meta.categoryL1 ?? '',
+    categoryL2: meta.categoryL2 ?? '',
+    tags: meta.tags ?? [],
+    rating: meta.rating ?? 0,
+    date: meta.date ?? new Date().toISOString().slice(0, 10),
+    cover: meta.cover ?? '',
+    content: raw,
+    updatedAt: meta.updatedAt,
+    // deletedAt intentionally omitted — restored note has no deletedAt
+  }
+
+  await ensureDir()
+  const dstPath = await notePath(id)
+  const tmp = `${dstPath}.tmp`
+  await writeTextFile(tmp, stringifyFrontmatter(note))
+  await rename(tmp, dstPath)
+  await remove(srcPath)
+
+  const tombstones = getDeletedTravelNotes()
+  delete tombstones[id]
+  localStorage.setItem(LS_DELETED_TRAVEL_KEY, JSON.stringify(tombstones))
+  localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
+}
+
+/** Permanently delete a note from trash (tombstone already set by moveNoteToTrash). */
+export async function permanentlyDeleteFromTrash(id: string): Promise<void> {
+  const dir = await trashDir()
+  const path = `${dir}/${id}.md`
+  try {
+    if (await exists(path)) await remove(path)
+  } catch { /* ignore */ }
+}
+
+/** Delete all expired trash items based on retention setting. */
+export async function purgeExpiredTrash(retentionDays: number): Promise<void> {
+  if (retentionDays <= 0) return
+  const items = await listTrashItems()
+  const cutoff = new Date()
+  cutoff.setDate(cutoff.getDate() - retentionDays)
+  for (const item of items) {
+    if (new Date(item.deletedAt) < cutoff) {
+      await permanentlyDeleteFromTrash(item.id)
+    }
+  }
 }
 
 export async function listCategoriesL1(): Promise<string[]> {

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Search, Plus, Star, FileText, ChevronDown, MapPin, Trash2, LayoutList, Paperclip, Tag } from 'lucide-vue-next'
+import { Search, Plus, Star, FileText, ChevronDown, MapPin, Trash2, LayoutList, Paperclip, Tag, ChevronRight, RotateCcw } from 'lucide-vue-next'
 import { useTravelStore } from '../../stores/travel'
 import { initImageAssetBase, resolveImageUrl } from '../../utils/imageAsset'
+import { getTrashRetentionDays } from '../../utils/travelStorage'
 
 const { t } = useI18n()
 const store = useTravelStore()
@@ -26,7 +27,8 @@ const PASTELS = [
 function pastelStyle(str: string) {
   let h = 0
   for (const c of str) h = (h * 31 + c.charCodeAt(0)) & 0xFFFF
-  return PASTELS[h % PASTELS.length]
+  const p = PASTELS[h % PASTELS.length]
+  return { backgroundColor: p.bg, color: p.color }
 }
 
 const hasEntries = computed(() => store.notes.length > 0)
@@ -43,8 +45,33 @@ function onNewEntry() {
 
 function onDeleteEntry(e: MouseEvent, id: string) {
   e.stopPropagation()
-  if (window.confirm(t('travel.deleteConfirm'))) {
-    store.deleteOne(id)
+  store.deleteOne(id)
+}
+
+// ─── Recently Deleted ─────────────────────────────────────────────────────────
+
+const trashOpen = ref(false)
+
+function daysUntilPermanentDelete(deletedAt: string): number | null {
+  const retention = getTrashRetentionDays()
+  if (retention <= 0) return null
+  const deleted = new Date(deletedAt)
+  const expiry = new Date(deleted.getTime() + retention * 24 * 60 * 60 * 1000)
+  const diff = Math.ceil((expiry.getTime() - Date.now()) / (24 * 60 * 60 * 1000))
+  return Math.max(0, diff)
+}
+
+async function onRestoreTrash(id: string) {
+  await store.restoreTrashItem(id)
+}
+
+async function onPermanentDelete(id: string) {
+  await store.permanentlyDeleteTrashItem(id)
+}
+
+async function onClearAllTrash() {
+  if (window.confirm(t('travel.recentlyDeleted.clearConfirm'))) {
+    await store.clearAllTrash()
   }
 }
 
@@ -332,6 +359,58 @@ function keepAllAttachments() {
               <MapPin :size="10" />
               {{ entry.date }}
             </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recently Deleted section -->
+    <div v-if="store.trashItems.length > 0" class="trash-section">
+      <button class="trash-toggle" @click="trashOpen = !trashOpen">
+        <ChevronRight :size="11" class="trash-chevron" :class="{ rotated: trashOpen }" />
+        <Trash2 :size="11" class="trash-toggle-icon" />
+        <span class="trash-toggle-label">{{ t('travel.recentlyDeleted.title') }}</span>
+        <span class="trash-count-badge">{{ store.trashItems.length }}</span>
+        <button
+          v-if="trashOpen"
+          class="trash-clear-btn"
+          :title="t('travel.recentlyDeleted.clearAll')"
+          @click.stop="onClearAllTrash"
+        >{{ t('travel.recentlyDeleted.clearAll') }}</button>
+      </button>
+      <div v-if="trashOpen" class="trash-list">
+        <div
+          v-for="item in store.trashItems"
+          :key="item.id"
+          class="trash-item"
+        >
+          <div class="trash-item-cover">
+            <span>{{ item.cover || '🗑️' }}</span>
+          </div>
+          <div class="trash-item-info">
+            <div class="trash-item-title">{{ item.title }}</div>
+            <div class="trash-item-meta">
+              <span>{{ t('travel.recentlyDeleted.deletedOn') }} {{ item.deletedAt.slice(0, 10) }}</span>
+              <span v-if="daysUntilPermanentDelete(item.deletedAt) !== null" class="trash-days-left">
+                · {{ daysUntilPermanentDelete(item.deletedAt) }} {{ t('travel.recentlyDeleted.daysLeft') }}
+              </span>
+            </div>
+          </div>
+          <div class="trash-item-actions">
+            <button
+              class="trash-action-btn restore-btn"
+              :title="t('travel.recentlyDeleted.restore')"
+              @click="onRestoreTrash(item.id)"
+            >
+              <RotateCcw :size="11" />
+            </button>
+            <button
+              class="trash-action-btn perm-delete-btn"
+              :title="t('travel.recentlyDeleted.deletePermanently')"
+              @click="onPermanentDelete(item.id)"
+            >
+              <Trash2 :size="11" />
+            </button>
           </div>
         </div>
       </div>
@@ -815,6 +894,181 @@ function keepAllAttachments() {
 
 .empty-action:hover {
   background: rgba(34, 63, 121, 0.18);
+}
+
+/* ─── Recently Deleted ────────────────────────────────────────────────────── */
+
+.trash-section {
+  flex-shrink: 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.trash-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.trash-toggle:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.trash-chevron {
+  color: #aeaeb2;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+
+.trash-chevron.rotated {
+  transform: rotate(90deg);
+}
+
+.trash-toggle-icon {
+  color: #aeaeb2;
+  flex-shrink: 0;
+}
+
+.trash-toggle-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #8e8e93;
+  flex: 1;
+}
+
+.trash-count-badge {
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.08);
+  color: #8e8e93;
+  padding: 1px 6px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.trash-clear-btn {
+  font-size: 10px;
+  color: #ff3b30;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0 2px;
+  flex-shrink: 0;
+  transition: opacity 0.12s;
+}
+
+.trash-clear-btn:hover {
+  opacity: 0.7;
+}
+
+.trash-list {
+  padding: 2px 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.trash-list::-webkit-scrollbar { width: 3px; }
+.trash-list::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.10); border-radius: 2px; }
+
+.trash-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  transition: background 0.10s;
+}
+
+.trash-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.trash-item-cover {
+  font-size: 16px;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  background: rgba(120, 120, 128, 0.08);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.6;
+}
+
+.trash-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.trash-item-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: #6e6e73;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+}
+
+.trash-item-meta {
+  font-size: 10px;
+  color: #aeaeb2;
+}
+
+.trash-days-left {
+  color: #ff9500;
+}
+
+.trash-item-actions {
+  display: flex;
+  gap: 3px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.trash-item:hover .trash-item-actions {
+  opacity: 1;
+}
+
+.trash-action-btn {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.10s;
+}
+
+.restore-btn {
+  color: #34c759;
+}
+
+.restore-btn:hover {
+  background: rgba(52, 199, 89, 0.12);
+}
+
+.perm-delete-btn {
+  color: #c7c7cc;
+}
+
+.perm-delete-btn:hover {
+  background: rgba(255, 59, 48, 0.10);
+  color: #ff3b30;
 }
 
 /* ─── Attachment cleanup dialog ───────────────────────────────────────────── */

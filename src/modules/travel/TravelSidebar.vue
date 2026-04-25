@@ -338,19 +338,23 @@ function keepAllAttachments() {
               <Trash2 :size="12" />
             </button>
           </div>
-          <div class="item-preview">{{ entry.preview || t('travel.noPreview') }}</div>
+          <div class="item-tags-row">
+            <span class="item-preview-text">{{ entry.preview || '' }}</span>
+            <div class="item-tags-right">
+              <span
+                v-for="tag in (entry.tags ?? []).slice(0, 2)"
+                :key="tag"
+                class="item-tag"
+                :style="pastelStyle(tag)"
+              >#{{ tag }}</span>
+            </div>
+          </div>
           <div class="item-meta-row">
             <span
               v-if="entry.categoryL1"
               class="item-category"
               :style="pastelStyle(entry.categoryL1)"
             >{{ entry.categoryL1 }}</span>
-            <span
-              v-for="tag in (entry.tags ?? []).slice(0, 2)"
-              :key="tag"
-              class="item-tag"
-              :style="pastelStyle(tag)"
-            >#{{ tag }}</span>
             <span class="item-rating" v-if="entry.rating > 0">
               <Star :size="9" class="star-icon" />
               {{ entry.rating }}
@@ -385,7 +389,13 @@ function keepAllAttachments() {
           class="trash-item"
         >
           <div class="trash-item-cover">
-            <span>{{ item.cover || '🗑️' }}</span>
+            <img
+              v-if="item.cover && (item.cover.startsWith('http') || item.cover.startsWith('/') || item.cover.includes('.'))"
+              :src="resolveImageUrl(item.cover)"
+              class="cover-img"
+              alt=""
+            />
+            <span v-else>{{ item.cover || '🗑️' }}</span>
           </div>
           <div class="trash-item-info">
             <div class="trash-item-title">{{ item.title }}</div>
@@ -726,12 +736,12 @@ function keepAllAttachments() {
 }
 
 .item-cover {
-  font-size: 20px;
+  font-size: 26px;
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
+  width: 54px;
+  height: 54px;
   background: rgba(120, 120, 128, 0.1);
-  border-radius: 8px;
+  border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -807,13 +817,29 @@ function keepAllAttachments() {
   color: #ff3b30;
 }
 
-.item-preview {
+.item-tags-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  overflow: hidden;
+}
+
+.item-preview-text {
   font-size: 11px;
   color: #8e8e93;
-  margin-bottom: 4px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.item-tags-right {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
 }
 
 .item-meta-row {
@@ -853,6 +879,7 @@ function keepAllAttachments() {
   display: flex;
   align-items: center;
   gap: 3px;
+  margin-left: auto;
 }
 
 /* Empty state */
@@ -1003,6 +1030,13 @@ function keepAllAttachments() {
   align-items: center;
   justify-content: center;
   opacity: 0.6;
+  overflow: hidden;
+}
+
+.trash-item-cover .cover-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .trash-item-info {

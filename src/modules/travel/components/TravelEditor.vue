@@ -19,7 +19,7 @@ import markdown from 'highlight.js/lib/languages/markdown'
 import yaml from 'highlight.js/lib/languages/yaml'
 import plaintext from 'highlight.js/lib/languages/plaintext'
 import L from 'leaflet'
-import { Star, Crosshair, Check, X, Pencil, Sparkles, Loader2 } from 'lucide-vue-next'
+import { Star, Crosshair, Check, X, Pencil, Sparkles, Loader2, Plus, Hash } from 'lucide-vue-next'
 import { useTravelStore } from '../../../stores/travel'
 import { useTravelCopilotStore } from '../../../stores/travelCopilot'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
@@ -74,6 +74,34 @@ function getCleanText(): string {
   const clone = el.cloneNode(true) as HTMLDivElement
   clone.querySelectorAll('.copilot-ghost-text').forEach(n => n.remove())
   return clone.innerText.replace(/\n$/, '')
+}
+
+// Restores cursor to a character offset inside the contenteditable div
+function setBodyCursorOffset(targetOffset: number) {
+  const el = editableRef.value
+  if (!el) return
+  const sel = window.getSelection()
+  if (!sel) return
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+  let remaining = targetOffset
+  let node = walker.nextNode() as Text | null
+  while (node) {
+    if (remaining <= node.length) {
+      const range = document.createRange()
+      range.setStart(node, remaining)
+      range.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(range)
+      return
+    }
+    remaining -= node.length
+    node = walker.nextNode() as Text | null
+  }
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  range.collapse(false)
+  sel.removeAllRanges()
+  sel.addRange(range)
 }
 
 // Returns byte-offset of cursor in the clean body text (ghost span excluded)
@@ -424,6 +452,60 @@ function cancelTitle() {
   editingTitle.value = false
 }
 
+// Tag editing
+const tagInputVisible = ref(false)
+const tagInputValue = ref('')
+const tagInputRef = ref<HTMLInputElement>()
+const tagSuggestionsVisible = ref(false)
+
+const tagSuggestions = computed(() => {
+  const q = tagInputValue.value.trim().toLowerCase()
+  const existing = new Set(note.value.tags)
+  return store.allTags
+    .filter(t => !existing.has(t) && (q === '' || t.toLowerCase().includes(q)))
+    .slice(0, 8)
+})
+
+function startAddTag() {
+  tagInputVisible.value = true
+  tagSuggestionsVisible.value = true
+  nextTick(() => tagInputRef.value?.focus())
+}
+
+function applyTag(tag: string) {
+  if (!note.value.tags.includes(tag)) {
+    store.setTags([...note.value.tags, tag])
+    triggerAutoSave()
+  }
+  tagInputValue.value = ''
+  tagInputVisible.value = false
+  tagSuggestionsVisible.value = false
+}
+
+function addTag() {
+  const v = tagInputValue.value.trim()
+  if (v) applyTag(v)
+  else {
+    tagInputValue.value = ''
+    tagInputVisible.value = false
+    tagSuggestionsVisible.value = false
+  }
+}
+
+function onTagInputBlur() {
+  // Delay so mousedown on suggestion fires first
+  setTimeout(() => {
+    tagInputVisible.value = false
+    tagSuggestionsVisible.value = false
+    tagInputValue.value = ''
+  }, 150)
+}
+
+function removeTag(tag: string) {
+  store.setTags(note.value.tags.filter(t => t !== tag))
+  triggerAutoSave()
+}
+
 // Copy code block (preview pane)
 function onPreviewClick(e: MouseEvent) {
   const btn = (e.target as HTMLElement).closest('.md-code-copy') as HTMLElement | null
@@ -586,16 +668,18 @@ async function onPaste(e: ClipboardEvent) {
     if (!(await exists(imgDir))) await mkdir(imgDir, { recursive: true })
     await writeFile(`${imgDir}/${filename}`, bytes)
 
-    const mdText    = `![${filename}](images/${filename})`
-    const offset    = getBodyCursorOffset()
-    const newBody   = body.value.slice(0, offset) + mdText + body.value.slice(offset)
-    const el        = editableRef.value
-    _skipBodyWatch  = true
-    body.value      = newBody
+    const mdText      = `![${filename}](images/${filename})`
+    const offset      = getBodyCursorOffset()
+    const newBody     = body.value.slice(0, offset) + mdText + body.value.slice(offset)
+    const el          = editableRef.value
+    _skipBodyWatch    = true
+    body.value        = newBody
     if (el) el.innerText = newBody
+    const newOffset   = offset + mdText.length
     nextTick(() => {
       _skipBodyWatch = false
       el?.focus()
+      setBodyCursorOffset(newOffset)
     })
     return
   }
@@ -734,6 +818,8 @@ function closePicker() {
         <!-- Title display / edit -->
         <div class="title-area">
           <template v-if="editingTitle">
+            <button class="title-action-btn" @mousedown.prevent="confirmTitle"><Check :size="13" /></button>
+            <button class="title-action-btn" @mousedown.prevent="cancelTitle"><X :size="13" /></button>
             <input
               ref="titleInputRef"
               v-model="titleDraft"
@@ -742,13 +828,45 @@ function closePicker() {
               @keydown.escape="cancelTitle"
               @blur="confirmTitle"
             />
-            <button class="title-action-btn" @mousedown.prevent="confirmTitle"><Check :size="13" /></button>
-            <button class="title-action-btn" @mousedown.prevent="cancelTitle"><X :size="13" /></button>
           </template>
           <template v-else>
+            <button class="title-action-btn title-edit-trigger" @click="startEditTitle"><Pencil :size="13" /></button>
             <span class="title-display">{{ note.title || t('travel.titlePlaceholder') }}</span>
-            <button class="title-action-btn" @click="startEditTitle"><Pencil :size="13" /></button>
           </template>
+        </div>
+
+        <!-- Tag area -->
+        <div class="tag-area">
+          <span
+            v-for="tag in note.tags"
+            :key="tag"
+            class="tag-chip"
+          >
+            <Hash :size="10" class="tag-hash" />{{ tag }}
+            <button class="tag-remove-btn" @mousedown.prevent="removeTag(tag)"><X :size="9" /></button>
+          </span>
+          <div v-if="tagInputVisible" class="tag-input-wrap">
+            <input
+              ref="tagInputRef"
+              v-model="tagInputValue"
+              class="tag-input"
+              :placeholder="t('travel.tagPlaceholder')"
+              @keydown.enter.prevent="addTag"
+              @keydown.escape="tagInputVisible = false; tagSuggestionsVisible = false; tagInputValue = ''"
+              @blur="onTagInputBlur"
+            />
+            <div v-if="tagSuggestionsVisible && tagSuggestions.length" class="tag-suggestions">
+              <button
+                v-for="sug in tagSuggestions"
+                :key="sug"
+                class="tag-suggestion-item"
+                @mousedown.prevent="applyTag(sug)"
+              >#{{ sug }}</button>
+            </div>
+          </div>
+          <button v-else class="tag-add-btn" :title="t('travel.tags')" @click="startAddTag">
+            <Plus :size="11" />
+          </button>
         </div>
       </div>
 
@@ -1132,6 +1250,132 @@ function closePicker() {
 .title-action-btn:hover {
   background: rgba(0, 0, 0, 0.06);
   color: #3c3c43;
+}
+
+/* ─── Tag area ────────────────────────────────────────────────────────────── */
+
+.tag-area {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  max-width: 220px;
+  min-width: 0;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 5px 2px 4px;
+  background: rgba(34, 63, 121, 0.08);
+  color: #223F79;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.tag-hash {
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.tag-remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: none;
+  background: transparent;
+  color: #223F79;
+  opacity: 0.5;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 3px;
+  flex-shrink: 0;
+  transition: opacity 0.12s;
+}
+
+.tag-remove-btn:hover {
+  opacity: 1;
+}
+
+.tag-add-btn {
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: #8e8e93;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.tag-add-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #3c3c43;
+}
+
+.tag-input-wrap {
+  position: relative;
+}
+
+.tag-input {
+  width: 80px;
+  height: 22px;
+  border: 1px solid rgba(34, 63, 121, 0.3);
+  border-radius: 5px;
+  padding: 0 6px;
+  font-size: 11px;
+  background: rgba(34, 63, 121, 0.04);
+  color: #1c1c1e;
+  outline: none;
+}
+
+.tag-input:focus {
+  border-color: rgba(34, 63, 121, 0.5);
+}
+
+.tag-suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 120px;
+  background: rgba(250, 250, 252, 0.98);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  padding: 4px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tag-suggestion-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 5px 8px;
+  border-radius: 5px;
+  border: none;
+  background: none;
+  font-size: 11.5px;
+  color: #223F79;
+  cursor: pointer;
+  transition: background 0.10s;
+}
+
+.tag-suggestion-item:hover {
+  background: rgba(34, 63, 121, 0.08);
 }
 
 .coord-input { width: 130px; }

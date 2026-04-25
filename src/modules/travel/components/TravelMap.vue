@@ -13,9 +13,47 @@ const emit = defineEmits<{
   (e: 'select', id: string): void
 }>()
 
+const CLUSTER_RADIUS_PX = 40
+
 const mapContainer = ref<HTMLElement>()
 let map: L.Map | null = null
-let markers: Map<string, L.Marker> = new Map()
+let markers: Map<string, L.Marker> = new Map() // key = seed note id
+
+interface Cluster {
+  key: string
+  notes: TravelNoteMeta[]
+  lat: number
+  lng: number
+}
+
+function buildDynamicClusters(): Cluster[] {
+  if (!map) return []
+  const valid = props.notes.filter(n => n.lat !== 0 || n.lng !== 0)
+  const assigned = new Set<string>()
+  const clusters: Cluster[] = []
+
+  for (const seed of valid) {
+    if (assigned.has(seed.id)) continue
+    const pos = map.latLngToContainerPoint([seed.lat, seed.lng])
+    const group: TravelNoteMeta[] = [seed]
+    assigned.add(seed.id)
+
+    for (const other of valid) {
+      if (assigned.has(other.id)) continue
+      const opos = map.latLngToContainerPoint([other.lat, other.lng])
+      if (Math.hypot(pos.x - opos.x, pos.y - opos.y) <= CLUSTER_RADIUS_PX) {
+        group.push(other)
+        assigned.add(other.id)
+      }
+    }
+
+    const lat = group.reduce((s, n) => s + n.lat, 0) / group.length
+    const lng = group.reduce((s, n) => s + n.lng, 0) / group.length
+    clusters.push({ key: seed.id, notes: group, lat, lng })
+  }
+
+  return clusters
+}
 
 function buildCoverHtml(cover: string): string {
   if (cover && (cover.startsWith('http') || cover.startsWith('/') || cover.includes('.'))) {
@@ -36,10 +74,24 @@ function buildTooltipHtml(note: TravelNoteMeta): string {
   `
 }
 
-function makeIcon(active: boolean): L.DivIcon {
+function buildClusterTooltip(notes: TravelNoteMeta[]): string {
+  if (notes.length === 1) return buildTooltipHtml(notes[0])
+  const items = notes.map(n => `
+    <div class="tt-cluster-item">
+      <div class="tt-cluster-cover">${buildCoverHtml(n.cover)}</div>
+      <span class="tt-cluster-title">${n.title}</span>
+    </div>
+  `).join('')
+  return `<div class="tt-cluster">${items}</div>`
+}
+
+function makeIcon(active: boolean, count: number = 1): L.DivIcon {
+  const clustered = count > 1
+  const badge = clustered ? `<span class="marker-count">${count}</span>` : ''
+  const pinClass = `marker-pin${active ? ' active' : ''}${clustered ? ' clustered' : ''}`
   return L.divIcon({
     className: active ? 'travel-marker active' : 'travel-marker',
-    html: `<div class="marker-pin${active ? ' active' : ''}"></div>`,
+    html: `<div class="${pinClass}">${badge}</div>`,
     iconSize: active ? [32, 42] : [28, 38],
     iconAnchor: active ? [16, 40] : [14, 36],
     popupAnchor: [0, -36],
@@ -59,48 +111,38 @@ function initMap() {
   }).addTo(map)
 
   L.control.zoom({ position: 'bottomright' }).addTo(map)
-  updateMarkers()
+  map.on('zoomend', rebuildMarkers)
+  rebuildMarkers()
 }
 
-function updateMarkers() {
+function rebuildMarkers() {
   if (!map) return
 
-  // Remove old markers not in current list
-  const currentIds = new Set(props.notes.map(n => n.id))
-  for (const [id, marker] of markers) {
-    if (!currentIds.has(id)) {
-      map.removeLayer(marker)
-      markers.delete(id)
-    }
+  // Clear all existing markers — cluster composition changes on each zoom
+  for (const m of markers.values()) map.removeLayer(m)
+  markers.clear()
+
+  const clusters = buildDynamicClusters()
+
+  for (const { key, notes, lat, lng } of clusters) {
+    const isActive = notes.some(n => n.id === props.activeNoteId)
+    const icon = makeIcon(isActive, notes.length)
+    const tooltip = buildClusterTooltip(notes)
+
+    const marker = L.marker([lat, lng], { icon })
+      .addTo(map)
+      .bindTooltip(tooltip, {
+        permanent: false,
+        direction: 'top',
+        className: 'travel-tooltip',
+        offset: [0, -36],
+        opacity: 1,
+      })
+    marker.on('click', () => emit('select', notes[0].id))
+    markers.set(key, marker)
   }
 
-  // Add or update markers
-  for (const note of props.notes) {
-    if (note.lat === 0 && note.lng === 0) continue
-    const existing = markers.get(note.id)
-    const isActive = props.activeNoteId === note.id
-    const icon = makeIcon(isActive)
-
-    if (existing) {
-      existing.setLatLng([note.lat, note.lng])
-      existing.setIcon(icon)
-      existing.setTooltipContent(buildTooltipHtml(note))
-    } else {
-      const marker = L.marker([note.lat, note.lng], { icon })
-        .addTo(map)
-        .bindTooltip(buildTooltipHtml(note), {
-          permanent: false,
-          direction: 'top',
-          className: 'travel-tooltip',
-          offset: [0, -36],
-          opacity: 1,
-        })
-      marker.on('click', () => emit('select', note.id))
-      markers.set(note.id, marker)
-    }
-  }
-
-  // Pan to active note
+  // Pan to active note and open its cluster tooltip
   if (props.activeNoteId) {
     const active = props.notes.find(n => n.id === props.activeNoteId)
     if (active && active.lat !== 0 && active.lng !== 0) {
@@ -108,14 +150,14 @@ function updateMarkers() {
         animate: true,
         duration: 0.5,
       })
-      const m = markers.get(active.id)
-      if (m) m.openTooltip()
+      const cluster = clusters.find(c => c.notes.some(n => n.id === props.activeNoteId))
+      if (cluster) markers.get(cluster.key)?.openTooltip()
     }
   }
 }
 
-watch(() => props.notes, updateMarkers, { deep: true })
-watch(() => props.activeNoteId, updateMarkers)
+watch(() => props.notes, rebuildMarkers, { deep: true })
+watch(() => props.activeNoteId, rebuildMarkers)
 
 onMounted(initMap)
 onUnmounted(() => {
@@ -175,6 +217,70 @@ onUnmounted(() => {
   width: 12px;
   height: 12px;
   margin: 10px 0 0 10px;
+}
+
+.marker-pin.clustered::after {
+  display: none;
+}
+
+.marker-count {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(45deg);
+  font-size: 11px;
+  font-weight: 700;
+  color: white;
+  line-height: 1;
+  z-index: 1;
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+}
+
+.tt-cluster {
+  background: white;
+  border-radius: 10px;
+  padding: 6px 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 140px;
+  max-width: 220px;
+}
+
+.tt-cluster-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tt-cluster-cover {
+  font-size: 16px;
+  width: 24px;
+  height: 24px;
+  background: rgba(120, 120, 128, 0.1);
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.tt-cluster-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.tt-cluster-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: #1c1c1e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Tooltip card */

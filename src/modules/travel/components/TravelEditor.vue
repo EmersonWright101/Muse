@@ -19,7 +19,8 @@ import markdown from 'highlight.js/lib/languages/markdown'
 import yaml from 'highlight.js/lib/languages/yaml'
 import plaintext from 'highlight.js/lib/languages/plaintext'
 import L from 'leaflet'
-import { Star, Crosshair, Check, X, Pencil, Sparkles, Loader2, Plus, Hash } from 'lucide-vue-next'
+import Image from '@tiptap/extension-image'
+import { Star, Crosshair, Check, X, Pencil, Sparkles, Loader2, Plus, Hash, Search } from 'lucide-vue-next'
 import { useTravelStore } from '../../../stores/travel'
 import { useTravelCopilotStore } from '../../../stores/travelCopilot'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
@@ -76,35 +77,66 @@ function getCleanText(): string {
   return clone.innerText.replace(/\n$/, '')
 }
 
-// Restores cursor to a character offset inside the contenteditable div
+// Restores cursor to a character offset inside the contenteditable div.
+// Accounts for <br> elements (each counts as 1 char, matching innerText behaviour).
 function setBodyCursorOffset(targetOffset: number) {
   const el = editableRef.value
   if (!el) return
   const sel = window.getSelection()
   if (!sel) return
-  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+  const s = sel  // narrowed non-null for use inside nested function
+
   let remaining = targetOffset
-  let node = walker.nextNode() as Text | null
-  while (node) {
-    if (remaining <= node.length) {
-      const range = document.createRange()
-      range.setStart(node, remaining)
-      range.collapse(true)
-      sel.removeAllRanges()
-      sel.addRange(range)
+  let placed = false
+
+  function walk(node: Node): void {
+    if (placed) return
+    if (node.nodeType === Node.TEXT_NODE) {
+      const len = (node as Text).length
+      if (remaining <= len) {
+        const range = document.createRange()
+        range.setStart(node, remaining)
+        range.collapse(true)
+        s.removeAllRanges()
+        s.addRange(range)
+        placed = true
+        return
+      }
+      remaining -= len
       return
     }
-    remaining -= node.length
-    node = walker.nextNode() as Text | null
+    if (node.nodeType === Node.ELEMENT_NODE && (node as Element).tagName === 'BR') {
+      if (remaining === 0) {
+        const range = document.createRange()
+        range.setStartBefore(node)
+        range.collapse(true)
+        s.removeAllRanges()
+        s.addRange(range)
+        placed = true
+        return
+      }
+      remaining -= 1
+      return
+    }
+    for (const child of Array.from(node.childNodes)) {
+      walk(child)
+      if (placed) return
+    }
   }
-  const range = document.createRange()
-  range.selectNodeContents(el)
-  range.collapse(false)
-  sel.removeAllRanges()
-  sel.addRange(range)
+
+  walk(el)
+  if (!placed) {
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    range.collapse(false)
+    s.removeAllRanges()
+    s.addRange(range)
+  }
 }
 
-// Returns byte-offset of cursor in the clean body text (ghost span excluded)
+// Returns char-offset of cursor in the clean body text (ghost span excluded).
+// Attaches a temporary styled div to the document so innerText correctly handles
+// <br> elements and white-space:pre-wrap, matching what getCleanText() returns.
 function getBodyCursorOffset(): number {
   const el = editableRef.value
   if (!el) return body.value.length
@@ -113,10 +145,14 @@ function getBodyCursorOffset(): number {
   const range = document.createRange()
   range.selectNodeContents(el)
   range.setEnd(sel.getRangeAt(0).startContainer, sel.getRangeAt(0).startOffset)
-  const frag = document.createElement('div')
-  frag.appendChild(range.cloneContents())
-  frag.querySelectorAll('.copilot-ghost-text').forEach(n => n.remove())
-  return frag.innerText.replace(/\n$/, '').length
+  const tmp = document.createElement('div')
+  tmp.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:500px;white-space:pre-wrap;word-break:break-word;visibility:hidden;pointer-events:none;'
+  tmp.appendChild(range.cloneContents())
+  tmp.querySelectorAll('.copilot-ghost-text').forEach(n => n.remove())
+  document.body.appendChild(tmp)
+  const text = tmp.innerText.replace(/\n$/, '')
+  document.body.removeChild(tmp)
+  return text.length
 }
 
 // Insert an empty ghost span at the current cursor; returns false if no selection
@@ -354,11 +390,33 @@ const CustomCodeBlock = CodeBlock.extend({
   addNodeView() { return VueNodeViewRenderer(CodeBlockView as any) },
 })
 
+// Image NodeView: resolves relative paths to Tauri asset URLs at render time
+const TravelImage = Image.extend({
+  addNodeView() {
+    return ({ node }) => {
+      const img = document.createElement('img')
+      img.src = resolveImageUrl(node.attrs.src)
+      img.alt = node.attrs.alt ?? ''
+      img.style.maxWidth = '100%'
+      img.style.display = 'block'
+      return {
+        dom: img,
+        update(updatedNode) {
+          img.src = resolveImageUrl(updatedNode.attrs.src)
+          img.alt = updatedNode.attrs.alt ?? ''
+          return true
+        },
+      }
+    }
+  },
+})
+
 const wysiwygEditor = useEditor({
   extensions: [
     StarterKit.configure({ codeBlock: false }),
     TiptapMarkdown.configure({ html: false, tightLists: true }),
     CustomCodeBlock,
+    TravelImage.configure({ inline: true }),
   ],
   content: '',
   onUpdate({ editor }) {
@@ -383,17 +441,21 @@ onUnmounted(() => { wysiwygEditor.value?.destroy() })
 
 const note = computed(() => store.activeNote!)
 
-// Reload wysiwyg content and reset editable when the active note changes
-watch(() => note.value?.id, () => {
+function syncEditorContent() {
   if (layout.value === 'wysiwyg' && wysiwygEditor.value) {
     _wysiwygSyncing = true
     wysiwygEditor.value.commands.setContent(body.value)
     _wysiwygSyncing = false
   }
-  // Sync new note content into contenteditable
   const el = editableRef.value
   if (el) el.innerText = body.value
-})
+}
+
+// Reload editor content when the active note changes
+watch(() => note.value?.id, () => { nextTick(syncEditorContent) })
+
+// Also sync on mount so content shows when navigating back to an already-selected note
+onMounted(() => { if (note.value) nextTick(syncEditorContent) })
 
 // Body without frontmatter for editing
 const body = computed({
@@ -713,12 +775,26 @@ const pickerMapContainer = ref<HTMLElement>()
 let pickerMap: L.Map | null = null
 let pickerMarker: L.Marker | null = null
 
+// Search
+const pickerSearchQuery   = ref('')
+const pickerSearchResults = ref<{ display_name: string; lat: string; lon: string }[]>([])
+const pickerSearchLoading = ref(false)
+let _searchTimer: ReturnType<typeof setTimeout> | null = null
+
 function openMapPicker() {
   showMapPicker.value = true
-  nextTick(() => {
-    initPickerMap()
-  })
+  pickerSearchQuery.value = ''
+  pickerSearchResults.value = []
+  nextTick(() => { initPickerMap() })
 }
+
+const _pinIcon = L.divIcon({
+  html: `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36"><path d="M14 0C6.268 0 0 6.268 0 14c0 10.5 14 22 14 22S28 24.5 28 14C28 6.268 21.732 0 14 0z" fill="#ef4444"/><circle cx="14" cy="14" r="6" fill="white"/></svg>`,
+  className: '',
+  iconSize: [28, 36],
+  iconAnchor: [14, 36],
+  popupAnchor: [0, -36],
+})
 
 function initPickerMap() {
   if (!pickerMapContainer.value) return
@@ -736,11 +812,35 @@ function initPickerMap() {
 
   L.control.zoom({ position: 'bottomright' }).addTo(pickerMap)
 
-  pickerMarker = L.marker([lat, lng], { draggable: true }).addTo(pickerMap)
+  pickerMarker = L.marker([lat, lng], { icon: _pinIcon, draggable: true }).addTo(pickerMap)
 
   pickerMap.on('click', (e: L.LeafletMouseEvent) => {
     pickerMarker?.setLatLng(e.latlng)
+    pickerSearchResults.value = []
   })
+}
+
+async function searchPickerLocation() {
+  const q = pickerSearchQuery.value.trim()
+  if (!q) { pickerSearchResults.value = []; return }
+  if (_searchTimer) clearTimeout(_searchTimer)
+  _searchTimer = setTimeout(async () => {
+    pickerSearchLoading.value = true
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=6`
+      const res = await fetch(url, { headers: { 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' } })
+      pickerSearchResults.value = await res.json()
+    } catch { pickerSearchResults.value = [] }
+    pickerSearchLoading.value = false
+  }, 400)
+}
+
+function selectSearchResult(r: { lat: string; lon: string }) {
+  const lat = parseFloat(r.lat)
+  const lng = parseFloat(r.lon)
+  pickerMarker?.setLatLng([lat, lng])
+  pickerMap?.setView([lat, lng], 14)
+  pickerSearchResults.value = []
 }
 
 function confirmPicker() {
@@ -1068,6 +1168,27 @@ function closePicker() {
             <button class="picker-close" @click="closePicker">
               <X :size="16" />
             </button>
+          </div>
+          <!-- Search bar -->
+          <div class="picker-search-wrap">
+            <Search :size="13" class="picker-search-icon" />
+            <input
+              v-model="pickerSearchQuery"
+              class="picker-search-input"
+              :placeholder="t('travel.mapSearch')"
+              @input="searchPickerLocation"
+              @keydown.enter.prevent="searchPickerLocation"
+            />
+            <Loader2 v-if="pickerSearchLoading" :size="13" class="picker-search-spin" />
+          </div>
+          <!-- Search results -->
+          <div v-if="pickerSearchResults.length" class="picker-search-results">
+            <button
+              v-for="r in pickerSearchResults"
+              :key="r.lat + r.lon"
+              class="picker-result-item"
+              @click="selectSearchResult(r)"
+            >{{ r.display_name }}</button>
           </div>
           <div ref="pickerMapContainer" class="picker-map" />
           <div class="picker-footer">
@@ -1593,6 +1714,67 @@ function closePicker() {
 
 .picker-close:hover {
   background: rgba(0, 0, 0, 0.06);
+}
+
+.picker-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  position: relative;
+}
+
+.picker-search-icon {
+  color: #8e8e93;
+  flex-shrink: 0;
+}
+
+.picker-search-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 12.5px;
+  color: #1c1c1e;
+  background: transparent;
+}
+
+.picker-search-input::placeholder {
+  color: #aeaeb2;
+}
+
+.picker-search-spin {
+  color: #8e8e93;
+  animation: copilot-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.picker-search-results {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  max-height: 160px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.picker-result-item {
+  text-align: left;
+  padding: 7px 14px;
+  font-size: 12px;
+  color: #1c1c1e;
+  border: none;
+  background: none;
+  cursor: pointer;
+  line-height: 1.4;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.picker-result-item:last-child {
+  border-bottom: none;
+}
+
+.picker-result-item:hover {
+  background: rgba(34, 63, 121, 0.06);
 }
 
 .picker-map {

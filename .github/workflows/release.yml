@@ -12,11 +12,33 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create-release.outputs.result }}
+      release_body: ${{ steps.tag-message.outputs.message }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get tag message
+        id: tag-message
+        shell: bash
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          # 优先使用 annotated tag 的 message;如果是 lightweight tag 就 fallback 到自动生成
+          MESSAGE=$(git tag -l --format='%(contents)' "$TAG_NAME")
+          if [ -z "$MESSAGE" ]; then
+            MESSAGE="See commit history for changes."
+          fi
+          {
+            echo "message<<EOF"
+            echo "$MESSAGE"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
       - name: create release
         id: create-release
         uses: actions/github-script@v7
+        env:
+          RELEASE_BODY: ${{ steps.tag-message.outputs.message }}
         with:
           script: |
             const tagName = context.ref.replace('refs/tags/', '');
@@ -25,9 +47,9 @@ jobs:
               repo: context.repo.repo,
               tag_name: tagName,
               name: tagName,
+              body: process.env.RELEASE_BODY,
               draft: true,
               prerelease: false,
-              generate_release_notes: true
             })
             return data.id
 
@@ -38,11 +60,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # platform: [macos-latest, ubuntu-24.04, windows-latest]
         platform: [macos-latest, windows-latest]
-
     runs-on: ${{ matrix.platform }}
-    
     steps:
       - uses: actions/checkout@v4
 
@@ -51,7 +70,6 @@ jobs:
         with:
           node-version: 20
 
-      # 安装 Rust，并显式添加目标架构 (这样才能在一个平台上交叉编译另一个架构)
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -62,7 +80,6 @@ jobs:
         shell: bash
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
-          echo "Syncing version to: $VERSION"
           tmp=$(mktemp)
           jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > "$tmp" && mv "$tmp" src-tauri/tauri.conf.json
 
@@ -76,19 +93,6 @@ jobs:
         shell: bash
         run: rm -rf node_modules package-lock.json && npm install
 
-      - name: Debug Environment Variables
-        shell: bash
-        env:
-          MY_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: |
-          if [ -z "$MY_KEY" ]; then
-            echo "❌ TAURI_SIGNING_PRIVATE_KEY 为空！GitHub Secrets 没有正确读取到。"
-            exit 1
-          else
-            echo "✅ 成功：检测到 TAURI_SIGNING_PRIVATE_KEY 长度为 ${#MY_KEY} 字符。"
-          fi
-
-      # 执行构建
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -96,7 +100,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
-          # 这里会引用 matrix 中定义的参数（例如 --target aarch64-apple-darwin）
+          releaseBody: ${{ needs.create-release.outputs.release_body }}
           args: ${{ matrix.args }}
 
   publish-release:

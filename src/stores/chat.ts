@@ -732,13 +732,15 @@ export const useChatStore = defineStore('chat', () => {
     if (!provider || (!provider.apiKey && provider.type !== 'ollama')) return
 
     const userMsg = conv.messages.find(m => m.role === 'user' && m.content)
-    const aiMsg   = conv.messages.filter(m => m.role === 'assistant' && m.content && !m.error).at(-1)
+    const aiMsg   = conv.messages.filter(m => m.role === 'assistant' && !m.error && (m.content || m.mediaOutputs?.length)).at(-1)
     if (!userMsg || !aiMsg) return
 
     const promptTpl = chatSettings.titleGenPrompt || DEFAULT_TITLE_PROMPT
+    // For image-only responses use a placeholder so the title reflects the user request
+    const aiContent = aiMsg.content || (aiMsg.mediaOutputs?.length ? '[图片]' : '')
     const prompt    = promptTpl
       .replace('{user}',     userMsg.content.slice(0, 300))
-      .replace('{response}', aiMsg.content.slice(0, 300))
+      .replace('{response}', aiContent.slice(0, 300))
 
     let title = ''
     const ac  = new AbortController()

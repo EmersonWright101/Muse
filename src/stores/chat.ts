@@ -637,12 +637,24 @@ export const useChatStore = defineStore('chat', () => {
   const streamingText         = ref('')
   const streamingMsgId        = ref<string | null>(null)
   const streamingReasoning    = ref('')
-  const streamingVariantMsgId = ref<string | null>(null)
+  // Set of message IDs that currently have at least one variant streaming
+  const streamingVariantMsgIds = reactive<Set<string>>(new Set())
   const useReasoning       = ref(false)
   const reasoningLevel     = ref<'low' | 'medium' | 'high'>('medium')
 
-  // One AbortController per in-flight conversation stream
+  // Optional second model for simultaneous dual-model generation
+  const secondProviderId = ref<string | null>(null)
+  const secondModelId_   = ref<string | null>(null)
+
+  function setSecondModel(pid: string | null, mid: string | null) {
+    secondProviderId.value = pid
+    secondModelId_.value   = mid
+  }
+
+  // One AbortController per in-flight conversation main-message stream
   const _abortControllers = new Map<string, AbortController>()
+  // Per-variant abort controllers: key = `${msgId}:${variantIdx}`
+  const _variantAbortControllers = new Map<string, AbortController>()
 
   // ─── Load conversation list ─────────────────────────────────────────────
 
@@ -945,6 +957,16 @@ export const useChatStore = defineStore('chat', () => {
       },
     }
 
+    // Fire second model concurrently if configured (force=true bypasses streaming check)
+    const pid2 = secondProviderId.value
+    const mid2 = secondModelId_.value
+    if (pid2 && mid2 && (pid2 !== pid || mid2 !== mid)) {
+      const p2 = aiStore.providers.find(p => p.id === pid2)
+      if (p2 && (p2.apiKey || p2.type === 'ollama')) {
+        regenerateWithModel(assistantMsg.id, pid2, mid2, true).catch(() => {})
+      }
+    }
+
     try {
       if (provider.type === 'anthropic') {
         const budget = useReasoning.value ? budgetMap[reasoningLevel.value] : undefined
@@ -1034,9 +1056,12 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   // ─── Variant: regenerate with a different model ─────────────────────────
+  // Allows simultaneous variant streams — only blocks if the main message is streaming.
 
-  async function regenerateWithModel(messageId: string, providerId: string, modelId: string) {
-    if (!activeConv.value || isStreaming.value) return
+  async function regenerateWithModel(messageId: string, providerId: string, modelId: string, _force = false) {
+    if (!activeConv.value) return
+    // Block only if main message of this conv is streaming — unless forced (dual-model simultaneous)
+    if (!_force && streamingMsgId.value !== null && streamingConvIds.has(activeConv.value.id)) return
     const conv   = activeConv.value
     const msgIdx = conv.messages.findIndex(m => m.id === messageId)
     if (msgIdx < 0) return
@@ -1055,10 +1080,11 @@ export const useChatStore = defineStore('chat', () => {
     const vi = msg.variants.length - 1
     msg.activeVariantIdx = msg.variants.length  // switch to new variant right away
 
-    streamingConvIds.add(conv.id)
-    if (activeConvId.value === conv.id) streamingVariantMsgId.value = messageId
+    // Track streaming: use per-variant key so multiple variants can stream simultaneously
+    const varKey = `${messageId}:${vi}`
+    streamingVariantMsgIds.add(messageId)
     const ac = new AbortController()
-    _abortControllers.set(conv.id, ac)
+    _variantAbortControllers.set(varKey, ac)
 
     const startedAt = Date.now()
 
@@ -1067,6 +1093,13 @@ export const useChatStore = defineStore('chat', () => {
       ? assistantsStore.assistants.find(a => a.id === conv.assistantId)
       : undefined
     const systemPrompt = assistant?.systemPrompt || undefined
+
+    function cleanupVariant() {
+      _variantAbortControllers.delete(varKey)
+      // Remove from streaming set only when no more variants of this msg are streaming
+      const stillStreaming = [..._variantAbortControllers.keys()].some(k => k.startsWith(messageId + ':'))
+      if (!stillStreaming) streamingVariantMsgIds.delete(messageId)
+    }
 
     const handler: StreamChunkHandler = {
       onToken(token) { msg.variants![vi].content += token },
@@ -1080,15 +1113,12 @@ export const useChatStore = defineStore('chat', () => {
         v.mediaOutputs.push(isUrl ? { mimeType, url: data } : { mimeType, data })
       },
       async onDone(usage) {
-        // Fallback cost calculation if API didn't return cost
         if (usage.costUsd == null) {
           const computed = calculateModelCost(aiStore.providers, providerId, modelId, usage.inputTokens, usage.outputTokens)
           if (computed != null) usage.costUsd = computed
         }
         msg.variants![vi].usage = { ...usage, durationMs: Date.now() - startedAt }
-        streamingConvIds.delete(conv.id)
-        _abortControllers.delete(conv.id)
-        if (activeConvId.value === conv.id) streamingVariantMsgId.value = null
+        cleanupVariant()
         conv.updatedAt = new Date().toISOString()
         await saveConversation(conv)
         await loadList()
@@ -1096,9 +1126,7 @@ export const useChatStore = defineStore('chat', () => {
       async onError(err) {
         msg.variants![vi].content = `Error: ${err}`
         msg.variants![vi].error   = true
-        streamingConvIds.delete(conv.id)
-        _abortControllers.delete(conv.id)
-        if (activeConvId.value === conv.id) streamingVariantMsgId.value = null
+        cleanupVariant()
         await saveConversation(conv)
         await loadList()
       },
@@ -1140,9 +1168,7 @@ export const useChatStore = defineStore('chat', () => {
       if ((e as Error).name !== 'AbortError') {
         handler.onError(e instanceof Error ? e.message : String(e))
       } else {
-        streamingConvIds.delete(conv.id)
-        _abortControllers.delete(conv.id)
-        if (activeConvId.value === conv.id) streamingVariantMsgId.value = null
+        cleanupVariant()
       }
     }
   }
@@ -1200,10 +1226,18 @@ export const useChatStore = defineStore('chat', () => {
     const msg = activeConv.value.messages.find(m => m.id === messageId)
     if (!msg) return
     const idx = msg.activeVariantIdx ?? 0
-    if (idx === 0) {
-      msg.feedback = feedback
-    } else if (msg.variants && msg.variants[idx - 1]) {
-      msg.variants[idx - 1].feedback = feedback
+    setVariantFeedbackBySlot(messageId, idx, feedback)
+  }
+
+  // Set feedback for an explicit slot index (0 = main, 1+ = variants[idx-1])
+  function setVariantFeedbackBySlot(messageId: string, slotIdx: number, feedback: 'positive' | 'negative' | null) {
+    if (!activeConv.value) return
+    const msg = activeConv.value.messages.find(m => m.id === messageId)
+    if (!msg) return
+    if (slotIdx === 0) {
+      msg.feedback = feedback ?? undefined
+    } else if (msg.variants && msg.variants[slotIdx - 1]) {
+      msg.variants[slotIdx - 1].feedback = feedback ?? undefined
     }
     saveConversation(activeConv.value)
   }
@@ -1335,7 +1369,9 @@ export const useChatStore = defineStore('chat', () => {
     togglePin, renameConversation, streamingText, streamingReasoning, streamingMsgId,
     clearContext, removeContextCutoff,
     useReasoning, reasoningLevel, setReasoning, setReasoningLevel,
-    regenerateWithModel, setActiveVariant, deleteVariant, streamingVariantMsgId, setMessageFeedback,
+    regenerateWithModel, setActiveVariant, deleteVariant, streamingVariantMsgIds,
+    setMessageFeedback, setVariantFeedbackBySlot,
+    secondProviderId, secondModelId: secondModelId_, setSecondModel,
   }
 })
 

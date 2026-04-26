@@ -3,7 +3,7 @@ import {
   ref, computed, watch, nextTick, onMounted, onUnmounted,
 } from 'vue'
 import {
-  Send, Square, Paperclip, MessageSquare, X, FileText, Eraser, SquarePen, Brain,
+  Send, Square, Paperclip, MessageSquare, X, FileText, Eraser, SquarePen, Brain, Plus, Check,
 } from 'lucide-vue-next'
 import { useChatStore }         from '../../stores/chat'
 import { useAssistantsStore }   from '../../stores/assistants'
@@ -273,6 +273,39 @@ function handleReasoningOutside(e: MouseEvent) {
 
 onMounted(()  => document.addEventListener('mousedown', handleReasoningOutside))
 onUnmounted(() => document.removeEventListener('mousedown', handleReasoningOutside))
+
+// ─── Second model selector ────────────────────────────────────────────────────
+
+const configuredProviders = computed(() => aiSettings.configuredProviders())
+
+const secondProvider = computed(() =>
+  chat.secondProviderId ? aiSettings.providers.find(p => p.id === chat.secondProviderId) : null
+)
+const secondModel = computed(() =>
+  secondProvider.value?.models.find(m => m.id === chat.secondModelId) ?? null
+)
+
+const secondModelOpen = ref(false)
+const secondModelRoot = ref<HTMLElement>()
+
+function selectSecondModel(providerId: string, modelId: string) {
+  chat.setSecondModel(providerId, modelId)
+  secondModelOpen.value = false
+}
+
+function clearSecondModel() {
+  chat.setSecondModel(null, null)
+  secondModelOpen.value = false
+}
+
+function handleSecondModelOutside(e: MouseEvent) {
+  if (secondModelRoot.value && !secondModelRoot.value.contains(e.target as Node)) {
+    secondModelOpen.value = false
+  }
+}
+
+onMounted(()  => document.addEventListener('mousedown', handleSecondModelOutside))
+onUnmounted(() => document.removeEventListener('mousedown', handleSecondModelOutside))
 </script>
 
 <template>
@@ -303,6 +336,57 @@ onUnmounted(() => document.removeEventListener('mousedown', handleReasoningOutsi
             <span class="badge-dot" :style="{ background: activeAssistant.color }" />
             {{ activeAssistant.name }}
           </span>
+
+          <!-- Second model selector -->
+          <div ref="secondModelRoot" class="second-model-sel">
+            <button
+              v-if="!chat.secondProviderId"
+              class="second-model-add-btn"
+              title="添加对比模型（同时生成，横向对比）"
+              @click="secondModelOpen = !secondModelOpen"
+            >
+              <Plus :size="11" />
+              <span>对比</span>
+            </button>
+            <div v-else class="second-model-set-btn">
+              <button class="second-model-label" @click="secondModelOpen = !secondModelOpen">
+                <span class="sm-provider">{{ secondProvider?.name }}</span>
+                <span class="sm-sep">·</span>
+                <span class="sm-model">{{ secondModel?.name ?? '…' }}</span>
+              </button>
+              <button class="second-model-clear" title="取消对比模型" @click="clearSecondModel()">
+                <X :size="10" />
+              </button>
+            </div>
+            <Transition name="sm-drop">
+              <div v-if="secondModelOpen" class="second-model-dropdown">
+                <div v-if="configuredProviders.length === 0" class="sm-no-providers">
+                  请先在设置中添加 API Key
+                </div>
+                <template v-else>
+                  <div v-for="p in configuredProviders" :key="p.id" class="sm-provider-group">
+                    <div class="sm-group-label">{{ p.name }}</div>
+                    <button
+                      v-for="m in p.models"
+                      :key="m.id"
+                      class="sm-model-item"
+                      :class="{ active: chat.secondProviderId === p.id && chat.secondModelId === m.id }"
+                      @click="selectSecondModel(p.id, m.id)"
+                    >
+                      <Check
+                        v-if="chat.secondProviderId === p.id && chat.secondModelId === m.id"
+                        :size="10"
+                        class="sm-check"
+                      />
+                      <span v-else class="sm-check-ph" />
+                      {{ m.name }}
+                    </button>
+                  </div>
+                </template>
+              </div>
+            </Transition>
+          </div>
+
           <ModelSelector drop-down @select="onModelSelect" />
         </div>
       </div>
@@ -1000,5 +1084,154 @@ onUnmounted(() => document.removeEventListener('mousedown', handleReasoningOutsi
 .reasoning-drop-enter-from, .reasoning-drop-leave-to {
   opacity: 0;
   transform: translateY(4px);
+}
+
+/* ─── Second model selector ─────────────────────────────────────────────────── */
+.second-model-sel {
+  position: relative;
+}
+
+.second-model-add-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  background: transparent;
+  border: 1px dashed rgba(0, 0, 0, 0.22);
+  border-radius: 7px;
+  font-size: 11px;
+  color: #8e8e93;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.second-model-add-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: #3c3c43;
+  border-color: rgba(0, 0, 0, 0.30);
+}
+
+.second-model-set-btn {
+  display: flex;
+  align-items: center;
+  background: rgba(34, 63, 121, 0.07);
+  border: 1px solid rgba(34, 63, 121, 0.20);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.second-model-label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 6px 4px 9px;
+  background: transparent;
+  border: none;
+  font-size: 11px;
+  color: #223F79;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.second-model-label:hover { background: rgba(34, 63, 121, 0.06); }
+
+.sm-provider { font-weight: 600; }
+.sm-sep { color: rgba(34, 63, 121, 0.40); }
+.sm-model {
+  color: rgba(34, 63, 121, 0.80);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 110px;
+  white-space: nowrap;
+}
+
+.second-model-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 7px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid rgba(34, 63, 121, 0.15);
+  color: rgba(34, 63, 121, 0.50);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.second-model-clear:hover {
+  background: rgba(34, 63, 121, 0.10);
+  color: #223F79;
+}
+
+.second-model-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 200px;
+  max-height: 280px;
+  overflow-y: auto;
+  background: rgba(250, 250, 252, 0.97);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 11px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  padding: 5px;
+  z-index: 200;
+}
+
+.second-model-dropdown::-webkit-scrollbar { width: 3px; }
+.second-model-dropdown::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.10); border-radius: 2px; }
+
+.sm-no-providers {
+  padding: 10px;
+  font-size: 12px;
+  color: #8e8e93;
+  text-align: center;
+}
+
+.sm-provider-group { margin-bottom: 3px; }
+
+.sm-group-label {
+  padding: 4px 8px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #8e8e93;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.sm-model-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #1c1c1e;
+  text-align: left;
+  transition: background 0.10s;
+}
+
+.sm-model-item:hover { background: rgba(0, 0, 0, 0.05); }
+
+.sm-model-item.active {
+  background: rgba(34, 63, 121, 0.08);
+  color: #223F79;
+}
+
+.sm-check { color: #223F79; flex-shrink: 0; }
+.sm-check-ph { width: 10px; flex-shrink: 0; }
+
+.sm-drop-enter-active, .sm-drop-leave-active {
+  transition: opacity 0.12s, transform 0.12s;
+}
+.sm-drop-enter-from, .sm-drop-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 </style>

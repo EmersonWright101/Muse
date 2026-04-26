@@ -9,13 +9,21 @@ export default defineConfig(async () => ({
   plugins: [vue()],
 
   build: {
+    chunkSizeWarningLimit: 800,
     rollupOptions: {
       output: {
         manualChunks: {
           'vendor-vue':    ['vue', 'vue-router', 'pinia', 'vue-i18n'],
           'vendor-tauri':  ['@tauri-apps/api', '@tauri-apps/plugin-fs', '@tauri-apps/plugin-http', '@tauri-apps/plugin-opener', '@tauri-apps/plugin-updater', '@tauri-apps/plugin-process'],
           'vendor-render': ['marked', 'dompurify'],
+          'vendor-hljs':   ['highlight.js'],
           'vendor-pdf':    ['pdfjs-dist'],
+          'vendor-tiptap': [
+            '@tiptap/vue-3', '@tiptap/starter-kit', '@tiptap/extension-code-block',
+            '@tiptap/extension-image', 'tiptap-markdown',
+          ],
+          'vendor-leaflet': ['leaflet'],
+          'vendor-md':      ['markdown-it'],
         },
       },
     },

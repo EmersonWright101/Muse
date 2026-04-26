@@ -1,13 +1,50 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { computed, onMounted } from 'vue';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+import { X } from 'lucide-vue-next';
 import { updateStore, initUpdateStore, checkForUpdates, startUpdate } from '../../../stores/update';
 
 onMounted(() => {
   initUpdateStore();
 });
+
+const renderedNotes = computed(() => {
+  if (!updateStore.releaseNotes) return '';
+  try {
+    const raw = marked.parse(updateStore.releaseNotes) as string;
+    return DOMPurify.sanitize(raw);
+  } catch {
+    return updateStore.releaseNotes;
+  }
+});
 </script>
 
 <template>
+  <!-- Release Notes Modal -->
+  <Teleport to="body">
+    <div v-if="updateStore.showReleaseNotes" class="rn-overlay" @click.self="updateStore.showReleaseNotes = false">
+      <div class="rn-modal">
+        <div class="rn-header">
+          <div class="rn-title-wrap">
+            <span class="rn-badge">v{{ updateStore.newVersion }}</span>
+            <h2 class="rn-title">更新内容</h2>
+          </div>
+          <button class="rn-close" @click="updateStore.showReleaseNotes = false">
+            <X :size="16" />
+          </button>
+        </div>
+        <div class="rn-body markdown-body" v-html="renderedNotes" />
+        <div class="rn-footer">
+          <button class="rn-dismiss" @click="updateStore.showReleaseNotes = false">稍后</button>
+          <button class="rn-install" @click="startUpdate(); updateStore.showReleaseNotes = false">
+            立即更新
+          </button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
   <div class="about-settings">
     <div class="app-hero">
       <div class="app-logo">
@@ -88,9 +125,16 @@ onMounted(() => {
         </button>
 
         <!-- 有更新 -->
-        <button v-else-if="updateStore.state === 'available'" class="btn-update" @click="startUpdate">
-          立即更新到 {{ updateStore.newVersion }}
-        </button>
+        <template v-else-if="updateStore.state === 'available'">
+          <button
+            v-if="updateStore.releaseNotes"
+            class="btn-notes"
+            @click="updateStore.showReleaseNotes = true"
+          >查看更新内容</button>
+          <button class="btn-update" @click="startUpdate">
+            立即更新到 {{ updateStore.newVersion }}
+          </button>
+        </template>
 
         <!-- 默认/空闲/错误 -->
         <button v-else class="btn-check" @click="checkForUpdates(true)">
@@ -250,10 +294,17 @@ onMounted(() => {
   margin: 0;
 }
 
-.update-actions { margin-top: 2px; }
+.update-actions {
+  margin-top: 2px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
 
 .btn-check,
-.btn-update {
+.btn-update,
+.btn-notes {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -279,6 +330,13 @@ onMounted(() => {
 }
 
 .btn-update:hover { opacity: 0.88; }
+
+.btn-notes {
+  background: rgba(34, 63, 121, 0.08);
+  color: #223F79;
+}
+
+.btn-notes:hover { background: rgba(34, 63, 121, 0.14); }
 
 .latest-tip {
   display: inline-flex;
@@ -315,4 +373,151 @@ onMounted(() => {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.5; transform: scale(0.85); }
 }
+
+/* ─── Release Notes Modal ─────────────────────────────────────────────────── */
+.rn-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.rn-modal {
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22);
+  width: 100%;
+  max-width: 540px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.rn-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+  flex-shrink: 0;
+}
+
+.rn-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rn-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #223F79, #3a5fa0);
+  border-radius: 6px;
+  padding: 2px 8px;
+  letter-spacing: 0.2px;
+}
+
+.rn-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1c1c1e;
+  margin: 0;
+}
+
+.rn-close {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+  color: #3c3c43;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s;
+  flex-shrink: 0;
+}
+
+.rn-close:hover { background: rgba(0, 0, 0, 0.12); }
+
+.rn-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #3c3c43;
+  min-height: 0;
+}
+
+.rn-body::-webkit-scrollbar { width: 4px; }
+.rn-body::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.10); border-radius: 2px; }
+
+.rn-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px 18px;
+  border-top: 1px solid rgba(0, 0, 0, 0.07);
+  flex-shrink: 0;
+}
+
+.rn-dismiss {
+  padding: 7px 16px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(0, 0, 0, 0.06);
+  color: #3c3c43;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.rn-dismiss:hover { background: rgba(0, 0, 0, 0.10); }
+
+.rn-install {
+  padding: 7px 18px;
+  border-radius: 8px;
+  border: none;
+  background: linear-gradient(135deg, #223F79, #3a5fa0);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+
+.rn-install:hover { opacity: 0.88; }
+</style>
+
+<!-- markdown content styles (not scoped — apply to v-html) -->
+<style>
+.rn-body.markdown-body p { margin: 0 0 8px; }
+.rn-body.markdown-body p:last-child { margin-bottom: 0; }
+.rn-body.markdown-body h1,
+.rn-body.markdown-body h2,
+.rn-body.markdown-body h3 { font-size: 14px; font-weight: 600; color: #1c1c1e; margin: 14px 0 6px; }
+.rn-body.markdown-body ul,
+.rn-body.markdown-body ol { padding-left: 1.4em; margin: 6px 0; }
+.rn-body.markdown-body li { margin: 3px 0; }
+.rn-body.markdown-body code {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 0.88em;
+  color: #c7254e;
+}
+.rn-body.markdown-body a { color: #223F79; }
+.rn-body.markdown-body hr { border: none; border-top: 1px solid rgba(0,0,0,0.10); margin: 10px 0; }
 </style>

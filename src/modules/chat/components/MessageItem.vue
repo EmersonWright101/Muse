@@ -60,7 +60,7 @@ hljs.registerLanguage('rb', ruby)
 hljs.registerLanguage('php', php)
 hljs.registerLanguage('r', r)
 import DOMPurify from 'dompurify'
-import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Maximize2, Minimize2, Bot, AtSign, Download, Clock, ThumbsUp, ThumbsDown, Trash2 } from 'lucide-vue-next'
+import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Maximize2, Minimize2, Bot, AtSign, Download, Clock, ThumbsUp, ThumbsDown, Trash2, Rows3, Columns2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import type { ChatMessage } from '../../../stores/chat'
 import { useChatStore } from '../../../stores/chat'
@@ -75,6 +75,7 @@ const { t } = useI18n()
 // ─── Copy + edit ─────────────────────────────────────────────────────────────
 
 const copyDone  = ref(false)
+const copyDoneSlot = ref<number | null>(null)
 const isEditing = ref(false)
 const editText  = ref('')
 
@@ -82,6 +83,13 @@ async function copyContent() {
   await navigator.clipboard.writeText(props.message.content).catch(() => {})
   copyDone.value = true
   setTimeout(() => { copyDone.value = false }, 2000)
+}
+
+async function copySlotContent(msg: typeof props.message, idx: number) {
+  const text = slotContent(msg, idx)
+  await navigator.clipboard.writeText(text).catch(() => {})
+  copyDoneSlot.value = idx
+  setTimeout(() => { copyDoneSlot.value = null }, 2000)
 }
 
 function startEdit() {
@@ -263,6 +271,47 @@ const modelDisplayName = computed(() => {
   const slash = raw.indexOf('/')
   return slash > 0 ? raw.slice(slash + 1) : raw
 })
+
+// ─── Layout mode (tab | horizontal) ──────────────────────────────────────────
+// Persisted globally in localStorage so all messages share the same preference.
+
+const LAYOUT_LS_KEY = 'muse-variant-layout'
+const variantLayout = ref<'tab' | 'horizontal'>(
+  (localStorage.getItem(LAYOUT_LS_KEY) as 'tab' | 'horizontal') ?? 'tab'
+)
+
+function toggleLayout() {
+  variantLayout.value = variantLayout.value === 'tab' ? 'horizontal' : 'tab'
+  localStorage.setItem(LAYOUT_LS_KEY, variantLayout.value)
+}
+
+// Per-slot streaming detection
+function isSlotStreaming(msgId: string, slotIdx: number): boolean {
+  if (slotIdx === 0) return chat.streamingMsgId === msgId
+  return chat.streamingVariantMsgIds.has(msgId)
+}
+
+// Per-slot feedback getter/setter for horizontal mode
+function slotFeedback(msg: typeof props.message, slotIdx: number): 'positive' | 'negative' | null {
+  if (slotIdx === 0) return msg.feedback ?? null
+  return msg.variants?.[slotIdx - 1]?.feedback ?? null
+}
+
+function setSlotFeedback(msgId: string, slotIdx: number, fb: 'positive' | 'negative' | null) {
+  chat.setVariantFeedbackBySlot(msgId, slotIdx, fb)
+}
+
+function slotContent(msg: typeof props.message, slotIdx: number): string {
+  return slotIdx === 0 ? (msg.content ?? '') : (msg.variants?.[slotIdx - 1]?.content ?? '')
+}
+
+function slotUsage(msg: typeof props.message, slotIdx: number) {
+  return slotIdx === 0 ? msg.usage : msg.variants?.[slotIdx - 1]?.usage
+}
+
+function slotError(msg: typeof props.message, slotIdx: number): boolean {
+  return slotIdx === 0 ? !!msg.error : !!(msg.variants?.[slotIdx - 1]?.error)
+}
 
 // ─── @ Model picker ───────────────────────────────────────────────────────────
 
@@ -480,8 +529,11 @@ function showSaveToast(msg: string) {
         <span v-else class="user-text">{{ message.content }}</span>
       </div>
 
-      <!-- Reasoning block (collapsible) -->
-      <div v-if="!isUser && displayedReasoning" class="reasoning-block">
+      <!-- In horizontal compare mode, collapse main content (only compare strip is shown) -->
+      <template v-if="!isUser && allVariantSlots.length > 1 && variantLayout === 'horizontal'" />
+
+      <!-- Reasoning block (collapsible) — hidden in horizontal mode when multi-variant -->
+      <div v-if="!isUser && displayedReasoning && !(allVariantSlots.length > 1 && variantLayout === 'horizontal')" class="reasoning-block">
         <button
           class="reasoning-header"
           @click="reasoningView = reasoningView === 'collapsed' ? 'preview' : 'collapsed'"
@@ -505,8 +557,8 @@ function showSaveToast(msg: string) {
         </div>
       </div>
 
-      <!-- Assistant message: rendered markdown or inline edit -->
-      <template v-if="!isUser">
+      <!-- Assistant message: rendered markdown or inline edit (hidden in horizontal compare) -->
+      <template v-if="!isUser && !(allVariantSlots.length > 1 && variantLayout === 'horizontal')">
         <template v-if="isEditing">
           <textarea
             v-model="editText"
@@ -529,8 +581,8 @@ function showSaveToast(msg: string) {
         />
       </template>
 
-      <!-- Media outputs (images / videos returned by model) -->
-      <div v-if="!isUser && message.mediaOutputs?.length" class="media-outputs">
+      <!-- Media outputs — hidden in horizontal compare mode -->
+      <div v-if="!isUser && message.mediaOutputs?.length && !(allVariantSlots.length > 1 && variantLayout === 'horizontal')" class="media-outputs">
         <template v-for="(out, idx) in message.mediaOutputs" :key="idx">
           <div v-if="out.mimeType.startsWith('image/')" class="media-img-wrap">
             <img
@@ -564,8 +616,8 @@ function showSaveToast(msg: string) {
         </template>
       </div>
 
-      <!-- Footer: action buttons left, usage stats right -->
-      <div v-if="!isEditing" class="msg-footer">
+      <!-- Footer: action buttons left, usage stats right (hidden in horizontal mode) -->
+      <div v-if="!isEditing && !(allVariantSlots.length > 1 && variantLayout === 'horizontal')" class="msg-footer">
         <div class="msg-actions">
           <button class="action-btn" :class="{ done: copyDone }" title="复制" @click="copyContent">
             <Check v-if="copyDone" :size="13" />
@@ -635,8 +687,88 @@ function showSaveToast(msg: string) {
         </div>
       </div>
 
-      <!-- Variant switcher: shown when there are multiple model responses -->
-      <div v-if="!isUser && allVariantSlots.length > 1" class="variant-switcher">
+      <!-- Horizontal compare view -->
+      <div v-if="!isUser && allVariantSlots.length > 1 && variantLayout === 'horizontal'" class="compare-strip">
+        <div class="compare-cols">
+        <div
+          v-for="(slot, idx) in allVariantSlots"
+          :key="idx"
+          class="compare-col"
+          :class="{ 'compare-col-streaming': isSlotStreaming(message.id, idx) }"
+          @contextmenu.prevent="openVariantMenu($event, idx)"
+        >
+          <!-- Column header -->
+          <div class="compare-col-header">
+            <img
+              v-if="lookupLogoUrl(slot.model, slot.providerId)"
+              :src="lookupLogoUrl(slot.model, slot.providerId)!"
+              class="compare-logo"
+              alt=""
+            />
+            <span v-else class="compare-letter">{{ slot.model.charAt(0).toUpperCase() }}</span>
+            <span class="compare-model-name">{{ slot.model.includes('/') ? slot.model.split('/').at(-1) : slot.model }}</span>
+            <span v-if="isSlotStreaming(message.id, idx)" class="compare-streaming-dot" />
+          </div>
+
+          <!-- Column content -->
+          <div
+            class="compare-content markdown-body"
+            :class="{ error: slotError(message, idx), streaming: isSlotStreaming(message.id, idx) }"
+            v-html="renderMarkdown(slotContent(message, idx))"
+          />
+
+          <!-- Column footer: feedback + usage -->
+          <div class="compare-footer">
+            <div class="compare-feedback">
+              <button
+                class="action-btn"
+                :class="{ done: copyDoneSlot === idx }"
+                title="复制"
+                @click.stop="copySlotContent(message, idx)"
+              >
+                <Check v-if="copyDoneSlot === idx" :size="12" />
+                <Copy v-else :size="12" />
+              </button>
+              <button
+                class="action-btn"
+                :class="{ positive: slotFeedback(message, idx) === 'positive' }"
+                :title="t('chat.feedbackPositive')"
+                @click.stop="setSlotFeedback(message.id, idx, slotFeedback(message, idx) === 'positive' ? null : 'positive')"
+              >
+                <ThumbsUp :size="12" />
+              </button>
+              <button
+                class="action-btn"
+                :class="{ negative: slotFeedback(message, idx) === 'negative' }"
+                :title="t('chat.feedbackNegative')"
+                @click.stop="setSlotFeedback(message.id, idx, slotFeedback(message, idx) === 'negative' ? null : 'negative')"
+              >
+                <ThumbsDown :size="12" />
+              </button>
+            </div>
+            <div class="compare-usage">
+              <span v-if="slotUsage(message, idx)?.inputTokens != null">↑{{ slotUsage(message, idx)!.inputTokens }}</span>
+              <span v-if="slotUsage(message, idx)?.outputTokens != null">↓{{ slotUsage(message, idx)!.outputTokens }}</span>
+              <span v-if="slotUsage(message, idx)?.tokensPerSecond != null">{{ slotUsage(message, idx)!.tokensPerSecond }} t/s</span>
+              <span
+                v-else-if="slotUsage(message, idx)?.outputTokens != null && slotUsage(message, idx)?.durationMs != null && slotUsage(message, idx)!.durationMs! > 0"
+              >{{ Math.round(((slotUsage(message, idx)!.outputTokens ?? 0)) / (slotUsage(message, idx)!.durationMs! / 1000)) }} t/s</span>
+              <span v-if="slotUsage(message, idx)?.durationMs != null" class="msg-duration">
+                <Clock :size="9" />{{ (slotUsage(message, idx)!.durationMs! / 1000).toFixed(1) }}s
+              </span>
+              <span v-if="slotUsage(message, idx)?.costUsd != null">${{ slotUsage(message, idx)!.costUsd!.toFixed(4) }}</span>
+            </div>
+          </div>
+        </div>
+        </div>
+      </div>
+
+      <!-- Variant controls: layout toggle + model tabs (shown in both tab and horizontal mode) -->
+      <div v-if="!isUser && allVariantSlots.length > 1" class="variant-bar">
+        <button class="layout-toggle-btn" :title="variantLayout === 'tab' ? '切换为横向对比视图' : '切换为标签页视图'" @click="toggleLayout">
+          <Columns2 v-if="variantLayout === 'tab'" :size="13" />
+          <Rows3 v-else :size="13" />
+        </button>
         <div
           v-for="(slot, idx) in allVariantSlots"
           :key="idx"
@@ -645,10 +777,10 @@ function showSaveToast(msg: string) {
           <button
             class="variant-btn"
             :class="{
-              active: activeVariantIdx === idx,
-              streaming: chat.streamingVariantMsgId === message.id && activeVariantIdx === idx && idx > 0
+              active: variantLayout === 'tab' && activeVariantIdx === idx,
+              streaming: isSlotStreaming(message.id, idx)
             }"
-            @click="chat.setActiveVariant(message.id, idx)"
+            @click="variantLayout === 'tab' ? chat.setActiveVariant(message.id, idx) : null"
             @contextmenu.prevent="openVariantMenu($event, idx)"
           >
             <img
@@ -951,7 +1083,167 @@ function showSaveToast(msg: string) {
 .picker-pop-enter-active, .picker-pop-leave-active { transition: opacity 0.12s, transform 0.12s; }
 .picker-pop-enter-from, .picker-pop-leave-to { opacity: 0; transform: translateY(4px); }
 
-/* ─── Variant switcher ──────────────────────────────────────────────────────── */
+/* ─── Variant bar (layout toggle + tab switcher) ────────────────────────────── */
+.variant-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.layout-toggle-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  background: transparent;
+  color: #8e8e93;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+
+.layout-toggle-btn:hover { background: rgba(0,0,0,0.06); color: #3c3c43; }
+
+/* ─── Horizontal compare strip ───────────────────────────────────────────────── */
+.compare-strip {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.09);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+
+.compare-cols {
+  display: flex;
+  overflow-x: auto;
+  overflow-y: visible;
+  scrollbar-width: thin;
+}
+
+.compare-cols::-webkit-scrollbar { height: 4px; }
+.compare-cols::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.10); border-radius: 2px; }
+
+.compare-col {
+  min-width: 320px;
+  max-width: 460px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid rgba(0, 0, 0, 0.07);
+  transition: background 0.12s;
+}
+
+.compare-col:last-child { border-right: none; }
+
+.compare-col-streaming { background: rgba(34, 63, 121, 0.02); }
+
+.compare-col-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  flex-shrink: 0;
+  background: rgba(0, 0, 0, 0.015);
+}
+
+.compare-logo {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.compare-letter {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: rgba(0,0,0,0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #8e8e93;
+  flex-shrink: 0;
+}
+
+.compare-model-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #3c3c43;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compare-streaming-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #223F79;
+  flex-shrink: 0;
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.compare-content {
+  flex: 1;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #1c1c1e;
+  word-break: break-word;
+  min-height: 60px;
+}
+
+.compare-content.error { color: #ff3b30; }
+.compare-content.streaming::after {
+  content: '▋';
+  display: inline-block;
+  animation: blink 0.7s step-end infinite;
+  color: #223F79;
+  margin-left: 2px;
+}
+
+.compare-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  flex-shrink: 0;
+}
+
+.compare-feedback {
+  display: flex;
+  gap: 2px;
+}
+
+.compare-usage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: #aeaeb2;
+}
+
+/* ─── Variant switcher (tab mode) ────────────────────────────────────────────── */
 .variant-switcher {
   display: flex;
   gap: 4px;

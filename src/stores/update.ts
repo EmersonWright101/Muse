@@ -9,9 +9,11 @@ export const updateStore = reactive({
   hasUpdate: false,
   version: '',
   newVersion: '',
+  releaseNotes: '',
   downloadProgress: 0,
   errorMsg: '',
   showLatestFeedback: false,
+  showReleaseNotes: false,
 });
 
 const updateManifest = shallowRef<Update | null>(null);
@@ -39,8 +41,12 @@ export const checkForUpdates = async (manual: boolean) => {
     if (update) {
       updateStore.hasUpdate = true;
       updateStore.newVersion = update.version;
+      updateStore.releaseNotes = update.body ?? '';
       updateManifest.value = update;
       updateStore.state = 'available';
+      if (manual && updateStore.releaseNotes) {
+        updateStore.showReleaseNotes = true;
+      }
     } else {
       updateStore.hasUpdate = false;
       updateStore.state = 'idle';

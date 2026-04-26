@@ -116,16 +116,18 @@ export const useSyncStore = defineStore('sync', () => {
         return
       }
 
-      // Flush any pending debounced AI settings persist before recording syncedAt
-      // so the local timestamp is guaranteed to be written before we snapshot it.
+      // Flush any pending debounced AI settings persist BEFORE snapshotting syncedAt.
+      // saveToStorage() sets LS_MODIFIED_AT_KEY; computing syncedAt afterwards guarantees
+      // syncedAt >= localTs so localChanged stays false on the next sync cycle.
       await useAiSettingsStore().flush()
+      const syncedAt = new Date().toISOString()
 
-      syncService.saveSyncRecord({ syncedAt: result.syncedAt, remoteTs: result.remoteTs })
+      syncService.saveSyncRecord({ syncedAt, remoteTs: result.remoteTs })
 
       status.state = 'success'
-      status.lastSyncAt = result.syncedAt
+      status.lastSyncAt = syncedAt
       status.progress = ''
-      localStorage.setItem('muse-webdav-last-at', result.syncedAt)
+      localStorage.setItem('muse-webdav-last-at', syncedAt)
 
       // Notify synced modules so they can refresh UI
       for (const mod of syncService.getModules()) {

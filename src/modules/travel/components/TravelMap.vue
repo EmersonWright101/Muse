@@ -116,7 +116,7 @@ function buildTooltipHtml(note: TravelNoteMeta): string {
 function buildClusterTooltip(notes: TravelNoteMeta[]): string {
   if (notes.length === 1) return buildTooltipHtml(notes[0])
   const items = notes.map(n => `
-    <div class="tt-cluster-item">
+    <div class="tt-cluster-item" data-id="${n.id}">
       <div class="tt-cluster-cover">${buildCoverHtml(n.cover)}</div>
       <span class="tt-cluster-title">${n.title}</span>
     </div>
@@ -201,7 +201,10 @@ function rebuildMarkers() {
       el.style.cursor = 'pointer'
       el.onmouseenter = () => _clearTipTimer()
       el.onmouseleave = () => _scheduleTipClose(marker, 300)
-      el.onclick = () => emit('select', firstId)
+      el.onclick = (e: MouseEvent) => {
+        const item = (e.target as Element).closest('[data-id]')
+        emit('select', item?.getAttribute('data-id') ?? firstId)
+      }
     })
 
     marker.on('click', () => emit('select', firstId))

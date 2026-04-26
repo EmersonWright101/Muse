@@ -626,7 +626,7 @@ function showSaveToast(msg: string) {
           <button v-if="!streaming" class="action-btn" title="编辑" @click="startEdit">
             <Pencil :size="13" />
           </button>
-          <button v-if="!isUser && !streaming" class="action-btn" title="重新生成" @click="chat.regenerate(message.id)">
+          <button v-if="!isUser && !streaming" class="action-btn" title="重新生成" @click="chat.regenerate(message.id, activeVariantIdx)">
             <RefreshCw :size="13" />
           </button>
           <!-- @ button: pick another model to answer -->

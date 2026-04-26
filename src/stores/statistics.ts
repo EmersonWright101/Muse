@@ -340,6 +340,9 @@ export const useStatisticsStore = defineStore('statistics', () => {
     return filteredSortedModelStats.value.map((m, idx) => ({ ...m, rank: idx + 1 }))
   })
 
+  const filteredTotalCost = computed(() => filteredModelStats.value.reduce((s, m) => s + m.cost, 0))
+  const filteredTotalRequests = computed(() => filteredModelStats.value.reduce((s, m) => s + m.requests, 0))
+
   function aggregateConversation(conv: Conversation, meta: ConversationMeta): CachedConvStat {
     const modelMap = new Map<string, ModelStat>()
     const dailyMap = new Map<string, DailyStat>()
@@ -700,6 +703,8 @@ export const useStatisticsStore = defineStore('statistics', () => {
     filteredModelStats,
     filteredSortedModelStats,
     filteredRankedModels,
+    filteredTotalCost,
+    filteredTotalRequests,
     loadStats,
     setTimeRange,
     setSortBy,

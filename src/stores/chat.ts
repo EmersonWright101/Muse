@@ -790,7 +790,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // ─── Send message (with streaming) ─────────────────────────────────────
 
-  async function sendMessage(userContent: string, attachments?: AttachmentMeta[]) {
+  async function sendMessage(userContent: string, attachments?: AttachmentMeta[], skipSecondModel = false) {
     if (!userContent.trim() && !attachments?.length) return
 
     const aiStore = useAiSettingsStore()
@@ -960,7 +960,7 @@ export const useChatStore = defineStore('chat', () => {
     // Fire second model concurrently if configured (force=true bypasses streaming check)
     const pid2 = secondProviderId.value
     const mid2 = secondModelId_.value
-    if (pid2 && mid2 && (pid2 !== pid || mid2 !== mid)) {
+    if (!skipSecondModel && pid2 && mid2 && (pid2 !== pid || mid2 !== mid)) {
       const p2 = aiStore.providers.find(p => p.id === pid2)
       if (p2 && (p2.apiKey || p2.type === 'ollama')) {
         regenerateWithModel(assistantMsg.id, pid2, mid2, true).catch(() => {})
@@ -1039,20 +1039,29 @@ export const useChatStore = defineStore('chat', () => {
     await saveConversation(conv)
   }
 
-  async function regenerate(messageId: string) {
+  async function regenerate(messageId: string, slotIdx = 0) {
     if (!activeConv.value || isStreaming.value) return
     const conv = activeConv.value
     const idx  = conv.messages.findIndex(m => m.id === messageId)
     if (idx < 0) return
-    // Remove this assistant message and everything after it
+    const msg = conv.messages[idx]
+
+    // If regenerating a specific variant slot, only re-generate that model.
+    if (slotIdx > 0 && msg.variants && slotIdx <= msg.variants.length) {
+      const variant = msg.variants[slotIdx - 1]
+      // Reset the variant content so it streams fresh
+      msg.variants[slotIdx - 1] = { id: newId(), content: '', model: variant.model, providerId: variant.providerId }
+      await regenerateWithModel(messageId, variant.providerId, variant.model, true)
+      return
+    }
+
+    // Primary slot (slot 0): remove this message and re-send to primary model only.
     conv.messages.splice(idx)
-    // Find the last user message to use as the prompt
     const lastUser = [...conv.messages].reverse().find(m => m.role === 'user')
     if (!lastUser) return
-    // Remove the last user message too, then re-send it
     const userIdx = conv.messages.lastIndexOf(lastUser)
     conv.messages.splice(userIdx)
-    await sendMessage(lastUser.content, lastUser.attachments)
+    await sendMessage(lastUser.content, lastUser.attachments, true)
   }
 
   // ─── Variant: regenerate with a different model ─────────────────────────

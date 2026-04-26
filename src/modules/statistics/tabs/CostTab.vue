@@ -58,11 +58,11 @@ const sortOptions: { key: SortBy; label: string; icon: typeof Wallet }[] = [
       <div class="cards-grid">
         <div class="mini-card accent">
           <div class="mini-label">总花费</div>
-          <div class="mini-value">{{ stats.formatCost(stats.totalCost) }}</div>
+          <div class="mini-value">{{ stats.formatCost(stats.filteredTotalCost) }}</div>
         </div>
         <div class="mini-card">
           <div class="mini-label">平均每次请求</div>
-          <div class="mini-value">{{ stats.formatCost(stats.totalCost / (stats.totalRequests || 1)) }}</div>
+          <div class="mini-value">{{ stats.formatCost(stats.filteredTotalCost / (stats.filteredTotalRequests || 1)) }}</div>
         </div>
       </div>
 

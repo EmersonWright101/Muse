@@ -439,7 +439,7 @@ const aiSyncModule: SyncModule = {
         id: p.id, name: p.name, type: p.type, builtIn: p.builtIn,
         apiKey: p.apiKey, baseUrl: p.baseUrl, enabled: p.enabled,
         selectedModelId: p.selectedModelId,
-        customModels: p.type === 'custom' ? p.models : undefined,
+        customModels: p.models,
         updatedAt: p.updatedAt ?? new Date(0).toISOString(),
       }
     }

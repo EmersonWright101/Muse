@@ -647,7 +647,6 @@ const monthColLabels = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  min-height: 100%;
 }
 
 .loading-state {
@@ -1153,6 +1152,7 @@ const monthColLabels = computed(() => {
   border-radius: 14px;
   padding: 20px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  overflow: visible;
 }
 
 /* ─── Time distribution col chart ──────────────────────────── */

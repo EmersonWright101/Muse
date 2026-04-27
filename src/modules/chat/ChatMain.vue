@@ -59,6 +59,38 @@ function isIMEActive() {
   return Date.now() - _compositionEndedAt < 100
 }
 
+// ─── Title editing ───────────────────────────────────────────────────────────
+
+const titleEditing  = ref(false)
+const titleDraft    = ref('')
+const titleInputEl  = ref<HTMLInputElement>()
+
+function startTitleEdit() {
+  if (!chat.activeConv) return
+  titleDraft.value   = chat.activeConv.title
+  titleEditing.value = true
+  nextTick(() => {
+    titleInputEl.value?.select()
+  })
+}
+
+function commitTitleEdit() {
+  const trimmed = titleDraft.value.trim()
+  if (trimmed && chat.activeConv) {
+    chat.renameConversation(chat.activeConv.id, trimmed)
+  }
+  titleEditing.value = false
+}
+
+function cancelTitleEdit() {
+  titleEditing.value = false
+}
+
+function onTitleKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter') { e.preventDefault(); commitTitleEdit() }
+  if (e.key === 'Escape') cancelTitleEdit()
+}
+
 // ─── Computed ─────────────────────────────────────────────────────────────────
 
 const hasConv    = computed(() => !!chat.activeConv)
@@ -350,7 +382,20 @@ onUnmounted(() => document.removeEventListener('mousedown', handleSecondModelOut
     <template v-else>
       <!-- Conv title bar -->
       <div class="conv-header">
-        <span class="conv-title">{{ chat.activeConv?.title }}</span>
+        <input
+          v-if="titleEditing"
+          ref="titleInputEl"
+          v-model="titleDraft"
+          class="conv-title-input"
+          @blur="commitTitleEdit"
+          @keydown="onTitleKeydown"
+        />
+        <span
+          v-else
+          class="conv-title"
+          title="双击编辑标题"
+          @dblclick="startTitleEdit"
+        >{{ chat.activeConv?.title }}</span>
         <div class="conv-meta">
           <span
             v-if="activeAssistant"
@@ -431,6 +476,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleSecondModelOut
             <MessageItem
               :message="msg"
               :streaming="chat.isStreaming && i === messages.length - 1 && msg.role === 'assistant'"
+              :web-search-results="msg.role === 'assistant' && i > 0 && messages[i - 1].role === 'user' ? messages[i - 1].webSearchResults : undefined"
             />
             <!-- Context cutoff divider appears after the cutoff message -->
             <div v-if="msg.id === chat.activeConv?.contextCutoffMsgId" class="context-divider">
@@ -693,6 +739,28 @@ onUnmounted(() => document.removeEventListener('mousedown', handleSecondModelOut
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  cursor: text;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  transition: background 0.1s;
+}
+
+.conv-title:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.conv-title-input {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1c1c1e;
+  border: 1px solid #223F79;
+  border-radius: 4px;
+  padding: 1px 6px;
+  outline: none;
+  background: #fff;
+  min-width: 0;
 }
 
 .conv-meta {

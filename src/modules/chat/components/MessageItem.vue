@@ -66,7 +66,9 @@ import type { ChatMessage } from '../../../stores/chat'
 import { useChatStore } from '../../../stores/chat'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
 
-const props = defineProps<{ message: ChatMessage; streaming?: boolean }>()
+import type { WebSearchResult } from '../../../utils/storage'
+
+const props = defineProps<{ message: ChatMessage; streaming?: boolean; webSearchResults?: WebSearchResult[] }>()
 
 const chat = useChatStore()
 const ai   = useAiSettingsStore()
@@ -607,31 +609,6 @@ function resultDomain(url: string): string {
         <span v-else class="user-text">{{ message.content }}</span>
       </div>
 
-      <!-- Web search results (user messages only) -->
-      <div v-if="isUser && message.webSearchResults?.length" class="search-sources-wrap">
-        <button class="search-sources-toggle" @click="searchResultsOpen = !searchResultsOpen">
-          <Globe :size="11" class="search-sources-globe" />
-          <span>{{ message.webSearchResults.length }} 条网络来源</span>
-          <ChevronDown :size="10" class="search-sources-chevron" :class="{ open: searchResultsOpen }" />
-        </button>
-        <Transition name="sources-drop">
-          <div v-if="searchResultsOpen" class="search-sources-list">
-            <a
-              v-for="(r, idx) in message.webSearchResults"
-              :key="idx"
-              class="search-source-item"
-              @click.prevent="openResultUrl(r.url)"
-            >
-              <span class="source-num">{{ idx + 1 }}</span>
-              <div class="source-info">
-                <span class="source-title">{{ r.title || resultDomain(r.url) }}</span>
-                <span class="source-domain">{{ resultDomain(r.url) }}</span>
-              </div>
-            </a>
-          </div>
-        </Transition>
-      </div>
-
       <!-- In horizontal compare mode, collapse main content (only compare strip is shown) -->
       <template v-if="!isUser && allVariantSlots.length > 1 && variantLayout === 'horizontal'" />
 
@@ -683,6 +660,31 @@ function resultDomain(url: string): string {
           @click="onMarkdownBodyClick"
         />
       </template>
+
+      <!-- Web search sources — shown at end of assistant answer -->
+      <div v-if="!isUser && webSearchResults?.length && !(allVariantSlots.length > 1 && variantLayout === 'horizontal')" class="search-sources-wrap assistant-sources">
+        <button class="search-sources-toggle" @click="searchResultsOpen = !searchResultsOpen">
+          <Globe :size="11" class="search-sources-globe" />
+          <span>{{ webSearchResults.length }} 条网络来源</span>
+          <ChevronDown :size="10" class="search-sources-chevron" :class="{ open: searchResultsOpen }" />
+        </button>
+        <Transition name="sources-drop">
+          <div v-if="searchResultsOpen" class="search-sources-list">
+            <a
+              v-for="(r, idx) in webSearchResults"
+              :key="idx"
+              class="search-source-item"
+              @click.prevent="openResultUrl(r.url)"
+            >
+              <span class="source-num">{{ idx + 1 }}</span>
+              <div class="source-info">
+                <span class="source-title">{{ r.title || resultDomain(r.url) }}</span>
+                <span class="source-domain">{{ resultDomain(r.url) }}</span>
+              </div>
+            </a>
+          </div>
+        </Transition>
+      </div>
 
       <!-- Media outputs — hidden in horizontal compare mode (shown per-column there instead) -->
       <div v-if="!isUser && displayedMediaOutputs?.length && !(allVariantSlots.length > 1 && variantLayout === 'horizontal')" class="media-outputs">
@@ -2099,9 +2101,11 @@ details[open] .compare-reasoning-summary::before { content: '▼ '; }
 
 /* ─── Web search sources ─────────────────────────────────────────────────────── */
 .search-sources-wrap {
-  align-self: flex-end;
   margin-top: 4px;
-  max-width: 76%;
+}
+
+.assistant-sources {
+  align-self: flex-start;
 }
 
 .search-sources-toggle {

@@ -10,7 +10,6 @@ const router = createRouter({
     {
       path: '/home',
       components: {
-        sidebar: () => import('../modules/home/HomeSidebar.vue'),
         main: () => import('../modules/home/HomeMain.vue'),
       },
     },

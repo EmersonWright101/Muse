@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useHomeStore, type AnimalPoster } from '../../stores/home'
 import { useI18n } from 'vue-i18n'
-import { Sparkles, Settings, Trash2, X, ZoomIn } from 'lucide-vue-next'
+import { Sparkles, Settings, Trash2, X, ZoomIn, RefreshCw } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 
 const { t } = useI18n()
@@ -15,6 +15,11 @@ const deleteConfirmId = ref<string | null>(null)
 const posters = computed(() => home.posters)
 const isEmpty = computed(() => posters.value.length === 0 && !home.isGenerating)
 const isConfigured = computed(() => home.settings.enabled && home.settings.providerId)
+
+async function handleGenerate() {
+  if (home.isGenerating) return
+  await home.generatePoster()
+}
 
 function openLightbox(poster: AnimalPoster) {
   lightboxPoster.value = poster
@@ -63,6 +68,18 @@ onMounted(async () => {
         <span class="header-subtitle">{{ t('home.subtitle') }}</span>
       </div>
       <div class="header-right">
+        <button
+          v-if="isConfigured"
+          class="generate-header-btn"
+          :class="{ generating: home.isGenerating }"
+          :disabled="home.isGenerating"
+          :title="t('home.generateNow')"
+          @click="handleGenerate"
+        >
+          <RefreshCw v-if="home.isGenerating" :size="14" class="spin-icon" />
+          <Sparkles v-else :size="14" />
+          <span>{{ home.isGenerating ? t('home.generating') : t('home.generateNow') }}</span>
+        </button>
         <button class="icon-btn" :title="t('nav.settings')" @click="goSettings">
           <Settings :size="17" />
         </button>
@@ -290,6 +307,40 @@ onMounted(async () => {
 .icon-btn:hover {
   background: rgba(0, 0, 0, 0.06);
   color: #1c1c1e;
+}
+
+.generate-header-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 10px;
+  border: none;
+  background: linear-gradient(135deg, #E4983D 0%, #223F79 100%);
+  color: white;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+}
+
+.generate-header-btn:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.generate-header-btn:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.spin-icon {
+  animation: spin 1s linear infinite;
 }
 
 /* Generating banner */

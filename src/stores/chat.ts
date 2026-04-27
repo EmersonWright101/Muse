@@ -1154,9 +1154,7 @@ export const useChatStore = defineStore('chat', () => {
     // If regenerating a specific variant slot, only re-generate that model.
     if (slotIdx > 0 && msg.variants && slotIdx <= msg.variants.length) {
       const variant = msg.variants[slotIdx - 1]
-      // Reset the variant content so it streams fresh
-      msg.variants[slotIdx - 1] = { id: newId(), content: '', model: variant.model, providerId: variant.providerId }
-      await regenerateWithModel(messageId, variant.providerId, variant.model, true)
+      await regenerateWithModel(messageId, variant.providerId, variant.model, true, slotIdx - 1)
       return
     }
 
@@ -1172,7 +1170,8 @@ export const useChatStore = defineStore('chat', () => {
   // ─── Variant: regenerate with a different model ─────────────────────────
   // Allows simultaneous variant streams — only blocks if the main message is streaming.
 
-  async function regenerateWithModel(messageId: string, providerId: string, modelId: string, _force = false) {
+  // replaceVariantIdx: if set, replaces an existing variant slot in-place instead of pushing a new one
+  async function regenerateWithModel(messageId: string, providerId: string, modelId: string, _force = false, replaceVariantIdx?: number) {
     if (!activeConv.value) return
     // Block only if main message of this conv is streaming — unless forced (dual-model simultaneous)
     if (!_force && streamingMsgId.value !== null && streamingConvIds.has(activeConv.value.id)) return
@@ -1189,10 +1188,19 @@ export const useChatStore = defineStore('chat', () => {
     const payload    = buildPayload(msgsForApi, provider.type, provider.baseUrl)
 
     const msg = conv.messages[msgIdx]
-    if (!msg.variants) msg.variants = []
-    msg.variants.push({ id: newId(), content: '', model: modelId, providerId })
-    const vi = msg.variants.length - 1
-    msg.activeVariantIdx = msg.variants.length  // switch to new variant right away
+    let vi: number
+    if (replaceVariantIdx !== undefined) {
+      // Replace existing variant slot in-place (clears old content + mediaOutputs)
+      if (!msg.variants) msg.variants = []
+      msg.variants[replaceVariantIdx] = { id: newId(), content: '', model: modelId, providerId }
+      vi = replaceVariantIdx
+      msg.activeVariantIdx = vi + 1  // slot index in UI (0 = primary, 1+ = variants)
+    } else {
+      if (!msg.variants) msg.variants = []
+      msg.variants.push({ id: newId(), content: '', model: modelId, providerId })
+      vi = msg.variants.length - 1
+      msg.activeVariantIdx = msg.variants.length  // switch to new variant right away
+    }
 
     // Track streaming: use per-variant key so multiple variants can stream simultaneously
     const varKey = `${messageId}:${vi}`

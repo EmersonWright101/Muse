@@ -168,6 +168,19 @@ export const useWebSearchStore = defineStore('webSearch', () => {
 import { syncService } from '../services/sync'
 import type { SyncModule } from '../services/sync/types'
 
+interface RemoteProviderStore {
+  apiKey?: string      // plaintext — safe inside sync-encrypted container
+  numResults?: number
+  exaSearchType?: 'auto' | 'fast' | 'deep'
+}
+
+interface RemoteWebSearchSettings {
+  __syncTs?: string
+  enabled?: boolean
+  activeProviderId?: string
+  providers?: Record<string, RemoteProviderStore>
+}
+
 const MOD_WEB_SEARCH = 'webSearch'
 
 const webSearchSyncModule: SyncModule = {
@@ -178,28 +191,50 @@ const webSearchSyncModule: SyncModule = {
   },
   async sync(ctx, localChanged) {
     ctx.setProgress('同步联网搜索设置…')
-    const path = ctx.rp('settings/web_search_settings.enc')
-    const raw = localStorage.getItem(LS_KEY)
-    const localData = raw ? JSON.parse(raw) : {}
+    const store = useWebSearchStore()
+    const path  = ctx.rp('settings/web_search_settings.enc')
 
-    const remoteData = await ctx.getEncrypted<Record<string, unknown> | null>(path, null)
+    // Build remote payload with plaintext API keys (safe inside sync-encrypted container)
+    async function buildRemotePayload(ts: string): Promise<RemoteWebSearchSettings> {
+      const providers: Record<string, RemoteProviderStore> = {}
+      for (const { id } of listWebSearchProviders()) {
+        providers[id] = {
+          apiKey:     await store.getApiKey(id),
+          numResults: store.getNumResults(id),
+          ...(id === 'exa' ? { exaSearchType: store.exaSearchType } : {}),
+        }
+      }
+      return {
+        __syncTs:         ts,
+        enabled:          store.enabled,
+        activeProviderId: store.activeProviderId,
+        providers,
+      }
+    }
+
+    const remoteData = await ctx.getEncrypted<RemoteWebSearchSettings | null>(path, null)
 
     if (!remoteData) {
-      if (localChanged && Object.keys(localData).length > 0) {
-        await ctx.putEncrypted(path, localData)
-      }
+      if (localChanged) await ctx.putEncrypted(path, await buildRemotePayload(new Date().toISOString()))
       return
     }
 
-    const localTs = await this.getLocalTimestamp()
-    const remoteTs = (remoteData as Record<string, unknown> & { __syncTs?: string }).__syncTs ?? new Date(0).toISOString()
+    const localTs  = this.getLocalTimestamp() as string
+    const remoteTs = remoteData.__syncTs ?? new Date(0).toISOString()
 
+    // Apply remote settings to the in-memory store when remote is newer
     if (remoteTs > localTs) {
-      localStorage.setItem(LS_KEY, JSON.stringify(remoteData))
+      if (remoteData.enabled !== undefined)          store.enabled          = remoteData.enabled
+      if (remoteData.activeProviderId)               store.activeProviderId = remoteData.activeProviderId
+      for (const [id, rp] of Object.entries(remoteData.providers ?? {})) {
+        if (rp.apiKey !== undefined)  await store.setApiKey(id, rp.apiKey)
+        if (rp.numResults !== undefined) store.setNumResults(id, rp.numResults)
+        if (id === 'exa' && rp.exaSearchType) store.exaSearchType = rp.exaSearchType
+      }
     }
 
-    if (!localChanged) return
-    await ctx.putEncrypted(path, { ...localData, __syncTs: new Date().toISOString() })
+    if (!localChanged && remoteTs <= localTs) return
+    await ctx.putEncrypted(path, await buildRemotePayload(new Date().toISOString()))
   },
 }
 

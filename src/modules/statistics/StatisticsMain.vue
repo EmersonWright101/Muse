@@ -68,8 +68,7 @@ onMounted(() => {
 .statistics-scroll {
   flex: 1;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
+  min-height: 0;
 }
 
 .statistics-scroll::-webkit-scrollbar { width: 4px; }

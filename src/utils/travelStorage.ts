@@ -454,12 +454,33 @@ export async function scanUnusedAttachments(): Promise<string[]> {
   return imageFiles.filter(filename => !allContent.includes(filename))
 }
 
+const LS_DELETED_IMAGES_KEY = 'muse-travel-deleted-images'
+
+function getPendingImageDeletions(): Set<string> {
+  try {
+    const raw = localStorage.getItem(LS_DELETED_IMAGES_KEY)
+    if (raw) return new Set(JSON.parse(raw))
+  } catch { /* ignore */ }
+  return new Set()
+}
+
+function addPendingImageDeletion(filename: string): void {
+  const pending = getPendingImageDeletions()
+  pending.add(filename)
+  localStorage.setItem(LS_DELETED_IMAGES_KEY, JSON.stringify(Array.from(pending)))
+}
+
+function clearPendingImageDeletions(): void {
+  localStorage.removeItem(LS_DELETED_IMAGES_KEY)
+}
+
 export async function deleteAttachment(filename: string): Promise<void> {
   const dir = await travelNotesDir()
   const filePath = `${dir}/images/${filename}`
   try {
     if (await exists(filePath)) await remove(filePath)
   } catch { /* ignore */ }
+  addPendingImageDeletion(filename)
 }
 
 export function newNoteId(): string {
@@ -525,6 +546,20 @@ async function syncImages(ctx: SyncContext, localChanged: boolean): Promise<void
   const localSet = new Set(localImages)
   let indexChanged = false
 
+  // Remove locally-deleted images from remote (pending deletions are tracked across syncs)
+  const pendingDeletions = getPendingImageDeletions()
+  for (const filename of pendingDeletions) {
+    if (remoteSet.has(filename)) {
+      try {
+        ctx.setProgress(`删除远程图片 ${filename}…`)
+        await ctx.webdavDelete(ctx.rp(`travel/images/${filename}.enc`))
+      } catch { /* ignore — file may not exist on remote */ }
+      remoteSet.delete(filename)
+      indexChanged = true
+    }
+  }
+  if (pendingDeletions.size > 0) clearPendingImageDeletions()
+
   // Upload local images not yet on remote (only when local data changed)
   if (localChanged) {
     for (const filename of localImages) {
@@ -545,8 +580,8 @@ async function syncImages(ctx: SyncContext, localChanged: boolean): Promise<void
     }
   }
 
-  // Download remote images not available locally (always)
-  const toDownload = Array.from(remoteSet).filter(f => !localSet.has(f))
+  // Download remote images not available locally (skip pending-deleted filenames)
+  const toDownload = Array.from(remoteSet).filter(f => !localSet.has(f) && !pendingDeletions.has(f))
   if (toDownload.length > 0) {
     if (!(await exists(imgDir))) await mkdir(imgDir, { recursive: true })
     for (const filename of toDownload) {
@@ -566,7 +601,7 @@ async function syncImages(ctx: SyncContext, localChanged: boolean): Promise<void
     }
   }
 
-  // Update remote index when new images were uploaded
+  // Update remote index when images were added or removed
   if (indexChanged) {
     await ctx.putEncrypted(ctx.rp('travel/images_index.enc'), Array.from(remoteSet))
   }

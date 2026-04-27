@@ -13,11 +13,12 @@ const showPanel = ref(true)
 const route = useRoute()
 const travel = useTravelStore()
 
-// Initialize sync store on app launch so the auto-sync timer starts
-// even if the user never opens the Settings page.
 useSyncStore()
 
 const panelFloats = computed(() => route.path === '/travel' && travel.viewMode !== 'editor')
+
+// Routes without a sidebar component — hide the panel column entirely for these
+const routeHasSidebar = computed(() => route.path !== '/home')
 </script>
 
 <template>
@@ -31,7 +32,7 @@ const panelFloats = computed(() => route.path === '/travel' && travel.viewMode !
 
       <div class="content-area" :class="{ 'panel-floats': panelFloats }">
         <Transition name="panel-slide">
-          <div v-show="showPanel" class="panel-column">
+          <div v-show="showPanel && routeHasSidebar" class="panel-column">
             <router-view name="sidebar" />
           </div>
         </Transition>

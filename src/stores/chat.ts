@@ -17,12 +17,17 @@ import {
   loadConversation,
   saveConversation,
   deleteConversation,
-  deleteConversations,
+  trashConversation,
+  listTrashedConversations,
+  restoreConversationFromTrash,
+  permanentDeleteFromTrash,
+  purgeExpiredTrash,
   newId,
   getDeletedConversations,
   applyRemoteDeletedConversations,
   mergeConversation,
   type ConversationMeta,
+  type TrashedConversationMeta,
   type Conversation,
   type ChatMessage,
   type AttachmentMeta,
@@ -37,7 +42,7 @@ import { useWebSearchStore } from './webSearch'
 import { performSearch, formatSearchResultsForContext } from '../services/webSearch'
 import type { WebSearchResult } from '../utils/storage'
 
-export type { ConversationMeta, Conversation, ChatMessage, AttachmentMeta, MessageVariant }
+export type { ConversationMeta, TrashedConversationMeta, Conversation, ChatMessage, AttachmentMeta, MessageVariant }
 
 // ─── Streaming helpers ────────────────────────────────────────────────────────
 
@@ -53,6 +58,20 @@ function isOpenRouter(baseUrl: string): boolean {
   return baseUrl.includes('openrouter.ai')
 }
 
+// Extract plain text from a payload content field that may be a string or a content-parts array
+function extractTextFromContent(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return (content as Array<{ type?: string; text?: string }>)
+      .filter(p => p.type === 'text' || !p.type)
+      .map(p => p.text ?? '')
+      .join(' ')
+      .trim()
+  }
+  return ''
+}
+
+
 async function callImageGeneration(
   baseUrl: string, apiKey: string, model: string,
   prompt: string, size: string,
@@ -63,6 +82,48 @@ async function callImageGeneration(
     method:  'POST',
     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body:    JSON.stringify({ model, prompt, n: 1, size }),
+    signal,
+  })
+  if (!resp.ok) {
+    const err = await resp.text()
+    handler.onError(`API error ${resp.status}: ${err}`)
+    return
+  }
+  try {
+    const data = await resp.json() as { data?: Array<{ url?: string; b64_json?: string }> }
+    const img = data.data?.[0]
+    if (img?.url) {
+      handler.onMediaOutput?.('image/png', img.url, true)
+    } else if (img?.b64_json) {
+      handler.onMediaOutput?.('image/png', img.b64_json)
+    }
+    handler.onDone({})
+  } catch (e) {
+    handler.onError(e instanceof Error ? e.message : String(e))
+  }
+}
+
+async function callImageEdit(
+  baseUrl: string, apiKey: string, model: string,
+  prompt: string, imageBase64: string, imageMimeType: string,
+  size: string,
+  handler: StreamChunkHandler,
+  signal: AbortSignal,
+): Promise<void> {
+  const imageBytes = Uint8Array.from(atob(imageBase64), c => c.charCodeAt(0))
+  const imageBlob  = new Blob([imageBytes], { type: imageMimeType })
+
+  const form = new FormData()
+  form.append('image', imageBlob, 'image.png')
+  form.append('prompt', prompt)
+  form.append('model', model)
+  form.append('n', '1')
+  form.append('size', size)
+
+  const resp = await tauriFetch(`${baseUrl}/images/edits`, {
+    method:  'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}` },
+    body:    form,
     signal,
   })
   if (!resp.ok) {
@@ -653,7 +714,8 @@ export const useChatStore = defineStore('chat', () => {
   const streamingVariantMsgIds = reactive<Set<string>>(new Set())
   const useReasoning       = ref(false)
   const reasoningLevel     = ref<'low' | 'medium' | 'high'>('medium')
-  const webSearchEnabled   = ref(false)
+  const webSearchEnabled     = ref(false)
+  const trashedConversations = ref<TrashedConversationMeta[]>([])
 
   // Optional second model for simultaneous dual-model generation
   const secondProviderId = ref<string | null>(null)
@@ -673,6 +735,10 @@ export const useChatStore = defineStore('chat', () => {
 
   async function loadList() {
     conversations.value = await listConversations()
+  }
+
+  async function loadTrashList() {
+    trashedConversations.value = await listTrashedConversations()
   }
 
   // Coalesces rapid back-to-back loadList() calls (e.g. concurrent stream completions).
@@ -900,6 +966,7 @@ export const useChatStore = defineStore('chat', () => {
           userMsg.webSearchResults = wsResults
           const ctx = formatSearchResultsForContext(wsResults, userContent.trim())
           systemPrompt = systemPrompt ? `${systemPrompt}\n\n${ctx}` : ctx
+          wsStore.incrementUsage(wsStore.activeProviderId)
         }
       } catch { /* silently skip on search error */ }
     }
@@ -1007,9 +1074,14 @@ export const useChatStore = defineStore('chat', () => {
         // DeepSeek uses OpenAI-compatible endpoint with extra thinking/reasoning_effort params
         const modelInfo = provider.models.find(m => m.id === mid)
         if (modelInfo?.imageOutput) {
-          const userPrompt = (payload.filter(m => m.role === 'user').at(-1)?.content as string) ?? ''
-          const size = modelInfo.imageSize ?? '1024x1024'
-          await callImageGeneration(provider.baseUrl, provider.apiKey, mid, userPrompt, size, handler, ac.signal)
+          const userPrompt = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          const size       = modelInfo.imageSize ?? '1024x1024'
+          const imageAtt   = msgsForApi.filter(m => m.role === 'user').at(-1)?.attachments?.find(a => a.mimeType?.startsWith('image/') && a.data)
+          if (imageAtt) {
+            await callImageEdit(provider.baseUrl, provider.apiKey, mid, userPrompt, imageAtt.data!, imageAtt.mimeType!, size, handler, ac.signal)
+          } else {
+            await callImageGeneration(provider.baseUrl, provider.apiKey, mid, userPrompt, size, handler, ac.signal)
+          }
         } else {
           await streamDeepSeek(provider.baseUrl, provider.apiKey, mid, payload, handler, ac.signal, systemPrompt, useReasoning.value, reasoningLevel.value, temperature, maxTokens)
         }
@@ -1018,10 +1090,15 @@ export const useChatStore = defineStore('chat', () => {
         const effort = useReasoning.value ? reasoningLevel.value : undefined
         const modelInfo = provider.models.find(m => m.id === mid)
         if (!isOpenRouter(provider.baseUrl) && modelInfo?.imageOutput) {
-          // Non-OpenRouter image-generation models use /images/generations endpoint
-          const userPrompt = (payload.filter(m => m.role === 'user').at(-1)?.content as string) ?? ''
-          const size = modelInfo.imageSize ?? '1024x1024'
-          await callImageGeneration(provider.baseUrl, provider.apiKey, mid, userPrompt, size, handler, ac.signal)
+          // Non-OpenRouter image-generation models use /images/generations or /images/edits
+          const userPrompt = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          const size       = modelInfo.imageSize ?? '1024x1024'
+          const imageAtt   = msgsForApi.filter(m => m.role === 'user').at(-1)?.attachments?.find(a => a.mimeType?.startsWith('image/') && a.data)
+          if (imageAtt) {
+            await callImageEdit(provider.baseUrl, provider.apiKey, mid, userPrompt, imageAtt.data!, imageAtt.mimeType!, size, handler, ac.signal)
+          } else {
+            await callImageGeneration(provider.baseUrl, provider.apiKey, mid, userPrompt, size, handler, ac.signal)
+          }
         } else {
           // OpenRouter image-output models require the modalities parameter
           let modalities: string[] | undefined
@@ -1129,7 +1206,14 @@ export const useChatStore = defineStore('chat', () => {
     const assistant = conv.assistantId
       ? assistantsStore.assistants.find(a => a.id === conv.assistantId)
       : undefined
-    const systemPrompt = assistant?.systemPrompt || undefined
+    let systemPrompt = assistant?.systemPrompt || undefined
+
+    // Inject web search results from the last user message (same results as primary model)
+    const lastUserMsg = msgsForApi.filter(m => m.role === 'user').at(-1)
+    if (lastUserMsg?.webSearchResults?.length) {
+      const ctx = formatSearchResultsForContext(lastUserMsg.webSearchResults, lastUserMsg.content ?? '')
+      systemPrompt = systemPrompt ? `${systemPrompt}\n\n${ctx}` : ctx
+    }
 
     function cleanupVariant() {
       _variantAbortControllers.delete(varKey)
@@ -1182,8 +1266,14 @@ export const useChatStore = defineStore('chat', () => {
       } else if (provider.id === 'deepseek' || provider.baseUrl.includes('deepseek')) {
         const mInfo = provider.models.find(m => m.id === modelId)
         if (mInfo?.imageOutput) {
-          const userPrompt = (payload.filter(m => m.role === 'user').at(-1)?.content as string) ?? ''
-          await callImageGeneration(provider.baseUrl, provider.apiKey, modelId, userPrompt, mInfo.imageSize ?? '1024x1024', handler, ac.signal)
+          const userPrompt = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          const size       = mInfo.imageSize ?? '1024x1024'
+          const imageAtt   = msgsForApi.filter(m => m.role === 'user').at(-1)?.attachments?.find(a => a.mimeType?.startsWith('image/') && a.data)
+          if (imageAtt) {
+            await callImageEdit(provider.baseUrl, provider.apiKey, modelId, userPrompt, imageAtt.data!, imageAtt.mimeType!, size, handler, ac.signal)
+          } else {
+            await callImageGeneration(provider.baseUrl, provider.apiKey, modelId, userPrompt, size, handler, ac.signal)
+          }
         } else {
           await streamDeepSeek(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, useReasoning.value, reasoningLevel.value, chatSettings.temperature, chatSettings.maxTokens)
         }
@@ -1191,8 +1281,14 @@ export const useChatStore = defineStore('chat', () => {
         const effort = useReasoning.value ? reasoningLevel.value : undefined
         const mInfo = provider.models.find(m => m.id === modelId)
         if (!isOpenRouter(provider.baseUrl) && mInfo?.imageOutput) {
-          const userPrompt = (payload.filter(m => m.role === 'user').at(-1)?.content as string) ?? ''
-          await callImageGeneration(provider.baseUrl, provider.apiKey, modelId, userPrompt, mInfo.imageSize ?? '1024x1024', handler, ac.signal)
+          const userPrompt = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          const size       = mInfo.imageSize ?? '1024x1024'
+          const imageAtt   = msgsForApi.filter(m => m.role === 'user').at(-1)?.attachments?.find(a => a.mimeType?.startsWith('image/') && a.data)
+          if (imageAtt) {
+            await callImageEdit(provider.baseUrl, provider.apiKey, modelId, userPrompt, imageAtt.data!, imageAtt.mimeType!, size, handler, ac.signal)
+          } else {
+            await callImageGeneration(provider.baseUrl, provider.apiKey, modelId, userPrompt, size, handler, ac.signal)
+          }
         } else {
           let modalities: string[] | undefined
           if (isOpenRouter(provider.baseUrl) && mInfo?.imageOutput) {
@@ -1312,17 +1408,17 @@ export const useChatStore = defineStore('chat', () => {
   // ─── Delete ─────────────────────────────────────────────────────────────
 
   async function deleteOne(id: string) {
-    // Abort any in-flight stream before deleting
     _abortControllers.get(id)?.abort()
     _abortControllers.delete(id)
     streamingConvIds.delete(id)
-    await deleteConversation(id)
+    await trashConversation(id)
     if (activeConvId.value === id) {
       activeConv.value   = null
       activeConvId.value = null
     }
     selectedConvIds.delete(id)
     await loadList()
+    await loadTrashList()
   }
 
   async function deleteBatch() {
@@ -1332,7 +1428,9 @@ export const useChatStore = defineStore('chat', () => {
       _abortControllers.delete(id)
       streamingConvIds.delete(id)
     }
-    await deleteConversations(ids)
+    for (const id of ids) {
+      await trashConversation(id)
+    }
     if (activeConvId.value && selectedConvIds.has(activeConvId.value)) {
       activeConv.value   = null
       activeConvId.value = null
@@ -1340,6 +1438,18 @@ export const useChatStore = defineStore('chat', () => {
     selectedConvIds.clear()
     batchMode.value = false
     await loadList()
+    await loadTrashList()
+  }
+
+  async function restoreFromTrash(id: string) {
+    await restoreConversationFromTrash(id)
+    await loadList()
+    await loadTrashList()
+  }
+
+  async function permanentDeleteOne(id: string) {
+    await permanentDeleteFromTrash(id)
+    await loadTrashList()
   }
 
   // ─── Batch select ───────────────────────────────────────────────────────
@@ -1396,6 +1506,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // Init
   loadList()
+  purgeExpiredTrash(30).then(() => loadTrashList()).catch(() => loadTrashList())
 
   return {
     conversations, activeConvId, activeConv, isStreaming, isLoading,
@@ -1410,6 +1521,7 @@ export const useChatStore = defineStore('chat', () => {
     regenerateWithModel, setActiveVariant, deleteVariant, streamingVariantMsgIds,
     setMessageFeedback, setVariantFeedbackBySlot,
     secondProviderId, secondModelId: secondModelId_, setSecondModel,
+    trashedConversations, loadTrashList, restoreFromTrash, permanentDeleteOne,
   }
 })
 

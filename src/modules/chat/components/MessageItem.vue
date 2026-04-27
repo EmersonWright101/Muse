@@ -60,7 +60,7 @@ hljs.registerLanguage('rb', ruby)
 hljs.registerLanguage('php', php)
 hljs.registerLanguage('r', r)
 import DOMPurify from 'dompurify'
-import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Maximize2, Minimize2, Bot, AtSign, Download, Clock, ThumbsUp, ThumbsDown, Trash2, Rows3, Columns2 } from 'lucide-vue-next'
+import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Maximize2, Minimize2, Bot, AtSign, Download, Clock, ThumbsUp, ThumbsDown, Trash2, Rows3, Columns2, Globe } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import type { ChatMessage } from '../../../stores/chat'
 import { useChatStore } from '../../../stores/chat'
@@ -137,13 +137,19 @@ renderer.image = ({ href, text }: Tokens.Image) => {
   return `<span class="markdown-img-wrap" style="display:inline-block;vertical-align:bottom;position:relative;width:min(480px,100%)"><img src="${safeHref}" alt="${safeText}" class="markdown-img" style="display:block;width:100%;height:auto;max-height:520px;border-radius:12px;cursor:zoom-in;object-fit:contain" /><button class="markdown-copy-btn" data-action="copy-image" data-src="${safeHref}" title="复制图片">${COPY_SVG}</button><button class="markdown-download-btn" data-action="download-image" data-src="${safeHref}" title="下载原图">${DOWNLOAD_SVG}</button></span>`
 }
 
+renderer.link = ({ href, title, text }: Tokens.Link) => {
+  const safeHref = escapeHtmlAttr(href)
+  const safeTitle = title ? ` title="${escapeHtmlAttr(title)}"` : ''
+  return `<a data-action="open-url" data-href="${safeHref}"${safeTitle} class="markdown-link">${text}</a>`
+}
+
 marked.setOptions({ renderer, breaks: true })
 
 function renderMarkdown(content: string): string {
   try {
     const raw = marked.parse(content) as string
     if (typeof raw !== 'string') return content
-    return DOMPurify.sanitize(raw, { ADD_ATTR: ['onclick', 'data-action', 'data-src', 'title'] })
+    return DOMPurify.sanitize(raw, { ADD_ATTR: ['onclick', 'data-action', 'data-src', 'data-href', 'title'] })
   } catch {
     return content
   }
@@ -283,6 +289,7 @@ const variantLayout = ref<'tab' | 'horizontal'>(
 function toggleLayout() {
   variantLayout.value = variantLayout.value === 'tab' ? 'horizontal' : 'tab'
   localStorage.setItem(LAYOUT_LS_KEY, variantLayout.value)
+  localStorage.setItem('muse-variant-layout-modified-at', new Date().toISOString())
 }
 
 // Per-slot streaming detection
@@ -290,6 +297,9 @@ function isSlotStreaming(msgId: string, slotIdx: number): boolean {
   if (slotIdx === 0) return chat.streamingMsgId === msgId
   return chat.streamingVariantMsgIds.has(msgId)
 }
+
+// Whether the currently-active tab/slot is streaming (used for bubble animation + button visibility)
+const activeSlotStreaming = computed(() => isSlotStreaming(props.message.id, activeVariantIdx.value))
 
 // Per-slot feedback getter/setter for horizontal mode
 function slotFeedback(msg: typeof props.message, slotIdx: number): 'positive' | 'negative' | null {
@@ -316,6 +326,15 @@ function slotUsage(msg: typeof props.message, slotIdx: number) {
 function slotError(msg: typeof props.message, slotIdx: number): boolean {
   return slotIdx === 0 ? !!msg.error : !!(msg.variants?.[slotIdx - 1]?.error)
 }
+
+function slotMediaOutputs(msg: typeof props.message, slotIdx: number) {
+  return slotIdx === 0 ? msg.mediaOutputs : msg.variants?.[slotIdx - 1]?.mediaOutputs
+}
+
+// Media outputs for the currently active tab (slot 0 = primary, slots 1+ = variants)
+const displayedMediaOutputs = computed(() =>
+  activeVariantData.value?.mediaOutputs ?? props.message.mediaOutputs
+)
 
 // ─── @ Model picker ───────────────────────────────────────────────────────────
 
@@ -395,8 +414,24 @@ async function copyImageToClipboard(src: string) {
   }
 }
 
-function onMarkdownBodyClick(e: MouseEvent) {
+async function onMarkdownBodyClick(e: MouseEvent) {
   const target = e.target as HTMLElement
+
+  // Link: open in system browser
+  const link = target.closest('a[data-action="open-url"]') as HTMLElement | null
+  if (link) {
+    e.preventDefault()
+    e.stopPropagation()
+    const url = link.dataset.href
+    if (url) {
+      try {
+        const { openUrl } = await import('@tauri-apps/plugin-opener')
+        await openUrl(url)
+      } catch { /* ignore */ }
+    }
+    return
+  }
+
   const btn = target.closest('button[data-action]') as HTMLButtonElement | null
   if (btn) {
     e.preventDefault()
@@ -456,12 +491,45 @@ function showSaveToast(msg: string) {
   if (_saveToastTimer) clearTimeout(_saveToastTimer)
   _saveToastTimer = setTimeout(() => { saveToast.value = '' }, 2500)
 }
+
+// ─── PDF preview ─────────────────────────────────────────────────────────────
+
+const pdfPreviewSrc = ref<string | null>(null)
+
+function openPdfPreview(att: { mimeType: string; data?: string; name: string }) {
+  if (att.data) pdfPreviewSrc.value = `data:application/pdf;base64,${att.data}`
+}
+
+// ─── Web search results panel ─────────────────────────────────────────────────
+
+const searchResultsOpen = ref(false)
+
+async function openResultUrl(url: string) {
+  try {
+    const { openUrl } = await import('@tauri-apps/plugin-opener')
+    await openUrl(url)
+  } catch { /* ignore */ }
+}
+
+function resultDomain(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, '') } catch { return url }
+}
 </script>
 
 <template>
   <!-- Save toast -->
   <Teleport to="body">
     <div v-if="saveToast" class="save-toast">{{ saveToast }}</div>
+  </Teleport>
+
+  <!-- PDF preview modal -->
+  <Teleport to="body">
+    <div v-if="pdfPreviewSrc" class="pdf-preview-overlay" @click.self="pdfPreviewSrc = null">
+      <div class="pdf-preview-container">
+        <button class="pdf-preview-close" @click="pdfPreviewSrc = null">✕</button>
+        <embed :src="pdfPreviewSrc" type="application/pdf" class="pdf-preview-embed" />
+      </div>
+    </div>
   </Teleport>
 
   <!-- Image lightbox -->
@@ -501,7 +569,13 @@ function showSaveToast(msg: string) {
           style="cursor: zoom-in"
           @click="openLightbox(att.mimeType, att.data!)"
           />
-          <div v-else-if="att.mimeType === 'application/pdf'" class="attachment-pdf">
+          <div
+            v-else-if="att.mimeType === 'application/pdf'"
+            class="attachment-pdf"
+            :class="{ 'pdf-previewable': !!att.data }"
+            :title="att.data ? '点击预览 PDF' : ''"
+            @click="att.data && openPdfPreview(att)"
+          >
             <FileText :size="15" class="pdf-att-icon" />
             <div class="pdf-att-info">
               <span class="pdf-att-name">{{ att.name }}</span>
@@ -531,6 +605,31 @@ function showSaveToast(msg: string) {
           </div>
         </template>
         <span v-else class="user-text">{{ message.content }}</span>
+      </div>
+
+      <!-- Web search results (user messages only) -->
+      <div v-if="isUser && message.webSearchResults?.length" class="search-sources-wrap">
+        <button class="search-sources-toggle" @click="searchResultsOpen = !searchResultsOpen">
+          <Globe :size="11" class="search-sources-globe" />
+          <span>{{ message.webSearchResults.length }} 条网络来源</span>
+          <ChevronDown :size="10" class="search-sources-chevron" :class="{ open: searchResultsOpen }" />
+        </button>
+        <Transition name="sources-drop">
+          <div v-if="searchResultsOpen" class="search-sources-list">
+            <a
+              v-for="(r, idx) in message.webSearchResults"
+              :key="idx"
+              class="search-source-item"
+              @click.prevent="openResultUrl(r.url)"
+            >
+              <span class="source-num">{{ idx + 1 }}</span>
+              <div class="source-info">
+                <span class="source-title">{{ r.title || resultDomain(r.url) }}</span>
+                <span class="source-domain">{{ resultDomain(r.url) }}</span>
+              </div>
+            </a>
+          </div>
+        </Transition>
       </div>
 
       <!-- In horizontal compare mode, collapse main content (only compare strip is shown) -->
@@ -579,15 +678,15 @@ function showSaveToast(msg: string) {
           v-else
           ref="msgEl"
           class="bubble assistant-bubble markdown-body"
-          :class="{ error: displayedError, streaming }"
+          :class="{ error: displayedError, streaming: activeSlotStreaming }"
           v-html="renderedContent"
           @click="onMarkdownBodyClick"
         />
       </template>
 
-      <!-- Media outputs — hidden in horizontal compare mode -->
-      <div v-if="!isUser && message.mediaOutputs?.length && !(allVariantSlots.length > 1 && variantLayout === 'horizontal')" class="media-outputs">
-        <template v-for="(out, idx) in message.mediaOutputs" :key="idx">
+      <!-- Media outputs — hidden in horizontal compare mode (shown per-column there instead) -->
+      <div v-if="!isUser && displayedMediaOutputs?.length && !(allVariantSlots.length > 1 && variantLayout === 'horizontal')" class="media-outputs">
+        <template v-for="(out, idx) in displayedMediaOutputs" :key="idx">
           <div v-if="out.mimeType.startsWith('image/')" class="media-img-wrap">
             <img
               :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
@@ -627,14 +726,14 @@ function showSaveToast(msg: string) {
             <Check v-if="copyDone" :size="13" />
             <Copy v-else :size="13" />
           </button>
-          <button v-if="!streaming" class="action-btn" title="编辑" @click="startEdit">
+          <button v-if="!activeSlotStreaming" class="action-btn" title="编辑" @click="startEdit">
             <Pencil :size="13" />
           </button>
-          <button v-if="!isUser && !streaming" class="action-btn" title="重新生成" @click="chat.regenerate(message.id, activeVariantIdx)">
+          <button v-if="!isUser && !activeSlotStreaming" class="action-btn" title="重新生成" @click="chat.regenerate(message.id, activeVariantIdx)">
             <RefreshCw :size="13" />
           </button>
           <!-- @ button: pick another model to answer -->
-          <div v-if="!isUser && !streaming" ref="pickerRoot" class="picker-wrap">
+          <div v-if="!isUser && !activeSlotStreaming" ref="pickerRoot" class="picker-wrap">
             <button class="action-btn" title="用其他模型回答" @click="togglePicker">
               <AtSign :size="13" />
             </button>
@@ -654,7 +753,7 @@ function showSaveToast(msg: string) {
           </div>
           <!-- Feedback buttons -->
           <button
-            v-if="!isUser && !streaming"
+            v-if="!isUser && !activeSlotStreaming"
             class="action-btn"
             :class="{ positive: displayedFeedback === 'positive' }"
             :title="t('chat.feedbackPositive')"
@@ -663,7 +762,7 @@ function showSaveToast(msg: string) {
             <ThumbsUp :size="13" />
           </button>
           <button
-            v-if="!isUser && !streaming"
+            v-if="!isUser && !activeSlotStreaming"
             class="action-btn"
             :class="{ negative: displayedFeedback === 'negative' }"
             :title="t('chat.feedbackNegative')"
@@ -673,7 +772,7 @@ function showSaveToast(msg: string) {
           </button>
         </div>
 
-        <div v-if="!isUser && (displayedUsage || modelDisplayName) && !streaming" class="msg-usage">
+        <div v-if="!isUser && (displayedUsage || modelDisplayName) && !activeSlotStreaming" class="msg-usage">
           <span v-if="modelDisplayName" class="msg-model-name">
             <Bot :size="10" />
             <template v-if="providerDisplayName">{{ providerDisplayName }} · </template>{{ modelDisplayName }}
@@ -728,7 +827,43 @@ function showSaveToast(msg: string) {
             class="compare-content markdown-body"
             :class="{ error: slotError(message, idx), streaming: isSlotStreaming(message.id, idx) }"
             v-html="renderMarkdown(slotContent(message, idx))"
+            @click="onMarkdownBodyClick"
           />
+
+          <!-- Column media outputs -->
+          <div v-if="slotMediaOutputs(message, idx)?.length" class="compare-media-outputs">
+            <template v-for="(out, oidx) in slotMediaOutputs(message, idx)" :key="oidx">
+              <div v-if="out.mimeType.startsWith('image/')" class="media-img-wrap">
+                <img
+                  :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
+                  class="media-img"
+                  :alt="`生成图片 ${oidx + 1}`"
+                  @click="out.url ? openLightboxUrl(out.url) : openLightbox(out.mimeType, out.data!)"
+                />
+                <button
+                  class="media-copy-btn"
+                  title="复制图片"
+                  @click.stop="copyImageToClipboard(out.url ?? `data:${out.mimeType};base64,${out.data}`)"
+                >
+                  <Copy :size="15" />
+                </button>
+                <button
+                  class="media-download-btn"
+                  title="下载原图"
+                  @click.stop="downloadImage(out.url ?? `data:${out.mimeType};base64,${out.data}`, `muse-image-${oidx + 1}.png`)"
+                >
+                  <Download :size="15" />
+                </button>
+              </div>
+              <video
+                v-else-if="out.mimeType.startsWith('video/')"
+                :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
+                class="media-video"
+                controls
+                preload="metadata"
+              />
+            </template>
+          </div>
 
           <!-- Column footer: feedback + usage -->
           <div class="compare-footer">
@@ -1261,6 +1396,14 @@ details[open] .compare-reasoning-summary::before { content: '▼ '; }
 }
 
 .compare-content.error { color: #ff3b30; }
+
+.compare-media-outputs {
+  padding: 0 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .compare-content.streaming::after {
   content: '▋';
   display: inline-block;
@@ -1722,7 +1865,7 @@ details[open] .compare-reasoning-summary::before { content: '▼ '; }
   padding: 6px 10px;
 }
 .markdown-body th { background: rgba(0, 0, 0, 0.03); font-weight: 600; }
-.markdown-body a { color: #223F79; text-decoration: underline; }
+.markdown-body a, .markdown-body .markdown-link { color: #223F79; text-decoration: underline; cursor: pointer; }
 .markdown-body hr { border: none; border-top: 1px solid rgba(0,0,0,0.10); margin: 12px 0; }
 .markdown-body img { max-width: 100%; height: auto; border-radius: 12px; display: block; }
 
@@ -1893,5 +2036,163 @@ details[open] .compare-reasoning-summary::before { content: '▼ '; }
 
 .variant-menu-item.delete:hover {
   background: rgba(255, 59, 48, 0.08);
+}
+
+/* ─── PDF attachment preview ─────────────────────────────────────────────────── */
+.attachment-pdf.pdf-previewable {
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.attachment-pdf.pdf-previewable:hover {
+  background: rgba(34, 63, 121, 0.12);
+  border-color: rgba(34, 63, 121, 0.25);
+}
+
+.pdf-preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.pdf-preview-container {
+  position: relative;
+  width: 90vw;
+  height: 90vh;
+  border-radius: 12px;
+  overflow: hidden;
+  background: white;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4);
+}
+
+.pdf-preview-close {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.15);
+  color: #3c3c43;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  transition: background 0.12s;
+}
+.pdf-preview-close:hover { background: rgba(0, 0, 0, 0.25); }
+
+.pdf-preview-embed {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+/* ─── Web search sources ─────────────────────────────────────────────────────── */
+.search-sources-wrap {
+  align-self: flex-end;
+  margin-top: 4px;
+  max-width: 76%;
+}
+
+.search-sources-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  background: rgba(34, 63, 121, 0.08);
+  border: 1px solid rgba(34, 63, 121, 0.15);
+  border-radius: 20px;
+  font-size: 11px;
+  color: rgba(34, 63, 121, 0.8);
+  cursor: pointer;
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+
+.search-sources-toggle:hover { background: rgba(34, 63, 121, 0.13); }
+
+.search-sources-globe { color: #223F79; flex-shrink: 0; }
+
+.search-sources-chevron {
+  color: rgba(34, 63, 121, 0.5);
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+.search-sources-chevron.open { transform: rotate(180deg); }
+
+.search-sources-list {
+  margin-top: 6px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(0, 0, 0, 0.09);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+.search-source-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.10s;
+}
+.search-source-item:last-child { border-bottom: none; }
+.search-source-item:hover { background: rgba(34, 63, 121, 0.04); }
+
+.source-num {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: rgba(34, 63, 121, 0.10);
+  color: #223F79;
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.source-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.source-title {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #1c1c1e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.source-domain {
+  font-size: 9.5px;
+  color: #8e8e93;
+}
+
+.sources-drop-enter-active, .sources-drop-leave-active {
+  transition: opacity 0.12s, transform 0.12s;
+}
+.sources-drop-enter-from, .sources-drop-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 </style>

@@ -115,6 +115,10 @@ export interface ConversationMeta {
   assistantId?: string;
 }
 
+export interface TrashedConversationMeta extends ConversationMeta {
+  deletedAt: string;
+}
+
 // ─── Paths ───────────────────────────────────────────────────────────────────
 
 async function convDir(): Promise<string> {
@@ -157,6 +161,36 @@ async function readIndex(): Promise<ConversationMeta[]> {
 async function writeIndex(index: ConversationMeta[]): Promise<void> {
   await ensureDirs();
   const path = `${await convDir()}/index.json`;
+  await atomicWriteTextFile(path, JSON.stringify(index, null, 2));
+}
+
+// ─── Trash helpers ────────────────────────────────────────────────────────────
+
+async function trashDir(): Promise<string> {
+  return `${await convDir()}/trash`;
+}
+
+async function ensureTrashDir(): Promise<void> {
+  const d = await trashDir();
+  if (!(await exists(d))) await mkdir(d, { recursive: true });
+}
+
+const trashIndexMutex = new AsyncMutex();
+
+async function readTrashIndex(): Promise<TrashedConversationMeta[]> {
+  try {
+    const path = `${await trashDir()}/index.json`;
+    if (!(await exists(path))) return [];
+    const raw = await readTextFile(path);
+    return JSON.parse(raw) as TrashedConversationMeta[];
+  } catch {
+    return [];
+  }
+}
+
+async function writeTrashIndex(index: TrashedConversationMeta[]): Promise<void> {
+  await ensureTrashDir();
+  const path = `${await trashDir()}/index.json`;
   await atomicWriteTextFile(path, JSON.stringify(index, null, 2));
 }
 
@@ -287,6 +321,124 @@ export async function deleteConversations(ids: string[]): Promise<void> {
   localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
   saveDiskTombstones(map);
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
+}
+
+// ─── Trash (soft-delete) ─────────────────────────────────────────────────────
+
+export async function trashConversation(id: string): Promise<void> {
+  await ensureTrashDir();
+  const convPath  = `${await convDir()}/${id}.json`;
+  const trashPath = `${await trashDir()}/${id}.json`;
+
+  let conv: Conversation | null = null;
+  try {
+    if (await exists(convPath)) {
+      conv = JSON.parse(await readTextFile(convPath)) as Conversation;
+    }
+  } catch { /* ignore */ }
+
+  try {
+    if (await exists(convPath)) await rename(convPath, trashPath);
+  } catch { /* ignore */ }
+
+  await indexMutex.run(async () => {
+    const index = await readIndex();
+    await writeIndex(index.filter(m => m.id !== id));
+  });
+
+  if (conv) {
+    await trashIndexMutex.run(async () => {
+      const trashIndex = await readTrashIndex();
+      if (trashIndex.some(m => m.id === id)) return;
+      const lastMsg = conv!.messages.filter(m => m.role !== 'system').at(-1);
+      const meta: TrashedConversationMeta = {
+        id:          conv!.id,
+        title:       conv!.title,
+        createdAt:   conv!.createdAt,
+        updatedAt:   conv!.updatedAt,
+        preview:     lastMsg ? lastMsg.content.slice(0, 80).replace(/\n/g, ' ') : '',
+        model:       conv!.model,
+        providerId:  conv!.providerId,
+        pinned:      conv!.pinned,
+        assistantId: conv!.assistantId,
+        deletedAt:   new Date().toISOString(),
+      };
+      trashIndex.unshift(meta);
+      await writeTrashIndex(trashIndex);
+    });
+  }
+
+  localStorage.setItem('muse-ts-conversations', new Date().toISOString());
+}
+
+export async function listTrashedConversations(): Promise<TrashedConversationMeta[]> {
+  const index = await readTrashIndex();
+  return index.sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
+}
+
+export async function restoreConversationFromTrash(id: string): Promise<void> {
+  const trashPath = `${await trashDir()}/${id}.json`;
+  const convPath  = `${await convDir()}/${id}.json`;
+
+  try {
+    if (await exists(trashPath)) await rename(trashPath, convPath);
+  } catch { /* ignore */ }
+
+  await trashIndexMutex.run(async () => {
+    const index = await readTrashIndex();
+    await writeTrashIndex(index.filter(m => m.id !== id));
+  });
+
+  await indexMutex.run(async () => {
+    try {
+      if (!(await exists(convPath))) return;
+      const conv  = JSON.parse(await readTextFile(convPath)) as Conversation;
+      const index = await readIndex();
+      if (index.some(m => m.id === id)) return;
+      const lastMsg = conv.messages.filter(m => m.role !== 'system').at(-1);
+      const meta: ConversationMeta = {
+        id:          conv.id,
+        title:       conv.title,
+        createdAt:   conv.createdAt,
+        updatedAt:   conv.updatedAt,
+        preview:     lastMsg ? lastMsg.content.slice(0, 80).replace(/\n/g, ' ') : '',
+        model:       conv.model,
+        providerId:  conv.providerId,
+        pinned:      conv.pinned,
+        assistantId: conv.assistantId,
+      };
+      index.unshift(meta);
+      await writeIndex(index);
+    } catch { /* ignore */ }
+  });
+
+  localStorage.setItem('muse-ts-conversations', new Date().toISOString());
+}
+
+export async function permanentDeleteFromTrash(id: string): Promise<void> {
+  const trashPath = `${await trashDir()}/${id}.json`;
+  try {
+    if (await exists(trashPath)) await remove(trashPath);
+  } catch { /* ignore */ }
+
+  await trashIndexMutex.run(async () => {
+    const index = await readTrashIndex();
+    await writeTrashIndex(index.filter(m => m.id !== id));
+  });
+
+  const map = getDeletedConversations();
+  map[id] = new Date().toISOString();
+  localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
+  saveDiskTombstones(map);
+  localStorage.setItem('muse-ts-conversations', new Date().toISOString());
+}
+
+export async function purgeExpiredTrash(days = 30): Promise<void> {
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const index  = await listTrashedConversations();
+  for (const m of index.filter(item => item.deletedAt < cutoff)) {
+    await permanentDeleteFromTrash(m.id);
+  }
 }
 
 // ─── Assistants ──────────────────────────────────────────────────────────────

@@ -278,6 +278,11 @@ export function getTrashRetentionDays(): number {
   return parseInt(localStorage.getItem(LS_TRASH_RETENTION) ?? '30') || 30
 }
 
+export function setTrashRetentionDays(days: number): void {
+  localStorage.setItem(LS_TRASH_RETENTION, String(days))
+  localStorage.setItem('muse-trash-retention-modified-at', new Date().toISOString())
+}
+
 async function trashDir(): Promise<string> {
   const dir = await travelNotesDir()
   return `${dir}/trash`
@@ -669,3 +674,43 @@ const travelSyncModule: SyncModule = {
 }
 
 syncService.register(travelSyncModule)
+
+// ─── Trash retention sync module ─────────────────────────────────────────────
+
+const MOD_TRASH = 'trashRetention'
+const LS_TRASH_MODIFIED_AT = 'muse-trash-retention-modified-at'
+
+const trashSyncModule: SyncModule = {
+  id: MOD_TRASH,
+  remoteDirs: ['settings'],
+  getLocalTimestamp() {
+    return localStorage.getItem(LS_TRASH_MODIFIED_AT) ?? new Date(0).toISOString()
+  },
+  async sync(ctx, localChanged) {
+    ctx.setProgress('同步回收站设置…')
+    const path = ctx.rp('settings/trash_retention.enc')
+    const raw = localStorage.getItem(LS_TRASH_RETENTION)
+    const localData = raw ? { days: parseInt(raw) } : {}
+
+    const remoteData = await ctx.getEncrypted<Record<string, unknown> | null>(path, null)
+
+    if (!remoteData) {
+      if (localChanged && Object.keys(localData).length > 0) {
+        await ctx.putEncrypted(path, localData)
+      }
+      return
+    }
+
+    const localTs = await this.getLocalTimestamp()
+    const remoteTs = (remoteData as Record<string, unknown> & { __syncTs?: string }).__syncTs ?? new Date(0).toISOString()
+
+    if (remoteTs > localTs && typeof remoteData.days === 'number') {
+      localStorage.setItem(LS_TRASH_RETENTION, String(remoteData.days))
+    }
+
+    if (!localChanged) return
+    await ctx.putEncrypted(path, { ...localData, __syncTs: new Date().toISOString() })
+  },
+}
+
+syncService.register(trashSyncModule)

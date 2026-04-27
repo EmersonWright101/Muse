@@ -5,7 +5,7 @@ import { FolderOpen, AlertTriangle, Check, X, ChevronDown, Pencil, Trash2, Plus,
 import { open } from '@tauri-apps/plugin-dialog'
 import { readDir, remove } from '@tauri-apps/plugin-fs'
 import { getDataRoot, setDataRoot, resolveDataRoot, migrateData } from '../../../utils/path'
-import { getTrashRetentionDays } from '../../../utils/travelStorage'
+import { getTrashRetentionDays, setTrashRetentionDays } from '../../../utils/travelStorage'
 import { useHomeStore, DEFAULT_PROMPT, FREQUENCY_OPTIONS } from '../../../stores/home'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
 
@@ -137,7 +137,6 @@ function deleteAnimal(index: number) {
 }
 
 // Trash retention
-const LS_TRASH_RETENTION = 'muse-trash-retention-days'
 const trashRetentionDays = ref<number>(getTrashRetentionDays())
 
 const RETENTION_OPTIONS = [
@@ -151,7 +150,7 @@ const RETENTION_OPTIONS = [
 
 function setTrashRetention(days: number) {
   trashRetentionDays.value = days
-  localStorage.setItem(LS_TRASH_RETENTION, String(days))
+  setTrashRetentionDays(days)
 }
 
 const languages = [

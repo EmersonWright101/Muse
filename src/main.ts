@@ -13,6 +13,11 @@ const app = createApp(App)
 
 app.mount('#app')
 
+// Disable browser context menu app-wide (it shows useless "Back/Reload" in Tauri).
+// Specific context menus (variant comparisons etc.) use Vue @contextmenu.prevent
+// handlers that fire before this listener and remain functional.
+document.addEventListener('contextmenu', (e) => e.preventDefault())
+
 // Show window after first paint to avoid white flash; CSS fade handles visual smoothness
 requestAnimationFrame(() => {
   getCurrentWindow().show()

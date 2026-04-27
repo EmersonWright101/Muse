@@ -9,6 +9,8 @@ const route = useRoute()
 const { t } = useI18n()
 const win = getCurrentWindow()
 
+const isWindows = navigator.userAgent.includes('Windows')
+
 const navItems = computed(() => [
   { path: '/chat',   icon: MessageSquare, labelKey: 'nav.chat' },
   { path: '/travel', icon: MapPin,        labelKey: 'nav.travel' },
@@ -28,7 +30,7 @@ async function onHeaderMouseDown(e: MouseEvent) {
   <aside class="app-sidebar">
     <!-- Traffic lights — draggable header area -->
     <div class="sidebar-header" @mousedown="onHeaderMouseDown">
-      <div class="traffic-lights">
+      <div v-if="!isWindows" class="traffic-lights">
         <button class="tl-btn tl-close" @click.stop="win.close()" @mousedown.stop>
           <svg class="tl-icon" viewBox="0 0 10 10" fill="none">
             <path d="M2.5 2.5l5 5M7.5 2.5l-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>

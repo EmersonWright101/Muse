@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { listConversations, loadConversation, type ChatMessage, type Conversation, type ConversationMeta } from '../utils/storage'
 import { useAiSettingsStore } from './aiSettings'
-import { resolveDataRoot } from '../utils/path'
+import { resolveDataRoot, normalizePath } from '../utils/path'
 import { readTextFile, writeTextFile, exists, mkdir } from '@tauri-apps/plugin-fs'
 import type { CopilotDailyStat } from './travelCopilot'
 import { loadPosterStatsFile } from './home'
@@ -116,7 +116,7 @@ async function readStatsCache(): Promise<StatsCache | null> {
 async function writeStatsCache(cache: StatsCache): Promise<void> {
   try {
     const path = await getStatsCachePath()
-    const dataDir = path.slice(0, path.lastIndexOf('/'))
+    const dataDir = normalizePath(path).slice(0, normalizePath(path).lastIndexOf('/'))
     if (!(await exists(dataDir))) await mkdir(dataDir, { recursive: true })
     await writeTextFile(path, JSON.stringify(cache, null, 2))
   } catch {

@@ -140,6 +140,24 @@ watch(localNumResults, (v) => {
           >{{ t }}</button>
         </div>
       </div>
+
+      <!-- Monthly usage counter -->
+      <div class="field usage-row">
+        <div class="usage-label">
+          <span>本月已使用</span>
+          <span class="usage-count" :class="{ warning: store.getMonthlyUsage(id) >= 900 }">
+            {{ store.getMonthlyUsage(id) }} / 1000
+          </span>
+        </div>
+        <div class="usage-bar-bg">
+          <div
+            class="usage-bar-fill"
+            :class="{ warning: store.getMonthlyUsage(id) >= 900 }"
+            :style="{ width: Math.min(store.getMonthlyUsage(id) / 1000 * 100, 100) + '%' }"
+          />
+        </div>
+        <p class="field-hint">免费额度每月自动重置（本地计数）</p>
+      </div>
     </div>
   </div>
 </template>
@@ -296,6 +314,39 @@ watch(localNumResults, (v) => {
 }
 .seg-btn:hover { background: rgba(0,0,0,0.04); }
 .seg-btn.active { background: rgba(34, 63, 121, 0.1); border-color: rgba(34, 63, 121, 0.3); color: #223F79; font-weight: 500; }
+
+/* Usage counter */
+.usage-row { gap: 8px; }
+
+.usage-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #3c3c43;
+}
+
+.usage-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: #223F79;
+}
+.usage-count.warning { color: #f59e0b; }
+
+.usage-bar-bg {
+  height: 4px;
+  background: rgba(0, 0, 0, 0.07);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  background: #223F79;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+.usage-bar-fill.warning { background: #f59e0b; }
 
 /* Range */
 .field-range {

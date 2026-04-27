@@ -8,7 +8,7 @@
 
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { resolveDataRoot } from '../utils/path'
+import { resolveDataRoot, normalizePath } from '../utils/path'
 import { readTextFile, writeTextFile, exists, mkdir, readDir, remove } from '@tauri-apps/plugin-fs'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { useAiSettingsStore } from './aiSettings'
@@ -160,7 +160,7 @@ async function listPosterIds(): Promise<string[]> {
 async function savePosterStats(stats: Record<string, PosterDailyStat>): Promise<void> {
   try {
     const path = await getPosterStatsPath()
-    const dir = path.slice(0, path.lastIndexOf('/'))
+    const dir = normalizePath(path).slice(0, normalizePath(path).lastIndexOf('/'))
     if (!(await exists(dir))) await mkdir(dir, { recursive: true })
     await writeTextFile(path, JSON.stringify(stats, null, 2))
   } catch { /* ignore */ }
@@ -336,11 +336,19 @@ export const useHomeStore = defineStore('home', () => {
       let imageBase64 = imageItem.b64_json ?? ''
 
       if (!imageBase64 && imageItem.url) {
-        const imgResp = await tauriFetch(imageItem.url, { method: 'GET' })
-        if (imgResp.ok) {
-          const imgText = await imgResp.text()
-          imageBase64 = imgText
-        }
+        try {
+          const imgResp = await tauriFetch(imageItem.url, { method: 'GET' })
+          if (imgResp.ok) {
+            const buf   = await imgResp.arrayBuffer()
+            const bytes = new Uint8Array(buf)
+            let binary  = ''
+            const chunk = 8192
+            for (let i = 0; i < bytes.length; i += chunk) {
+              binary += String.fromCharCode(...Array.from(bytes.subarray(i, i + chunk)))
+            }
+            imageBase64 = btoa(binary)
+          }
+        } catch { /* leave imageBase64 empty; error shown below */ }
       }
 
       const model = provider.models.find(m => m.id === mId)
@@ -509,6 +517,16 @@ const homeSyncModule: SyncModule = {
       if (Array.isArray(remoteSettings.animals) && remoteSettings.animals.length > 0) {
         store.animals = remoteSettings.animals
       }
+    }
+
+    // Sync last generated date
+    const lastGenPath = ctx.rp('home_posters/last_generated.enc')
+    const localLastGen = localStorage.getItem('muse-home-last-generated')
+    const remoteLastGen = await ctx.getEncrypted<{ date?: string } | null>(lastGenPath, null)
+    if (localChanged && localLastGen) {
+      await ctx.putEncrypted(lastGenPath, { date: localLastGen })
+    } else if (remoteLastGen?.date) {
+      localStorage.setItem('muse-home-last-generated', remoteLastGen.date)
     }
 
     // Sync poster stats

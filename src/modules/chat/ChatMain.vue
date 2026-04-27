@@ -14,6 +14,7 @@ import ModelSelector            from './components/ModelSelector.vue'
 import type { AttachmentMeta }  from '../../stores/chat'
 import { processPdfFile }       from '../../utils/pdf'
 import { saveConversation }     from '../../utils/storage'
+import './variantLayoutSync'
 
 const chat       = useChatStore()
 const assistants = useAssistantsStore()
@@ -103,6 +104,7 @@ async function send() {
   inputText.value     = ''
   pendingImages.value = []
   pdfWarning.value    = ''
+  pdfInfo.value       = ''
   await nextTick()
   adjustHeight()
   scrollToBottom(true)
@@ -142,6 +144,8 @@ async function handlePaste(e: ClipboardEvent) {
       const file = item.getAsFile()
       if (!file) continue
       pdfLoading.value = true
+      pdfWarning.value = ''
+      pdfInfo.value    = ''
       if (pdfNative.value) {
         // Native PDF provider (OpenRouter / Anthropic / Google) — just read base64, no text extraction needed
         const reader = new FileReader()
@@ -155,7 +159,12 @@ async function handlePaste(e: ClipboardEvent) {
       } else {
         try {
           const meta = await processPdfFile(file)
-          if (!meta.extractedText) pdfWarning.value = '该 PDF 可能为扫描件，文字无法提取。建议改用 Claude 或 Gemini。'
+          if (!meta.extractedText) {
+            pdfWarning.value = '该 PDF 可能为扫描件，文字无法提取。建议改用 Claude 或 Gemini。'
+          } else {
+            pdfInfo.value = `PDF 解析完成（${meta.pageCount} 页）`
+            clearPdfInfoAfter()
+          }
           pendingImages.value.push({ id: crypto.randomUUID(), name: file.name || 'document.pdf', mimeType: 'application/pdf', data: meta.base64, size: file.size, extractedText: meta.extractedText, pageCount: meta.pageCount })
         } catch {
           pdfWarning.value = 'PDF 解析失败，文字无法提取。建议改用 Claude 或 Gemini。'
@@ -178,6 +187,11 @@ async function handlePaste(e: ClipboardEvent) {
 const fileInput  = ref<HTMLInputElement>()
 const pdfLoading = ref(false)
 const pdfWarning = ref('')
+const pdfInfo    = ref('')
+
+function clearPdfInfoAfter(ms = 3000) {
+  setTimeout(() => { pdfInfo.value = '' }, ms)
+}
 
 function pickFile() {
   fileInput.value?.click()
@@ -202,6 +216,8 @@ async function handleFileChange(e: Event) {
       reader.readAsDataURL(file)
     } else if (file.type === 'application/pdf') {
       pdfLoading.value = true
+      pdfWarning.value = ''
+      pdfInfo.value    = ''
       if (pdfNative.value) {
         const reader = new FileReader()
         reader.onload = (ev) => {
@@ -214,7 +230,12 @@ async function handleFileChange(e: Event) {
       } else {
         try {
           const meta = await processPdfFile(file)
-          if (!meta.extractedText) pdfWarning.value = '该 PDF 可能为扫描件，文字无法提取。建议改用 Claude 或 Gemini。'
+          if (!meta.extractedText) {
+            pdfWarning.value = '该 PDF 可能为扫描件，文字无法提取。建议改用 Claude 或 Gemini。'
+          } else {
+            pdfInfo.value = `PDF 解析完成（${meta.pageCount} 页）`
+            clearPdfInfoAfter()
+          }
           pendingImages.value.push({ id: crypto.randomUUID(), name: file.name, mimeType: 'application/pdf', data: meta.base64, size: file.size, extractedText: meta.extractedText, pageCount: meta.pageCount })
         } catch {
           pdfWarning.value = 'PDF 解析失败，文字无法提取。建议改用 Claude 或 Gemini。'
@@ -426,8 +447,9 @@ onUnmounted(() => document.removeEventListener('mousedown', handleSecondModelOut
 
       <!-- Input area -->
       <div class="input-area">
-        <!-- PDF warning -->
+        <!-- PDF status feedback -->
         <div v-if="pdfWarning" class="pdf-warning">{{ pdfWarning }}</div>
+        <div v-if="pdfInfo" class="pdf-info">{{ pdfInfo }}</div>
 
         <!-- Unified input box -->
         <div class="input-box">
@@ -583,6 +605,16 @@ onUnmounted(() => document.removeEventListener('mousedown', handleSecondModelOut
   color: #b45309;
   background: #fef3c7;
   border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 0 0 6px;
+}
+
+.pdf-info {
+  font-size: 12px;
+  color: #15803d;
+  background: #dcfce7;
+  border: 1px solid #bbf7d0;
   border-radius: 6px;
   padding: 6px 10px;
   margin: 0 0 6px;

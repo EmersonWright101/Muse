@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Search, SquarePen, Trash2, ListChecks, X, Pin, Plus, Pencil, ChevronDown, Download } from 'lucide-vue-next'
+import { Search, SquarePen, Trash2, ListChecks, X, Pin, Plus, Pencil, ChevronDown, Download, RotateCcw } from 'lucide-vue-next'
 import { useChatStore }       from '../../stores/chat'
 import { useAssistantsStore, ASSISTANT_COLORS } from '../../stores/assistants'
 import { useAiSettingsStore } from '../../stores/aiSettings'
@@ -223,6 +223,15 @@ async function doExport(filter: ExportFilter) {
     setTimeout(() => { exportSuccess.value = false }, 2000)
   }
 }
+
+// ─── Trash ────────────────────────────────────────────────────────────────────
+
+const trashOpen = ref(false)
+
+function daysUntilExpiry(deletedAt: string): number {
+  const elapsed = Date.now() - new Date(deletedAt).getTime()
+  return Math.max(1, 30 - Math.floor(elapsed / 86_400_000))
+}
 </script>
 
 <template>
@@ -439,6 +448,31 @@ async function doExport(filter: ExportFilter) {
           </div>
         </div>
       </div>
+      <!-- Recently Deleted -->
+      <template v-if="!searchQuery && filterAssistantId === null && chat.trashedConversations.length > 0">
+        <div class="trash-header" @click="trashOpen = !trashOpen">
+          <span class="trash-label">最近删除 ({{ chat.trashedConversations.length }})</span>
+          <ChevronDown :size="10" class="trash-chevron" :class="{ open: trashOpen }" />
+        </div>
+        <Transition name="trash-expand">
+          <div v-if="trashOpen" class="trash-list">
+            <div
+              v-for="item in chat.trashedConversations"
+              :key="item.id"
+              class="trash-item"
+            >
+              <span class="trash-item-title" :title="item.title">{{ item.title.length > 14 ? item.title.slice(0, 14) + '…' : item.title }}</span>
+              <span class="trash-item-days">{{ daysUntilExpiry(item.deletedAt) }}天</span>
+              <button class="trash-action restore" title="恢复" @click="chat.restoreFromTrash(item.id)">
+                <RotateCcw :size="11" />
+              </button>
+              <button class="trash-action delete" title="永久删除" @click="chat.permanentDeleteOne(item.id)">
+                <Trash2 :size="11" />
+              </button>
+            </div>
+          </div>
+        </Transition>
+      </template>
     </div>
 
     <!-- Assistant form overlay -->
@@ -936,6 +970,90 @@ async function doExport(filter: ExportFilter) {
 
 .action-btn:hover { background: rgba(0, 0, 0, 0.06); color: #3c3c43; }
 .action-btn.danger:hover { background: rgba(255, 59, 48, 0.08); color: #ff3b30; }
+
+/* ─── Trash section ──────────────────────────────────────────────────────── */
+
+.trash-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.trash-label {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: #aeaeb2;
+  letter-spacing: 0.02em;
+}
+
+.trash-chevron {
+  color: #aeaeb2;
+  transition: transform 0.15s;
+}
+.trash-chevron.open { transform: rotate(180deg); }
+
+.trash-list {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 4px;
+}
+
+.trash-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  transition: background 0.10s;
+}
+
+.trash-item:hover { background: rgba(0, 0, 0, 0.04); }
+
+.trash-item-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: #8e8e93;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trash-item-days {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: #aeaeb2;
+  white-space: nowrap;
+}
+
+.trash-action {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #aeaeb2;
+  transition: background 0.10s, color 0.10s;
+}
+
+.trash-action.restore:hover { background: rgba(34, 63, 121, 0.08); color: #223F79; }
+.trash-action.delete:hover  { background: rgba(255, 59, 48, 0.08); color: #ff3b30; }
+
+.trash-expand-enter-active, .trash-expand-leave-active {
+  transition: opacity 0.15s, transform 0.15s;
+}
+.trash-expand-enter-from, .trash-expand-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
 
 /* ─── Assistant form overlay ──────────────────────────────────────────────── */
 

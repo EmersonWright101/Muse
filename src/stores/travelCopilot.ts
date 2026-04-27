@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { resolveDataRoot } from '../utils/path'
+import { resolveDataRoot, normalizePath } from '../utils/path'
 import { readTextFile, writeTextFile, exists, mkdir } from '@tauri-apps/plugin-fs'
 
 const LS_KEY             = 'muse-travel-copilot'
@@ -28,7 +28,7 @@ async function loadCopilotStats(): Promise<Record<string, CopilotDailyStat>> {
 async function saveCopilotStats(stats: Record<string, CopilotDailyStat>): Promise<void> {
   try {
     const path = await getCopilotStatsPath()
-    const dir  = path.slice(0, path.lastIndexOf('/'))
+    const dir  = normalizePath(path).slice(0, normalizePath(path).lastIndexOf('/'))
     if (!(await exists(dir))) await mkdir(dir, { recursive: true })
     await writeTextFile(path, JSON.stringify(stats, null, 2))
   } catch { /* ignore */ }

@@ -1,17 +1,11 @@
 /**
- * PDF utilities — text extraction via pdfjs-dist (runs entirely in-browser, no server needed).
+ * PDF utilities — text extraction via @libpdf/core.
  *
  * Extracted text is used as fallback for providers that don't natively support PDF
- * (OpenAI-compatible / OpenRouter).  Anthropic and Google receive the raw base64 PDF.
+ * (OpenAI-compatible / custom). Anthropic, Google and OpenRouter receive the raw base64 PDF.
  */
 
-import * as pdfjsLib from 'pdfjs-dist'
-
-// Point pdfjs at the bundled worker via Vite's static-asset URL resolution
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
-).href
+import { PDF } from '@libpdf/core'
 
 export interface PdfMeta {
   base64:        string
@@ -32,27 +26,23 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-/** Extract plain text from a PDF file.  Returns page-by-page text joined by newlines. */
+/** Extract plain text from a PDF file. Returns page-by-page text joined by newlines. */
 export async function extractPdfText(base64: string): Promise<{ text: string; pageCount: number }> {
   const binary = atob(base64)
   const bytes  = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
 
-  const pdf   = await pdfjsLib.getDocument({ data: bytes }).promise
-  const pages: string[] = []
+  const pdf = await PDF.load(bytes)
+  const pageCount = pdf.getPageCount()
 
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page    = await pdf.getPage(i)
-    const content = await page.getTextContent()
-    const text    = content.items
-      .map((item) => ('str' in item ? item.str : ''))
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim()
+  const pages: string[] = []
+  for (const page of pdf.getPages()) {
+    const pageText = page.extractText()
+    const text = pageText.text.replace(/\s+/g, ' ').trim()
     if (text) pages.push(text)
   }
 
-  return { text: pages.join('\n\n'), pageCount: pdf.numPages }
+  return { text: pages.join('\n\n'), pageCount }
 }
 
 /** Process a PDF File into a PdfMeta object ready to be stored in AttachmentMeta. */

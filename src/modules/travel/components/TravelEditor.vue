@@ -59,6 +59,7 @@ let _copilotAbort: AbortController | null = null
 let _copilotTimer: ReturnType<typeof setTimeout> | null = null
 let _skipBodyWatch  = false   // prevents body-watch from overwriting DOM while user is typing
 let _acceptingChunk = false   // prevents onCopilotBodyChange from dismissing ghost during chunk accept
+let _skipIdSync     = false   // prevents title-rename from resetting cursor via the id-watch
 
 const configuredProviders = computed(() =>
   aiStore.providers.filter(p => p.enabled && (p.apiKey || p.type === 'ollama'))
@@ -451,8 +452,11 @@ function syncEditorContent() {
   if (el) el.innerText = body.value
 }
 
-// Reload editor content when the active note changes
-watch(() => note.value?.id, () => { nextTick(syncEditorContent) })
+// Reload editor content when the active note changes (skip when just renaming current note)
+watch(() => note.value?.id, () => {
+  if (_skipIdSync) return
+  nextTick(syncEditorContent)
+})
 
 // Also sync on mount so content shows when navigating back to an already-selected note
 onMounted(() => { if (note.value) nextTick(syncEditorContent) })
@@ -462,7 +466,9 @@ const body = computed({
   get() {
     const raw = note.value.content
     const m = raw.match(/^---\s*\n[\s\S]*?\n---\s*\n?([\s\S]*)$/)
-    return m ? m[1] : raw
+    // trimStart() strips the blank line stringifyFrontmatter inserts after ---
+    // so body.value matches exactly what parseFrontmatter / the DOM return
+    return m ? m[1].trimStart() : raw
   },
   set(val: string) {
     store.setBody(val)
@@ -505,7 +511,11 @@ function confirmTitle() {
   if (t) {
     store.setTitle(t)
     const sanitized = sanitizeFilename(t)
-    if (sanitized) note.value.id = sanitized
+    if (sanitized) {
+      _skipIdSync = true
+      note.value.id = sanitized
+      nextTick(() => { _skipIdSync = false })
+    }
   }
   editingTitle.value = false
 }
@@ -689,7 +699,11 @@ watch(() => body.value, (val) => {
   const cur = el.innerText.replace(/\n$/, '')
   if (cur !== val) {
     if (_ghostSpan) removeGhostSpan(false)
+    // Save cursor before overwriting so programmatic updates don't jump to position 0
+    const focused = document.activeElement === el
+    const offset  = focused ? getBodyCursorOffset() : -1
     el.innerText = val
+    if (focused && offset >= 0) nextTick(() => setBodyCursorOffset(offset))
   }
 }, { flush: 'sync' })
 watch(() => note.value.title, triggerAutoSave)

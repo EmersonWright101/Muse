@@ -17,7 +17,7 @@ export default defineConfig(async () => ({
           'vendor-tauri':  ['@tauri-apps/api', '@tauri-apps/plugin-fs', '@tauri-apps/plugin-http', '@tauri-apps/plugin-opener', '@tauri-apps/plugin-updater', '@tauri-apps/plugin-process'],
           'vendor-render': ['marked', 'dompurify'],
           'vendor-hljs':   ['highlight.js'],
-          'vendor-pdf':    ['pdfjs-dist'],
+          'vendor-pdf':    ['@libpdf/core'],
           'vendor-tiptap': [
             '@tiptap/vue-3', '@tiptap/starter-kit', '@tiptap/extension-code-block',
             '@tiptap/extension-image', 'tiptap-markdown',

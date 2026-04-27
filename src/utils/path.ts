@@ -72,7 +72,7 @@ export async function homePostersDir(): Promise<string> {
 
 // ─── Safety helpers ──────────────────────────────────────────────────────────
 
-function normalizePath(p: string): string {
+export function normalizePath(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+$/, '')
 }
 

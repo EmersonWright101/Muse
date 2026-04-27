@@ -33,6 +33,9 @@ import { useAiSettingsStore, calculateModelCost } from './aiSettings'
 import { useAssistantsStore }   from './assistants'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { useChatSettingsStore, DEFAULT_TITLE_PROMPT } from './chatSettings'
+import { useWebSearchStore } from './webSearch'
+import { performSearch, formatSearchResultsForContext } from '../services/webSearch'
+import type { WebSearchResult } from '../utils/storage'
 
 export type { ConversationMeta, Conversation, ChatMessage, AttachmentMeta, MessageVariant }
 
@@ -532,7 +535,16 @@ function buildPayload(
   return messages
     .filter(m => !m.error)
     .map(m => {
-      const atts   = m.attachments ?? []
+      // In compare mode, use the actively-selected variant as the context for the next turn
+      const activeVariant = m.role === 'assistant' && m.activeVariantIdx && m.activeVariantIdx > 0
+        ? m.variants?.[m.activeVariantIdx - 1] ?? null
+        : null
+      const effectiveContent  = activeVariant?.content  ?? m.content
+      const effectiveReasoning = activeVariant?.reasoning ?? m.reasoning
+      // Rebuild a view of the message with effective content for payload building
+      const msg = activeVariant ? { ...m, content: effectiveContent, reasoning: effectiveReasoning } : m
+
+      const atts   = msg.attachments ?? []
       const images = atts.filter(a => a.mimeType?.startsWith('image/') && a.data)
       const pdfs   = atts.filter(a => a.mimeType === 'application/pdf' && a.data)
 
@@ -544,10 +556,10 @@ function buildPayload(
         for (const img of images) {
           parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } })
         }
-        if (m.content) parts.push({ text: m.content })
+        if (msg.content) parts.push({ text: msg.content })
         return {
-          role:    m.role === 'assistant' ? 'model' : 'user',
-          content: parts.length > 0 ? parts : [{ text: m.content }],
+          role:    msg.role === 'assistant' ? 'model' : 'user',
+          content: parts.length > 0 ? parts : [{ text: msg.content }],
         }
       }
 
@@ -565,11 +577,11 @@ function buildPayload(
             source: { type: 'base64', media_type: img.mimeType, data: img.data },
           })
         }
-        if (m.content) blocks.push({ type: 'text', text: m.content })
+        if (msg.content) blocks.push({ type: 'text', text: msg.content })
         if (blocks.length > 1 || pdfs.length > 0 || images.length > 0) {
-          return { role: m.role, content: blocks }
+          return { role: msg.role, content: blocks }
         }
-        return { role: m.role, content: m.content }
+        return { role: msg.role, content: msg.content }
       }
 
       // OpenAI-compatible: images → image_url; PDFs → native file block (OpenRouter) or extracted text (others)
@@ -592,30 +604,30 @@ function buildPayload(
               },
             })
           }
-          if (m.content) contentParts.push({ type: 'text', text: m.content })
-          return { role: m.role, content: contentParts }
+          if (msg.content) contentParts.push({ type: 'text', text: msg.content })
+          return { role: msg.role, content: contentParts }
         }
         // Fallback for other OpenAI-compatible providers: extract PDF text
         const pdfTexts = pdfs.map(
           pdf => `${pdf.name}\n${pdf.extractedText || '（无法提取文字内容，该 PDF 可能为扫描件）'}`,
         )
         const fullText = pdfTexts.length > 0
-          ? `${pdfTexts.join('\n\n')}\n\n---\n\n${m.content}`
-          : m.content
+          ? `${pdfTexts.join('\n\n')}\n\n---\n\n${msg.content}`
+          : msg.content
         if (images.length > 0) {
           contentParts.push({ type: 'text', text: fullText })
-          return { role: m.role, content: contentParts }
+          return { role: msg.role, content: contentParts }
         }
-        return { role: m.role, content: fullText }
+        return { role: msg.role, content: fullText }
       }
 
       // DeepSeek: reasoning_content is ignored by API for non-tool-calling turns,
       // but required for tool-calling turns, so it's safe to always include it.
-      if (baseUrl?.includes('deepseek') && m.role === 'assistant' && m.reasoning) {
-        return { role: m.role, content: m.content, reasoning_content: m.reasoning }
+      if (baseUrl?.includes('deepseek') && msg.role === 'assistant' && msg.reasoning) {
+        return { role: msg.role, content: msg.content, reasoning_content: msg.reasoning }
       }
 
-      return { role: m.role, content: m.content }
+      return { role: msg.role, content: msg.content }
     })
 }
 
@@ -641,6 +653,7 @@ export const useChatStore = defineStore('chat', () => {
   const streamingVariantMsgIds = reactive<Set<string>>(new Set())
   const useReasoning       = ref(false)
   const reasoningLevel     = ref<'low' | 'medium' | 'high'>('medium')
+  const webSearchEnabled   = ref(false)
 
   // Optional second model for simultaneous dual-model generation
   const secondProviderId = ref<string | null>(null)
@@ -874,7 +887,22 @@ export const useChatStore = defineStore('chat', () => {
     const assistant = conv.assistantId
       ? assistantsStore.assistants.find(a => a.id === conv.assistantId)
       : undefined
-    const systemPrompt = assistant?.systemPrompt || undefined
+    let systemPrompt = assistant?.systemPrompt || undefined
+
+    // ─── Web search injection ─────────────────────────────────────────────
+    const wsStore = useWebSearchStore()
+    if (webSearchEnabled.value && wsStore.hasApiKey(wsStore.activeProviderId) && userContent.trim()) {
+      try {
+        const wsKey     = await wsStore.getApiKey(wsStore.activeProviderId)
+        const wsOptions = wsStore.getSearchOptions(wsStore.activeProviderId)
+        const wsResults = await performSearch(wsStore.activeProviderId, wsKey, userContent.trim(), wsOptions) as WebSearchResult[]
+        if (wsResults.length > 0) {
+          userMsg.webSearchResults = wsResults
+          const ctx = formatSearchResultsForContext(wsResults, userContent.trim())
+          systemPrompt = systemPrompt ? `${systemPrompt}\n\n${ctx}` : ctx
+        }
+      } catch { /* silently skip on search error */ }
+    }
 
     const budgetMap = { low: 1024, medium: 8000, high: 32000 } as const
     const chatSettings = useChatSettingsStore()
@@ -1378,6 +1406,7 @@ export const useChatStore = defineStore('chat', () => {
     togglePin, renameConversation, streamingText, streamingReasoning, streamingMsgId,
     clearContext, removeContextCutoff,
     useReasoning, reasoningLevel, setReasoning, setReasoningLevel,
+    webSearchEnabled,
     regenerateWithModel, setActiveVariant, deleteVariant, streamingVariantMsgIds,
     setMessageFeedback, setVariantFeedbackBySlot,
     secondProviderId, secondModelId: secondModelId_, setSecondModel,

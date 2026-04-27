@@ -120,6 +120,8 @@ export default {
       language:      'Language',
       notifications: 'Notifications',
       ai:            'AI Assistant',
+      chat:          'Chat',
+      webSearch:     'Web Search',
       sync:          'Sync',
       privacy:       'Privacy & Security',
       about:         'About',

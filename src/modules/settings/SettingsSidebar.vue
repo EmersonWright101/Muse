@@ -15,7 +15,7 @@ const ui    = useUiStore()
 const sections = [
   { id: 'general', icon: SlidersHorizontal, labelKey: 'settings.sections.general' },
   { id: 'ai',      icon: Bot,               labelKey: 'settings.sections.ai' },
-  { id: 'chat',    icon: MessageSquare,     label: '对话' },
+  { id: 'chat',    icon: MessageSquare,     labelKey: 'settings.sections.chat' },
   { id: 'sync',    icon: CloudUpload,       labelKey: 'settings.sections.sync' },
   { id: 'about',   icon: Info,              labelKey: 'settings.sections.about' },
 ]
@@ -42,7 +42,7 @@ function select(id: string) {
         @click="select(section.id)"
       >
         <component :is="section.icon" :size="15" class="item-icon" />
-        <span class="item-label">{{ section.label ?? t(section.labelKey!) }}</span>
+        <span class="item-label">{{ t(section.labelKey) }}</span>
       </div>
     </div>
   </div>

@@ -3,11 +3,12 @@ import {
   ref, computed, watch, nextTick, onMounted, onUnmounted,
 } from 'vue'
 import {
-  Send, Square, Paperclip, MessageSquare, X, FileText, Eraser, SquarePen, Brain, Plus, Check,
+  Send, Square, Paperclip, MessageSquare, X, FileText, Eraser, SquarePen, Brain, Plus, Check, Globe,
 } from 'lucide-vue-next'
 import { useChatStore }         from '../../stores/chat'
 import { useAssistantsStore }   from '../../stores/assistants'
 import { useAiSettingsStore }   from '../../stores/aiSettings'
+import { useWebSearchStore }    from '../../stores/webSearch'
 import MessageItem              from './components/MessageItem.vue'
 import ModelSelector            from './components/ModelSelector.vue'
 import type { AttachmentMeta }  from '../../stores/chat'
@@ -17,6 +18,7 @@ import { saveConversation }     from '../../utils/storage'
 const chat       = useChatStore()
 const assistants = useAssistantsStore()
 const aiSettings = useAiSettingsStore()
+const wsStore    = useWebSearchStore()
 
 // Providers that accept PDFs natively — skip local text extraction for these
 const pdfNative = computed(() => {
@@ -103,6 +105,7 @@ async function send() {
   pdfWarning.value    = ''
   await nextTick()
   adjustHeight()
+  scrollToBottom(true)
   await chat.sendMessage(text, images.length ? images : undefined)
 }
 
@@ -470,6 +473,15 @@ onUnmounted(() => document.removeEventListener('mousedown', handleSecondModelOut
             </button>
             <button class="toolbar-btn" title="附加图片或 PDF" @click="pickFile">
               <Paperclip :size="15" />
+            </button>
+            <!-- Web search toggle -->
+            <button
+              class="toolbar-btn"
+              :class="{ 'toolbar-btn-active': chat.webSearchEnabled }"
+              :title="wsStore.hasApiKey(wsStore.activeProviderId) ? '联网搜索' : '联网搜索（请先在设置中配置 API Key）'"
+              @click="wsStore.hasApiKey(wsStore.activeProviderId) && (chat.webSearchEnabled = !chat.webSearchEnabled)"
+            >
+              <Globe :size="15" />
             </button>
             <!-- Reasoning picker -->
             <div ref="reasoningRoot" class="reasoning-picker">

@@ -437,19 +437,21 @@ onMounted(async () => {
   margin-bottom: 12px;
 }
 
-/* Feature (hero) card */
-.feature-section {}
+/* Feature (hero) card — always 16:9 to match generated image dimensions */
+.feature-section {
+  flex-shrink: 0;
+}
 
 .feature-card {
   width: 100%;
-  aspect-ratio: 16 / 7;
+  aspect-ratio: 16 / 9;
   border-radius: 18px;
 }
 
 /* Grid cards */
 .poster-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(2, 1fr);
   gap: 14px;
 }
 
@@ -481,6 +483,7 @@ onMounted(async () => {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center;
   display: block;
 }
 
@@ -593,8 +596,9 @@ onMounted(async () => {
 .lightbox-image {
   width: 100%;
   display: block;
-  max-height: 70vh;
-  object-fit: cover;
+  max-height: 80vh;
+  object-fit: contain;
+  background: #000;
 }
 
 .lightbox-info {

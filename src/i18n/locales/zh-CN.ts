@@ -120,6 +120,8 @@ export default {
       language:     '语言',
       notifications:'通知',
       ai:           'AI 助手',
+      chat:         '对话',
+      webSearch:    '联网搜索',
       sync:         '同步',
       privacy:      '隐私与安全',
       about:        '关于',

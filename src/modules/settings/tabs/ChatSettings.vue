@@ -1,10 +1,40 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, watch, computed } from 'vue'
+import { Eye, EyeOff } from 'lucide-vue-next'
 import { useChatSettingsStore, DEFAULT_TITLE_PROMPT } from '../../../stores/chatSettings'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
+import { useWebSearchStore } from '../../../stores/webSearch'
+import { listWebSearchProviders } from '../../../services/webSearch'
 
 const chatSettings = useChatSettingsStore()
 const ai           = useAiSettingsStore()
+const ws           = useWebSearchStore()
+
+const searchProviders = listWebSearchProviders()
+
+// ─── Web search API key input ─────────────────────────────────────────────────
+const wsApiKeyInput   = ref('')
+const wsKeyVisible    = ref(false)
+const wsKeySaved      = ref(false)
+
+// Populate from store on mount
+if (ws.hasApiKey(ws.activeProviderId)) {
+  ws.getApiKey(ws.activeProviderId).then(k => { wsApiKeyInput.value = k })
+}
+
+// Watch provider switch and reload key
+watch(() => ws.activeProviderId, async (id) => {
+  wsApiKeyInput.value = ws.hasApiKey(id) ? await ws.getApiKey(id) : ''
+})
+
+async function saveWsApiKey() {
+  await ws.setApiKey(ws.activeProviderId, wsApiKeyInput.value.trim())
+  wsKeySaved.value = true
+  setTimeout(() => { wsKeySaved.value = false }, 1500)
+}
+
+const wsNumResults = ref(ws.getNumResults(ws.activeProviderId))
+watch(wsNumResults, v => ws.setNumResults(ws.activeProviderId, v))
 
 // Providers that have a valid API key configured
 const availableProviders = computed(() =>
@@ -119,6 +149,71 @@ function resetPrompt() {
           step="256"
           class="field-input"
         />
+      </div>
+    </div>
+
+    <!-- Web search config -->
+    <div class="section-card">
+      <h2 class="section-title">联网搜索</h2>
+      <p class="section-desc">对话时通过搜索引擎获取最新信息，搜索结果将注入上下文发送给 AI。可在输入框工具栏随时切换开关。</p>
+
+      <div class="field">
+        <label class="field-label">搜索供应商</label>
+        <select
+          v-model="ws.activeProviderId"
+          class="field-select"
+        >
+          <option v-for="p in searchProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label class="field-label">API Key</label>
+        <div class="key-row">
+          <input
+            v-model="wsApiKeyInput"
+            :type="wsKeyVisible ? 'text' : 'password'"
+            class="field-input key-input"
+            placeholder="粘贴你的 API Key…"
+            spellcheck="false"
+            autocomplete="off"
+            @blur="saveWsApiKey"
+            @keydown.enter.prevent="saveWsApiKey"
+          />
+          <button class="icon-btn" :title="wsKeyVisible ? '隐藏' : '显示'" @click="wsKeyVisible = !wsKeyVisible">
+            <EyeOff v-if="wsKeyVisible" :size="14" />
+            <Eye v-else :size="14" />
+          </button>
+          <button class="save-key-btn" :class="{ saved: wsKeySaved }" @click="saveWsApiKey">
+            {{ wsKeySaved ? '已保存' : '保存' }}
+          </button>
+        </div>
+        <p v-if="ws.activeProviderId === 'exa'" class="field-hint">
+          在 <a href="https://dashboard.exa.ai/api-keys" target="_blank" class="link">dashboard.exa.ai</a> 获取 API Key。
+        </p>
+      </div>
+
+      <div class="field">
+        <div class="field-label-row">
+          <label class="field-label">搜索结果数量</label>
+          <span class="param-value">{{ wsNumResults }}</span>
+        </div>
+        <input v-model.number="wsNumResults" type="range" min="1" max="10" step="1" class="field-range" />
+        <div class="range-labels"><span>1</span><span>5</span><span>10</span></div>
+      </div>
+
+      <div v-if="ws.activeProviderId === 'exa'" class="field">
+        <label class="field-label">搜索模式</label>
+        <p class="field-hint">auto 自动平衡速度与质量；fast 更快；deep 深度搜索但较慢。</p>
+        <div class="seg-group">
+          <button
+            v-for="t in (['auto', 'fast', 'deep'] as const)"
+            :key="t"
+            class="seg-btn"
+            :class="{ active: ws.exaSearchType === t }"
+            @click="ws.exaSearchType = t"
+          >{{ t }}</button>
+        </div>
       </div>
     </div>
   </div>
@@ -281,4 +376,42 @@ function resetPrompt() {
 }
 
 .field-input:focus { border-color: rgba(34, 63, 121, 0.4); }
+
+.key-row { display: flex; gap: 6px; align-items: center; }
+.key-input { flex: 1; width: auto; }
+
+.icon-btn {
+  width: 32px; height: 32px;
+  border: 1.5px solid rgba(0, 0, 0, 0.10);
+  border-radius: 8px; background: white; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  color: #8e8e93; flex-shrink: 0; transition: border-color 0.15s, color 0.15s;
+}
+.icon-btn:hover { color: #3c3c43; border-color: rgba(0, 0, 0, 0.2); }
+
+.save-key-btn {
+  height: 32px; padding: 0 12px;
+  border: 1.5px solid rgba(34, 63, 121, 0.3); border-radius: 8px;
+  background: white; color: #223F79; font-size: 12px; font-family: inherit;
+  cursor: pointer; white-space: nowrap; transition: background 0.15s, color 0.15s;
+}
+.save-key-btn:hover { background: rgba(34, 63, 121, 0.06); }
+.save-key-btn.saved { background: #22c55e; color: white; border-color: #22c55e; }
+
+.link { color: #223F79; text-decoration: none; }
+.link:hover { text-decoration: underline; }
+
+.seg-group { display: flex; gap: 4px; }
+.seg-btn {
+  height: 28px; padding: 0 12px;
+  border: 1.5px solid rgba(0, 0, 0, 0.10); border-radius: 8px;
+  background: white; color: #3c3c43; font-size: 12px; font-family: inherit;
+  cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.seg-btn:hover { background: rgba(0,0,0,0.04); }
+.seg-btn.active {
+  background: rgba(34, 63, 121, 0.10);
+  border-color: rgba(34, 63, 121, 0.30);
+  color: #223F79; font-weight: 500;
+}
 </style>

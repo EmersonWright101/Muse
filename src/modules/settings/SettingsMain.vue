@@ -2,10 +2,10 @@
 import { computed } from 'vue'
 import { useUiStore } from '../../stores/uiStore'
 import GeneralSettings from './tabs/GeneralSettings.vue'
-import AISettings      from './tabs/AISettings.vue'
-import SyncSettings    from './tabs/SyncSettings.vue'
-import AboutSettings   from './tabs/AboutSettings.vue'
-import ChatSettings    from './tabs/ChatSettings.vue'
+import AISettings     from './tabs/AISettings.vue'
+import SyncSettings   from './tabs/SyncSettings.vue'
+import AboutSettings  from './tabs/AboutSettings.vue'
+import ChatSettings   from './tabs/ChatSettings.vue'
 
 const ui = useUiStore()
 

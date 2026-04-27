@@ -53,6 +53,13 @@ export interface MessageVariant {
   feedback?:    'positive' | 'negative' | null;
 }
 
+export interface WebSearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+  publishedDate?: string;
+}
+
 export interface ChatMessage {
   id:          string;
   role:        'user' | 'assistant' | 'system';
@@ -68,6 +75,7 @@ export interface ChatMessage {
   variants?:        MessageVariant[];
   activeVariantIdx?: number;  // 0 = original, 1+ = variants[activeVariantIdx-1]
   feedback?:    'positive' | 'negative' | null;
+  webSearchResults?: WebSearchResult[];
 }
 
 export interface Assistant {

@@ -305,6 +305,10 @@ function slotContent(msg: typeof props.message, slotIdx: number): string {
   return slotIdx === 0 ? (msg.content ?? '') : (msg.variants?.[slotIdx - 1]?.content ?? '')
 }
 
+function slotReasoning(msg: typeof props.message, slotIdx: number): string | undefined {
+  return slotIdx === 0 ? msg.reasoning : msg.variants?.[slotIdx - 1]?.reasoning
+}
+
 function slotUsage(msg: typeof props.message, slotIdx: number) {
   return slotIdx === 0 ? msg.usage : msg.variants?.[slotIdx - 1]?.usage
 }
@@ -709,6 +713,15 @@ function showSaveToast(msg: string) {
             <span class="compare-model-name">{{ slot.model.includes('/') ? slot.model.split('/').at(-1) : slot.model }}</span>
             <span v-if="isSlotStreaming(message.id, idx)" class="compare-streaming-dot" />
           </div>
+
+          <!-- Column reasoning (collapsible) -->
+          <details
+            v-if="slotReasoning(message, idx)"
+            class="compare-reasoning"
+          >
+            <summary class="compare-reasoning-summary">思考过程</summary>
+            <div class="compare-reasoning-body">{{ slotReasoning(message, idx) }}</div>
+          </details>
 
           <!-- Column content -->
           <div
@@ -1200,6 +1213,41 @@ function showSaveToast(msg: string) {
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
+}
+
+.compare-reasoning {
+  margin: 6px 10px 0;
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 8px;
+  background: rgba(248,248,252,0.9);
+  overflow: hidden;
+}
+.compare-reasoning-summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  color: #8e8e93;
+  padding: 5px 10px;
+  user-select: none;
+  list-style: none;
+}
+.compare-reasoning-summary::-webkit-details-marker { display: none; }
+.compare-reasoning-summary::before {
+  content: '▶ ';
+  font-size: 9px;
+  transition: transform 0.15s;
+}
+details[open] .compare-reasoning-summary::before { content: '▼ '; }
+.compare-reasoning-body {
+  padding: 6px 10px 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #8e8e93;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-top: 1px solid rgba(0,0,0,0.06);
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 .compare-content {

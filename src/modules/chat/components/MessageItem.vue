@@ -333,10 +333,12 @@ function slotMediaOutputs(msg: typeof props.message, slotIdx: number) {
   return slotIdx === 0 ? msg.mediaOutputs : msg.variants?.[slotIdx - 1]?.mediaOutputs
 }
 
-// Media outputs for the currently active tab (slot 0 = primary, slots 1+ = variants)
-const displayedMediaOutputs = computed(() =>
-  activeVariantData.value?.mediaOutputs ?? props.message.mediaOutputs
-)
+// Media outputs for the currently active tab (slot 0 = primary, slots 1+ = variants).
+// Never fall back to primary slot images when a variant is active — each slot owns its own outputs.
+const displayedMediaOutputs = computed(() => {
+  if (activeVariantIdx.value === 0) return props.message.mediaOutputs
+  return activeVariantData.value?.mediaOutputs
+})
 
 // ─── @ Model picker ───────────────────────────────────────────────────────────
 

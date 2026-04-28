@@ -108,7 +108,8 @@ function scrollToBottom(force = false) {
   })
 }
 
-watch(() => messages.value.length, () => scrollToBottom())
+// New messages always force-scroll; streaming updates respect the user's scroll position
+watch(() => messages.value.length, () => scrollToBottom(true))
 watch(() => chat.streamingText,      () => scrollToBottom())
 watch(() => chat.streamingReasoning, () => scrollToBottom())
 
@@ -139,7 +140,6 @@ async function send() {
   pdfInfo.value       = ''
   await nextTick()
   adjustHeight()
-  scrollToBottom(true)
   await chat.sendMessage(text, images.length ? images : undefined)
 }
 

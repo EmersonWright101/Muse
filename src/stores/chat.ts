@@ -41,6 +41,7 @@ import { useChatSettingsStore, DEFAULT_TITLE_PROMPT } from './chatSettings'
 import { useWebSearchStore } from './webSearch'
 import { performSearch, formatSearchResultsForContext } from '../services/webSearch'
 import type { WebSearchResult } from '../utils/storage'
+import { ocrImage } from '../utils/ocr'
 
 export type { ConversationMeta, TrashedConversationMeta, Conversation, ChatMessage, AttachmentMeta, MessageVariant }
 
@@ -581,6 +582,26 @@ async function streamOllama(
   handler.onDone({})
 }
 
+// ─── OCR pre-processing for non-multimodal OpenAI-compatible providers ────────
+
+async function applyOcrToImages(messages: ChatMessage[]): Promise<ChatMessage[]> {
+  return Promise.all(messages.map(async msg => {
+    if (msg.role !== 'user' || !msg.attachments) return msg
+    const needsOcr = msg.attachments.some(
+      a => a.mimeType?.startsWith('image/') && a.data && !a.extractedText,
+    )
+    if (!needsOcr) return msg
+    const atts = await Promise.all(msg.attachments.map(async att => {
+      if (att.mimeType?.startsWith('image/') && att.data && !att.extractedText) {
+        const text = await ocrImage(att.data, att.mimeType)
+        return { ...att, extractedText: text || '（图片内容无法识别）' }
+      }
+      return att
+    }))
+    return { ...msg, attachments: atts }
+  }))
+}
+
 // ─── PDF provider routing (mirrors Cherry Studio's PDF_NATIVE_PROVIDER_TYPES) ─
 
 const PDF_NATIVE_PROVIDERS = new Set(['anthropic', 'google'])
@@ -645,10 +666,14 @@ function buildPayload(
         return { role: msg.role, content: msg.content }
       }
 
-      // OpenAI-compatible: images → image_url; PDFs → native file block (OpenRouter) or extracted text (others)
+      // OpenAI-compatible: images → image_url (or OCR text if pre-processed); PDFs → native (OpenRouter) or extracted text
       if (pdfs.length > 0 || images.length > 0) {
+        // Images with extractedText were OCR'd for non-multimodal providers — treat as text, not image_url
+        const imagesForUrl  = images.filter(img => !img.extractedText)
+        const imagesAsText  = images.filter(img =>  img.extractedText)
+
         const contentParts: unknown[] = []
-        for (const img of images) {
+        for (const img of imagesForUrl) {
           contentParts.push({
             type:      'image_url',
             image_url: { url: `data:${img.mimeType};base64,${img.data}` },
@@ -665,17 +690,21 @@ function buildPayload(
               },
             })
           }
-          if (msg.content) contentParts.push({ type: 'text', text: msg.content })
+          const ocrTexts = imagesAsText.map(img => `[图片OCR内容]\n${img.extractedText}`)
+          const textParts = [...ocrTexts, msg.content].filter(Boolean).join('\n\n---\n\n')
+          if (textParts) contentParts.push({ type: 'text', text: textParts })
           return { role: msg.role, content: contentParts }
         }
-        // Fallback for other OpenAI-compatible providers: extract PDF text
+        // Fallback for other OpenAI-compatible providers: extracted PDF text + OCR text
+        const ocrTexts = imagesAsText.map(img => `[图片OCR内容]\n${img.extractedText}`)
         const pdfTexts = pdfs.map(
           pdf => `${pdf.name}\n${pdf.extractedText || '（无法提取文字内容，该 PDF 可能为扫描件）'}`,
         )
-        const fullText = pdfTexts.length > 0
-          ? `${pdfTexts.join('\n\n')}\n\n---\n\n${msg.content}`
+        const allTexts = [...ocrTexts, ...pdfTexts]
+        const fullText = allTexts.length > 0
+          ? `${allTexts.join('\n\n')}\n\n---\n\n${msg.content}`
           : msg.content
-        if (images.length > 0) {
+        if (imagesForUrl.length > 0) {
           contentParts.push({ type: 'text', text: fullText })
           return { role: msg.role, content: contentParts }
         }
@@ -946,6 +975,17 @@ export const useChatStore = defineStore('chat', () => {
       const cutoffIdx = msgsForApi.findIndex(m => m.id === conv.contextCutoffMsgId)
       if (cutoffIdx >= 0) msgsForApi = msgsForApi.slice(cutoffIdx + 1)
     }
+
+    // For providers that don't support multimodal input, OCR images into text before sending
+    const modelInfo0 = provider.models.find(m => m.id === mid)
+    const needsOcr0  = provider.type !== 'anthropic'
+      && provider.type !== 'google'
+      && provider.type !== 'ollama'
+      && !isOpenRouter(provider.baseUrl)
+      && !modelInfo0?.multimodal
+      && !modelInfo0?.imageOutput
+    if (needsOcr0) msgsForApi = await applyOcrToImages(msgsForApi)
+
     const payload   = buildPayload(msgsForApi, provider.type, provider.baseUrl)
     const startedAt = Date.now()
 
@@ -1184,7 +1224,18 @@ export const useChatStore = defineStore('chat', () => {
     if (!provider || (!provider.apiKey && provider.type !== 'ollama')) return
 
     // Context = everything before this assistant message
-    const msgsForApi = conv.messages.slice(0, msgIdx)
+    let msgsForApi = conv.messages.slice(0, msgIdx)
+
+    // OCR images for non-multimodal providers
+    const modelInfo1 = provider.models.find(m => m.id === modelId)
+    const needsOcr1  = provider.type !== 'anthropic'
+      && provider.type !== 'google'
+      && provider.type !== 'ollama'
+      && !isOpenRouter(provider.baseUrl)
+      && !modelInfo1?.multimodal
+      && !modelInfo1?.imageOutput
+    if (needsOcr1) msgsForApi = await applyOcrToImages(msgsForApi)
+
     const payload    = buildPayload(msgsForApi, provider.type, provider.baseUrl)
 
     const msg = conv.messages[msgIdx]

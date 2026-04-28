@@ -121,6 +121,37 @@ function formatTime(iso: string): string {
   return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
 }
 
+// ─── Conversation context menu ───────────────────────────────────────────────
+
+const convMenuOpen   = ref(false)
+const convMenuConvId = ref<string | null>(null)
+const convMenuPos    = ref({ x: 0, y: 0 })
+
+function openConvMenu(e: MouseEvent, convId: string) {
+  if (chat.batchMode) return
+  convMenuConvId.value = convId
+  convMenuPos.value    = { x: e.clientX, y: e.clientY }
+  convMenuOpen.value   = true
+}
+
+function closeConvMenu() {
+  convMenuOpen.value = false
+}
+
+function convMenuRename() {
+  const conv = chat.conversations.find(c => c.id === convMenuConvId.value)
+  if (conv) startRename(conv.id, conv.title)
+  closeConvMenu()
+}
+
+function convMenuDelete() {
+  if (convMenuConvId.value) chat.deleteOne(convMenuConvId.value)
+  closeConvMenu()
+}
+
+onMounted(()  => document.addEventListener('click', closeConvMenu))
+onUnmounted(() => document.removeEventListener('click', closeConvMenu))
+
 // ─── Click item ───────────────────────────────────────────────────────────────
 
 function clickItem(id: string) {
@@ -379,6 +410,7 @@ function daysUntilExpiry(deletedAt: string): number {
           pinned:   conv.pinned,
         }"
         @click="clickItem(conv.id)"
+        @contextmenu.prevent="openConvMenu($event, conv.id)"
       >
         <!-- Batch checkbox -->
         <div v-if="chat.batchMode" class="item-check">
@@ -537,7 +569,28 @@ function daysUntilExpiry(deletedAt: string): number {
         </div>
       </div>
     </Transition>
+
   </div>
+
+  <!-- Teleport outside backdrop-filter stacking context so position:fixed uses viewport coords -->
+  <Teleport to="body">
+    <div
+      v-if="convMenuOpen"
+      class="conv-context-menu"
+      :style="{ left: convMenuPos.x + 'px', top: convMenuPos.y + 'px' }"
+      @click.stop
+    >
+      <button class="conv-menu-item" @click="convMenuRename">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        <span>编辑话题名称</span>
+      </button>
+      <div class="conv-menu-divider" />
+      <button class="conv-menu-item danger" @click="convMenuDelete">
+        <Trash2 :size="13" />
+        <span>删除对话</span>
+      </button>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -1303,5 +1356,49 @@ function daysUntilExpiry(deletedAt: string): number {
 .form-fade-enter-from .form-panel,
 .form-fade-leave-to .form-panel {
   transform: translateY(24px);
+}
+
+</style>
+
+<!-- Context menu is teleported to <body>, so styles must be global (not scoped) -->
+<style>
+.conv-context-menu {
+  position: fixed;
+  z-index: 2000;
+  background: rgba(250, 250, 252, 0.97);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 0 0 0.5px rgba(255, 255, 255, 0.6) inset;
+  padding: 4px;
+  min-width: 150px;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.conv-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 12px;
+  border: none;
+  background: none;
+  border-radius: 7px;
+  font-size: 13px;
+  color: #3c3c43;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.conv-menu-item:hover { background: rgba(0, 0, 0, 0.05); }
+
+.conv-menu-item.danger { color: #ff3b30; }
+.conv-menu-item.danger:hover { background: rgba(255, 59, 48, 0.08); }
+
+.conv-menu-divider {
+  height: 1px;
+  background: rgba(0, 0, 0, 0.06);
+  margin: 3px 6px;
 }
 </style>

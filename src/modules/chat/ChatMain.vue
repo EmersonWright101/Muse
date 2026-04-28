@@ -555,11 +555,17 @@ onUnmounted(() => document.removeEventListener('mousedown', handleSecondModelOut
             <div ref="reasoningRoot" class="reasoning-picker">
               <button
                 class="toolbar-btn"
-                :class="{ 'toolbar-btn-active': chat.useReasoning }"
+                :class="[
+                  { 'toolbar-btn-active': chat.useReasoning },
+                  chat.useReasoning ? `reasoning-active-${chat.reasoningLevel}` : ''
+                ]"
                 title="推理设置"
                 @click="reasoningOpen = !reasoningOpen"
               >
                 <Brain :size="15" />
+                <span v-if="chat.useReasoning" class="reasoning-level-badge">
+                  {{ chat.reasoningLevel === 'low' ? '低' : chat.reasoningLevel === 'medium' ? '中' : '高' }}
+                </span>
               </button>
               <Transition name="reasoning-drop">
                 <div v-if="reasoningOpen" class="reasoning-popover">
@@ -952,6 +958,17 @@ onUnmounted(() => document.removeEventListener('mousedown', handleSecondModelOut
 
 .toolbar-btn:hover { background: rgba(0, 0, 0, 0.06); color: #3c3c43; }
 .toolbar-btn-active { color: #223F79 !important; background: rgba(34, 63, 121, 0.08) !important; }
+
+/* Reasoning level: wider button to fit the badge, plus level-specific accent colors */
+.toolbar-btn:has(.reasoning-level-badge) { width: auto; padding: 0 7px; gap: 3px; }
+.reasoning-level-badge {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+.reasoning-active-low    { color: #34c759 !important; background: rgba(52, 199, 89, 0.10) !important; }
+.reasoning-active-medium { color: #223F79 !important; background: rgba(34, 63, 121, 0.10) !important; }
+.reasoning-active-high   { color: #ff9f0a !important; background: rgba(255, 159, 10, 0.12) !important; }
 
 .send-btn {
   width: 30px;

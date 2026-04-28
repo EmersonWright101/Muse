@@ -885,7 +885,7 @@ function daysUntilExpiry(deletedAt: string): number {
 }
 
 .list-item:hover { background: rgba(0, 0, 0, 0.05); }
-.list-item.active { background: rgba(34, 63, 121, 0.10); }
+.list-item.active { background: rgba(34, 63, 121, 0.14); }
 .list-item.selected { background: rgba(34, 63, 121, 0.08); }
 
 .item-check { flex-shrink: 0; }
@@ -943,7 +943,7 @@ function daysUntilExpiry(deletedAt: string): number {
   min-width: 0;
 }
 
-.list-item.active .item-title { color: #223F79; }
+.list-item.active .item-title { color: #223F79; font-weight: 600; }
 
 .item-right {
   position: relative;

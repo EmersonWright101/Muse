@@ -2,19 +2,22 @@
 import { computed, onMounted, ref } from 'vue'
 import { useHomeStore, type AnimalPoster } from '../../stores/home'
 import { useI18n } from 'vue-i18n'
-import { Sparkles, Settings, Trash2, X, ZoomIn, RefreshCw } from 'lucide-vue-next'
+import { Sparkles, Settings, Trash2, X, ZoomIn, RefreshCw, Copy, Download, Check } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 
 const { t } = useI18n()
 const home = useHomeStore()
 const router = useRouter()
 
-const lightboxPoster = ref<AnimalPoster | null>(null)
+const lightboxPoster  = ref<AnimalPoster | null>(null)
 const deleteConfirmId = ref<string | null>(null)
+const copiedPosterId  = ref<string | null>(null)
 
 const posters = computed(() => home.posters)
 const isEmpty = computed(() => posters.value.length === 0 && !home.isGenerating)
-const isConfigured = computed(() => home.settings.enabled && home.settings.providerId)
+// Show manual-generate controls whenever a provider is selected.
+// The `enabled` flag only gates auto-generation, not the user-triggered button.
+const isConfigured = computed(() => !!home.settings.providerId)
 
 async function handleGenerate() {
   if (home.isGenerating) return
@@ -44,6 +47,27 @@ async function doDelete() {
 
 function goSettings() {
   router.push('/settings')
+}
+
+async function copyPosterImage(poster: AnimalPoster) {
+  if (!poster.imageBase64) return
+  try {
+    const bin = atob(poster.imageBase64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    const blob = new Blob([bytes], { type: 'image/png' })
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+    copiedPosterId.value = poster.id
+    setTimeout(() => { copiedPosterId.value = null }, 2000)
+  } catch { /* silently fail on unsupported browser */ }
+}
+
+async function downloadPosterImage(poster: AnimalPoster) {
+  if (!poster.imageBase64) return
+  const a = document.createElement('a')
+  a.href = `data:image/png;base64,${poster.imageBase64}`
+  a.download = `${poster.animalName}-${poster.date}.png`
+  a.click()
 }
 
 function formatDate(dateStr: string): string {
@@ -153,6 +177,20 @@ onMounted(async () => {
           <div class="zoom-hint">
             <ZoomIn :size="14" />
           </div>
+          <div class="poster-action-bar">
+            <button
+              class="poster-action-btn"
+              :class="{ copied: copiedPosterId === posters[0].id }"
+              title="复制图片"
+              @click.stop="copyPosterImage(posters[0])"
+            >
+              <Check v-if="copiedPosterId === posters[0].id" :size="13" />
+              <Copy v-else :size="13" />
+            </button>
+            <button class="poster-action-btn" title="下载图片" @click.stop="downloadPosterImage(posters[0])">
+              <Download :size="13" />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -187,6 +225,20 @@ onMounted(async () => {
                 @click.stop="confirmDelete(poster.id)"
               >
                 <Trash2 :size="11" />
+              </button>
+            </div>
+            <div class="poster-action-bar">
+              <button
+                class="poster-action-btn"
+                :class="{ copied: copiedPosterId === poster.id }"
+                title="复制图片"
+                @click.stop="copyPosterImage(poster)"
+              >
+                <Check v-if="copiedPosterId === poster.id" :size="12" />
+                <Copy v-else :size="12" />
+              </button>
+              <button class="poster-action-btn" title="下载图片" @click.stop="downloadPosterImage(poster)">
+                <Download :size="12" />
               </button>
             </div>
           </div>
@@ -619,6 +671,39 @@ onMounted(async () => {
 .delete-btn:hover {
   background: #ff3b30;
 }
+
+.poster-action-bar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  gap: 5px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.poster-card:hover .poster-action-bar {
+  opacity: 1;
+}
+
+.poster-action-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: none;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.poster-action-btn:hover { background: rgba(0, 0, 0, 0.65); }
+.poster-action-btn.copied { background: rgba(52, 199, 89, 0.75); }
 
 /* Lightbox */
 .lightbox-overlay {

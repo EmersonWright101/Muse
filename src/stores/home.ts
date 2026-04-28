@@ -50,7 +50,7 @@ export interface PosterDailyStat {
 const LS_KEY             = 'muse-home-settings'
 const LS_MODIFIED_AT_KEY = 'muse-home-posters-modified-at'
 
-export const DEFAULT_PROMPT = 'A stunning, photorealistic wide-format nature documentary poster of a {animal}. Cinematic landscape orientation, dramatic natural lighting, lush natural environment, national geographic style, ultra-detailed, 4K quality. No text, no watermarks. 图片必须为横版16:9比例，宽度是高度的1.78倍。'
+export const DEFAULT_PROMPT = '请给我生成一张介绍{animal}的海报，你的图片必须是横幅的16:9，然后文字必须是中文'
 
 export interface AnimalEntry {
   zh: string   // 显示用中文名

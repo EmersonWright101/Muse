@@ -8,6 +8,12 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [vue()],
 
+  // mermaid v10+ uses dynamic imports internally — pre-bundle it so Tauri's WebView
+  // doesn't have to resolve bare module specifiers at runtime via the asset protocol.
+  optimizeDeps: {
+    include: ['mermaid'],
+  },
+
   build: {
     chunkSizeWarningLimit: 800,
     rollupOptions: {
@@ -22,8 +28,9 @@ export default defineConfig(async () => ({
             '@tiptap/vue-3', '@tiptap/starter-kit', '@tiptap/extension-code-block',
             '@tiptap/extension-image', 'tiptap-markdown',
           ],
-          'vendor-leaflet': ['leaflet'],
-          'vendor-md':      ['markdown-it'],
+          'vendor-leaflet':  ['leaflet'],
+          'vendor-md':       ['markdown-it'],
+          'vendor-mermaid':  ['mermaid'],
         },
       },
     },

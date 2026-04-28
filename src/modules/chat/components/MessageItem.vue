@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import MermaidBlock from './MermaidBlock.vue'
 import { marked, type Tokens } from 'marked'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
@@ -68,6 +69,7 @@ import { useAiSettingsStore } from '../../../stores/aiSettings'
 
 import type { WebSearchResult } from '../../../utils/storage'
 
+
 const props = defineProps<{ message: ChatMessage; streaming?: boolean; webSearchResults?: WebSearchResult[] }>()
 
 const chat = useChatStore()
@@ -118,6 +120,12 @@ function cancelEdit() {
 const renderer = new marked.Renderer()
 
 renderer.code = ({ text, lang }: Tokens.Code) => {
+  // SVG blocks: render the SVG inline with a toggle to view source
+  if (lang === 'svg') {
+    const clean = DOMPurify.sanitize(text, { USE_PROFILES: { svg: true, svgFilters: true } })
+    const highlighted = hljs.highlight(text, { language: 'xml' }).value
+    return `<div class="code-block svg-code-block"><div class="code-header"><span class="code-lang">svg</span><button class="svg-toggle-btn" onclick="(function(b){var p=b.closest('.svg-code-block'),pre=p.querySelector('.svg-source-pre');var hidden=pre.style.display==='none';pre.style.display=hidden?'block':'none';b.textContent=hidden?'隐藏代码':'查看代码'})(this)">查看代码</button><button class="copy-btn" onclick="this.closest('.code-block').querySelector('code').dispatchEvent(new CustomEvent('copy-code',{bubbles:true}));this.textContent='已复制';setTimeout(()=>this.textContent='复制',2000)">复制</button></div><div class="svg-preview-area">${clean}</div><pre class="svg-source-pre" style="display:none"><code class="hljs xml">${highlighted}</code></pre></div>`
+  }
   const validLang = lang && hljs.getLanguage(lang) ? lang : 'plaintext'
   const highlighted = hljs.highlight(text, { language: validLang }).value
   return `<div class="code-block"><div class="code-header"><span class="code-lang">${validLang}</span><button class="copy-btn" onclick="this.closest('.code-block').querySelector('code').dispatchEvent(new CustomEvent('copy-code',{bubbles:true}));this.textContent='已复制';setTimeout(()=>this.textContent='复制',2000)">复制</button></div><pre><code class="hljs ${validLang}">${highlighted}</code></pre></div>`
@@ -163,9 +171,25 @@ function renderMarkdown(content: string): string {
 
 const msgEl = ref<HTMLElement>()
 
-const renderedContent = computed(() =>
-  props.message.role === 'user' ? '' : renderMarkdown(displayedContent.value)
-)
+// Split raw content into alternating markdown-text / mermaid-source segments.
+// Mermaid blocks are rendered by <MermaidBlock> (a stable Vue component) rather than
+// inside v-html, which avoids the stale-DOM-reference problem that caused "渲染图表中…" to hang.
+type Seg = { type: 'md'; html: string } | { type: 'mermaid'; src: string }
+const contentSegments = computed<Seg[]>(() => {
+  if (props.message.role === 'user') return []
+  const raw = displayedContent.value
+  const segs: Seg[] = []
+  const re = /```mermaid[^\n]*\n([\s\S]*?)```/g
+  let last = 0
+  for (const m of raw.matchAll(re)) {
+    if (m.index! > last) segs.push({ type: 'md', html: renderMarkdown(raw.slice(last, m.index!)) })
+    segs.push({ type: 'mermaid', src: m[1].trim() })
+    last = m.index! + m[0].length
+  }
+  if (last < raw.length) segs.push({ type: 'md', html: renderMarkdown(raw.slice(last)) })
+  return segs.length ? segs : [{ type: 'md', html: renderMarkdown(raw) }]
+})
+
 
 onMounted(() => {
   msgEl.value?.addEventListener('copy-code', (e: Event) => {
@@ -283,15 +307,12 @@ const modelDisplayName = computed(() => {
 // ─── Layout mode (tab | horizontal) ──────────────────────────────────────────
 // Persisted globally in localStorage so all messages share the same preference.
 
-const LAYOUT_LS_KEY = 'muse-variant-layout'
-const variantLayout = ref<'tab' | 'horizontal'>(
-  (localStorage.getItem(LAYOUT_LS_KEY) as 'tab' | 'horizontal') ?? 'tab'
-)
+// Layout is stored per conversation in the chat store (not global localStorage)
+const variantLayout = computed(() => chat.getConvLayout(chat.activeConvId ?? ''))
 
 function toggleLayout() {
-  variantLayout.value = variantLayout.value === 'tab' ? 'horizontal' : 'tab'
-  localStorage.setItem(LAYOUT_LS_KEY, variantLayout.value)
-  localStorage.setItem('muse-variant-layout-modified-at', new Date().toISOString())
+  if (!chat.activeConvId) return
+  chat.setConvLayout(chat.activeConvId, variantLayout.value === 'tab' ? 'horizontal' : 'tab')
 }
 
 // Per-slot streaming detection
@@ -658,9 +679,13 @@ function resultDomain(url: string): string {
           ref="msgEl"
           class="bubble assistant-bubble markdown-body"
           :class="{ error: displayedError, streaming: activeSlotStreaming }"
-          v-html="renderedContent"
           @click="onMarkdownBodyClick"
-        />
+        >
+          <template v-for="(seg, si) in contentSegments" :key="si">
+            <div v-if="seg.type === 'md'" v-html="seg.html" />
+            <MermaidBlock v-else :src="seg.src" :streaming="activeSlotStreaming" />
+          </template>
+        </div>
       </template>
 
       <!-- Web search sources — shown at end of assistant answer -->
@@ -1983,6 +2008,45 @@ details[open] .compare-reasoning-summary::before { content: '▼ '; }
   display: block;
   font-family: inherit;
 }
+
+/* ─── SVG preview ────────────────────────────────────────────────────────────── */
+
+.svg-code-block { background: #fff; border-color: rgba(0, 0, 0, 0.12); }
+.svg-code-block .code-header { background: #f5f5f7; border-bottom-color: rgba(0, 0, 0, 0.08); }
+.svg-code-block .code-lang { color: #8e8e93; }
+
+.svg-toggle-btn {
+  font-size: 11px;
+  color: #8e8e93;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background 0.12s, color 0.12s;
+  margin-right: 6px;
+}
+.svg-toggle-btn:hover { background: rgba(0, 0, 0, 0.06); color: #3c3c43; }
+
+.svg-code-block .copy-btn { color: #8e8e93; }
+.svg-code-block .copy-btn:hover { background: rgba(0, 0, 0, 0.06); color: #3c3c43; }
+
+.svg-preview-area {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 16px;
+  background: #ffffff;
+  min-height: 60px;
+}
+
+.svg-preview-area svg {
+  max-width: 100%;
+  height: auto;
+  max-height: 480px;
+}
+
+.svg-source-pre { background: #1e1e2e; }
 
 /* highlight.js atom-one-dark-ish */
 .hljs { color: #abb2bf; background: transparent; }

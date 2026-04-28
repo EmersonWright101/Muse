@@ -1563,6 +1563,18 @@ export const useChatStore = defineStore('chat', () => {
   function setReasoning(v: boolean) { useReasoning.value = v }
   function setReasoningLevel(v: 'low' | 'medium' | 'high') { reasoningLevel.value = v }
 
+  // ─── Per-conversation variant layout ─────────────────────────────────────
+
+  const convLayouts = reactive(new Map<string, 'tab' | 'horizontal'>())
+
+  function getConvLayout(convId: string): 'tab' | 'horizontal' {
+    return convLayouts.get(convId) ?? 'tab'
+  }
+
+  function setConvLayout(convId: string, layout: 'tab' | 'horizontal') {
+    convLayouts.set(convId, layout)
+  }
+
   // Init
   loadList()
   purgeExpiredTrash(30).then(() => loadTrashList()).catch(() => loadTrashList())
@@ -1581,6 +1593,7 @@ export const useChatStore = defineStore('chat', () => {
     setMessageFeedback, setVariantFeedbackBySlot,
     secondProviderId, secondModelId: secondModelId_, setSecondModel,
     trashedConversations, loadTrashList, restoreFromTrash, permanentDeleteOne,
+    getConvLayout, setConvLayout,
   }
 })
 

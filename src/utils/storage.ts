@@ -101,18 +101,20 @@ export interface Conversation {
   assistantId?:        string;
   contextCutoffMsgId?: string;
   titleGenerated?:     boolean;
+  defaultProviderId?:  string;
+  defaultModelId?:     string;
 }
 
 export interface ConversationMeta {
-  id:          string;
-  title:       string;
-  createdAt:   string;
-  updatedAt:   string;
-  preview:     string;
-  model:       string;
-  providerId:  string;
-  pinned?:     boolean;
-  assistantId?: string;
+  id:               string;
+  title:            string;
+  createdAt:        string;
+  updatedAt:        string;
+  preview:          string;
+  model:            string;
+  providerId:       string;
+  pinned?:          boolean;
+  assistantId?:     string;
 }
 
 export interface TrashedConversationMeta extends ConversationMeta {
@@ -374,6 +376,17 @@ export async function trashConversation(id: string): Promise<void> {
 export async function listTrashedConversations(): Promise<TrashedConversationMeta[]> {
   const index = await readTrashIndex();
   return index.sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
+}
+
+export async function loadTrashedConversation(id: string): Promise<Conversation | null> {
+  try {
+    const path = `${await trashDir()}/${id}.json`;
+    if (!(await exists(path))) return null;
+    const raw = await readTextFile(path);
+    return JSON.parse(raw) as Conversation;
+  } catch {
+    return null;
+  }
 }
 
 export async function restoreConversationFromTrash(id: string): Promise<void> {

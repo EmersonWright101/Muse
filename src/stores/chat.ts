@@ -673,14 +673,14 @@ function buildPayload(
         const imagesAsText  = images.filter(img =>  img.extractedText)
 
         const contentParts: unknown[] = []
-        for (const img of imagesForUrl) {
-          contentParts.push({
-            type:      'image_url',
-            image_url: { url: `data:${img.mimeType};base64,${img.data}` },
-          })
-        }
+
         if (openRouter) {
-          // OpenRouter supports native PDF via inline file block — underlying models read it directly
+          // OpenRouter recommends sending the text prompt first, then images.
+          // PDFs are sent via native file block; images via image_url.
+          const ocrTexts = imagesAsText.map(img => `[图片OCR内容]\n${img.extractedText}`)
+          const textParts = [...ocrTexts, msg.content].filter(Boolean).join('\n\n---\n\n')
+          if (textParts) contentParts.push({ type: 'text', text: textParts })
+
           for (const pdf of pdfs) {
             contentParts.push({
               type: 'file',
@@ -690,11 +690,16 @@ function buildPayload(
               },
             })
           }
-          const ocrTexts = imagesAsText.map(img => `[图片OCR内容]\n${img.extractedText}`)
-          const textParts = [...ocrTexts, msg.content].filter(Boolean).join('\n\n---\n\n')
-          if (textParts) contentParts.push({ type: 'text', text: textParts })
+
+          for (const img of imagesForUrl) {
+            contentParts.push({
+              type:      'image_url',
+              image_url: { url: `data:${img.mimeType};base64,${img.data}` },
+            })
+          }
           return { role: msg.role, content: contentParts }
         }
+
         // Fallback for other OpenAI-compatible providers: extracted PDF text + OCR text
         const ocrTexts = imagesAsText.map(img => `[图片OCR内容]\n${img.extractedText}`)
         const pdfTexts = pdfs.map(
@@ -704,8 +709,18 @@ function buildPayload(
         const fullText = allTexts.length > 0
           ? `${allTexts.join('\n\n')}\n\n---\n\n${msg.content}`
           : msg.content
+
+        // Put text before images for better compatibility with OpenAI-compatible endpoints
         if (imagesForUrl.length > 0) {
           contentParts.push({ type: 'text', text: fullText })
+        }
+        for (const img of imagesForUrl) {
+          contentParts.push({
+            type:      'image_url',
+            image_url: { url: `data:${img.mimeType};base64,${img.data}` },
+          })
+        }
+        if (imagesForUrl.length > 0) {
           return { role: msg.role, content: contentParts }
         }
         return { role: msg.role, content: fullText }
@@ -745,6 +760,7 @@ export const useChatStore = defineStore('chat', () => {
   const reasoningLevel     = ref<'low' | 'medium' | 'high'>('medium')
   const webSearchEnabled     = ref(false)
   const trashedConversations = ref<TrashedConversationMeta[]>([])
+  const previewTrashedConv = ref<Conversation | null>(null)
 
   // Optional second model for simultaneous dual-model generation
   const secondProviderId = ref<string | null>(null)
@@ -786,12 +802,10 @@ export const useChatStore = defineStore('chat', () => {
     if (conv) {
       activeConv.value   = conv
       activeConvId.value = id
-      // Sync global model selector to this conversation's model
-      const aiStore = useAiSettingsStore()
-      if (conv.providerId) {
-        aiStore.setActiveProvider(conv.providerId)
-        aiStore.setModelForProvider(conv.providerId, conv.model)
-      }
+      // Note: we intentionally do NOT sync the global model selector when
+      // opening an existing conversation. The user may have manually switched
+      // models in the middle of a chat, and we should respect the current
+      // selector state. Default model only applies to *new* conversations.
       // Restore streaming UI state if this conversation is still streaming
       if (streamingConvIds.has(id)) {
         const lastAssistant = [...conv.messages].reverse().find(m => m.role === 'assistant' && !m.error)
@@ -809,14 +823,21 @@ export const useChatStore = defineStore('chat', () => {
 
   function newConversation(providerId?: string, modelId?: string, assistantId?: string): Conversation {
     const aiStore = useAiSettingsStore()
-    const pid = providerId ?? aiStore.activeProviderId
-    const mid = modelId   ?? aiStore.activeModelId()
-    // Sync global model state so the selector reflects the conversation's model
-    if (providerId) {
-      aiStore.setActiveProvider(providerId)
+    // For regular conversations, use the global default model if set.
+    let pid = providerId
+    let mid = modelId
+    if (!pid && !mid && !assistantId) {
+      pid = aiStore.defaultProviderId || aiStore.activeProviderId
+      mid = aiStore.defaultModelId    || aiStore.activeModelId()
     }
-    if (providerId && modelId) {
-      aiStore.setModelForProvider(providerId, modelId)
+    pid ??= aiStore.activeProviderId
+    mid ??= aiStore.activeModelId()
+    // Sync global model state so the selector reflects the conversation's model
+    if (pid) {
+      aiStore.setActiveProvider(pid)
+    }
+    if (pid && mid) {
+      aiStore.setModelForProvider(pid, mid)
     }
 
     const conv: Conversation = {
@@ -851,15 +872,24 @@ export const useChatStore = defineStore('chat', () => {
     const provider = aiStore.providers.find(p => p.id === pid)
     if (!provider || (!provider.apiKey && provider.type !== 'ollama')) return
 
-    const userMsg = conv.messages.find(m => m.role === 'user' && m.content)
-    const aiMsg   = conv.messages.filter(m => m.role === 'assistant' && !m.error && (m.content || m.mediaOutputs?.length)).at(-1)
+    let userMsg = conv.messages.find(m => m.role === 'user' && m.content)
+    if (!userMsg) {
+      // Image-only message: run OCR on the fly so we have text for title generation
+      const imgOnlyMsg = conv.messages.find(m => m.role === 'user' && m.attachments?.some(a => a.mimeType?.startsWith('image/') && a.data))
+      if (imgOnlyMsg) {
+        const [processed] = await applyOcrToImages([imgOnlyMsg])
+        userMsg = processed
+      }
+    }
+    const aiMsg = conv.messages.filter(m => m.role === 'assistant' && !m.error && (m.content || m.mediaOutputs?.length)).at(-1)
     if (!userMsg || !aiMsg) return
 
     const promptTpl = chatSettings.titleGenPrompt || DEFAULT_TITLE_PROMPT
     // For image-only responses use a placeholder so the title reflects the user request
     const aiContent = aiMsg.content || (aiMsg.mediaOutputs?.length ? '[图片]' : '')
+    const userContent = userMsg.content || userMsg.attachments?.map(a => a.extractedText).filter(Boolean).join(' ') || ''
     const prompt    = promptTpl
-      .replace('{user}',     userMsg.content.slice(0, 300))
+      .replace('{user}',     userContent.slice(0, 300))
       .replace('{response}', aiContent.slice(0, 300))
 
     let title = ''
@@ -984,7 +1014,22 @@ export const useChatStore = defineStore('chat', () => {
       && !isOpenRouter(provider.baseUrl)
       && !modelInfo0?.multimodal
       && !modelInfo0?.imageOutput
-    if (needsOcr0) msgsForApi = await applyOcrToImages(msgsForApi)
+    if (needsOcr0) {
+      const ocrMessages = await applyOcrToImages(msgsForApi)
+      // Write OCR results back to conv.messages so UI and persistence see extractedText
+      for (const ocrMsg of ocrMessages) {
+        const origMsg = conv.messages.find(m => m.id === ocrMsg.id)
+        if (origMsg?.attachments && ocrMsg.attachments) {
+          for (let j = 0; j < origMsg.attachments.length; j++) {
+            const ocrAtt = ocrMsg.attachments[j]
+            if (ocrAtt.extractedText && !origMsg.attachments[j].extractedText) {
+              origMsg.attachments[j].extractedText = ocrAtt.extractedText
+            }
+          }
+        }
+      }
+      msgsForApi = ocrMessages
+    }
 
     const payload   = buildPayload(msgsForApi, provider.type, provider.baseUrl)
     const startedAt = Date.now()
@@ -1098,6 +1143,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!skipSecondModel && pid2 && mid2 && (pid2 !== pid || mid2 !== mid)) {
       const p2 = aiStore.providers.find(p => p.id === pid2)
       if (p2 && (p2.apiKey || p2.type === 'ollama')) {
+        setConvLayout(conv.id, 'horizontal')
         regenerateWithModel(assistantMsg.id, pid2, mid2, true).catch(() => {})
       }
     }
@@ -1182,6 +1228,15 @@ export const useChatStore = defineStore('chat', () => {
     msg.content    = newContent
     conv.updatedAt = new Date().toISOString()
     await saveConversation(conv)
+  }
+
+  function deleteMessage(messageId: string) {
+    if (!activeConv.value) return
+    const conv = activeConv.value
+    const idx = conv.messages.findIndex(m => m.id === messageId)
+    if (idx < 0) return
+    conv.messages.splice(idx, 1)
+    saveConversation(conv)
   }
 
   async function regenerate(messageId: string, slotIdx = 0) {
@@ -1511,6 +1566,23 @@ export const useChatStore = defineStore('chat', () => {
     await loadTrashList()
   }
 
+  async function clearAllTrash() {
+    for (const item of trashedConversations.value) {
+      await permanentDeleteFromTrash(item.id)
+    }
+    trashedConversations.value = []
+  }
+
+  async function openTrashPreview(id: string) {
+    const { loadTrashedConversation } = await import('../utils/storage')
+    const conv = await loadTrashedConversation(id)
+    if (conv) previewTrashedConv.value = conv
+  }
+
+  function closeTrashPreview() {
+    previewTrashedConv.value = null
+  }
+
   // ─── Batch select ───────────────────────────────────────────────────────
 
   function toggleBatchMode() {
@@ -1583,7 +1655,7 @@ export const useChatStore = defineStore('chat', () => {
     conversations, activeConvId, activeConv, isStreaming, isLoading,
     error, selectedConvIds, batchMode, streamingConvIds,
     loadList, openConversation, newConversation, sendMessage, stopStreaming,
-    editAndResend, editMessage, regenerate,
+    editAndResend, editMessage, regenerate, deleteMessage,
     deleteOne, deleteBatch, toggleBatchMode, toggleSelect, selectAll, clearSelection,
     togglePin, renameConversation, streamingText, streamingReasoning, streamingMsgId,
     clearContext, removeContextCutoff,
@@ -1592,7 +1664,8 @@ export const useChatStore = defineStore('chat', () => {
     regenerateWithModel, setActiveVariant, deleteVariant, streamingVariantMsgIds,
     setMessageFeedback, setVariantFeedbackBySlot,
     secondProviderId, secondModelId: secondModelId_, setSecondModel,
-    trashedConversations, loadTrashList, restoreFromTrash, permanentDeleteOne,
+    trashedConversations, loadTrashList, restoreFromTrash, permanentDeleteOne, clearAllTrash,
+    previewTrashedConv, openTrashPreview, closeTrashPreview,
     getConvLayout, setConvLayout,
   }
 })

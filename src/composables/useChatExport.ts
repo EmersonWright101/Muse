@@ -37,9 +37,10 @@ interface PendingFile {
 }
 
 interface ProcessedAttachment {
-  name:     string
-  mimeType: string
-  path?:    string
+  name:          string
+  mimeType:      string
+  path?:         string
+  extractedText?: string
 }
 
 interface ProcessedMediaOutput {
@@ -74,13 +75,15 @@ function processMessage(
   const mediaOuts  = variant?.mediaOutputs ?? msg.mediaOutputs
 
   const attachments: ProcessedAttachment[] = (msg.attachments ?? []).map((att, i) => {
+    const base: ProcessedAttachment = { name: att.name, mimeType: att.mimeType }
+    if (att.extractedText) base.extractedText = att.extractedText
     if (att.data) {
       const ext   = mimeToExt(att.mimeType)
       const fname = `${convId}_${msg.id}_att${i}.${ext}`
       pending.push({ absPath: `${imgDirAbs}/${fname}`, data: att.data })
-      return { name: att.name, mimeType: att.mimeType, path: `${imgDirRel}/${fname}` }
+      base.path = `${imgDirRel}/${fname}`
     }
-    return { name: att.name, mimeType: att.mimeType }
+    return base
   })
 
   const mediaOutputs: ProcessedMediaOutput[] = (mediaOuts ?? []).map((mo, i) => {

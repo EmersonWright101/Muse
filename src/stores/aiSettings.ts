@@ -179,11 +179,15 @@ interface PersistedProvider {
 interface PersistedSettings {
   activeProviderId: string;
   providers:        PersistedProvider[];
+  defaultProviderId?: string;
+  defaultModelId?:    string;
 }
 
 async function saveToStorage(
   activeId: string,
   providers: AIProvider[],
+  defaultProviderId?: string,
+  defaultModelId?:    string,
 ): Promise<void> {
   try {
     const persisted: PersistedProvider[] = []
@@ -208,6 +212,8 @@ async function saveToStorage(
     localStorage.setItem(LS_KEY, JSON.stringify({
       activeProviderId: activeId,
       providers:        persisted,
+      defaultProviderId,
+      defaultModelId,
     } satisfies PersistedSettings))
     localStorage.setItem(LS_MODIFIED_AT_KEY, new Date().toISOString())
   } catch (e) {
@@ -221,6 +227,8 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
   // Start with no providers — users add their own; built-in defaults are no longer pre-populated.
   const providers        = ref<AIProvider[]>([])
   const activeProviderId = ref<string>('')
+  const defaultProviderId = ref<string>('')
+  const defaultModelId    = ref<string>('')
 
   function activeProvider(): AIProvider | undefined {
     return providers.value.find(p => p.id === activeProviderId.value)
@@ -241,6 +249,16 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
   function setModelForProvider(providerId: string, modelId: string) {
     const p = providers.value.find(p => p.id === providerId)
     if (p) p.selectedModelId = modelId
+  }
+
+  function setDefaultModel(providerId: string, modelId: string) {
+    defaultProviderId.value = providerId
+    defaultModelId.value    = modelId
+  }
+
+  function clearDefaultModel() {
+    defaultProviderId.value = ''
+    defaultModelId.value    = ''
   }
 
   function updateProvider(id: string, patch: Partial<Pick<AIProvider, 'apiKey' | 'baseUrl' | 'enabled' | 'name' | 'type'>>) {
@@ -337,12 +355,22 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
   function persist() {
     if (!_initDone) { _pendingPersist = true; return }
     if (_persistTimer) clearTimeout(_persistTimer)
-    _persistTimer = setTimeout(() => saveToStorage(activeProviderId.value, providers.value), DEBOUNCE_MS)
+    _persistTimer = setTimeout(() => saveToStorage(
+      activeProviderId.value,
+      providers.value,
+      defaultProviderId.value,
+      defaultModelId.value,
+    ), DEBOUNCE_MS)
   }
 
   function flush(): Promise<void> {
     if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null }
-    return saveToStorage(activeProviderId.value, providers.value)
+    return saveToStorage(
+      activeProviderId.value,
+      providers.value,
+      defaultProviderId.value,
+      defaultModelId.value,
+    )
   }
 
   // Load persisted settings on init
@@ -387,6 +415,8 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
         }
 
         if (saved.activeProviderId) activeProviderId.value = saved.activeProviderId
+        if (saved.defaultProviderId) defaultProviderId.value = saved.defaultProviderId
+        if (saved.defaultModelId)    defaultModelId.value    = saved.defaultModelId
       }
     } catch { /* ignore corrupt data */ }
     // Always mark init done so watch-triggered persist() calls are flushed
@@ -397,15 +427,21 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
   // Watch for changes and auto-persist
   watch(providers, persist, { deep: true })
   watch(activeProviderId, persist)
+  watch(defaultProviderId, persist)
+  watch(defaultModelId, persist)
 
   return {
     providers,
     activeProviderId,
     activeProvider,
     activeModelId,
+    defaultProviderId,
+    defaultModelId,
     configuredProviders,
     setActiveProvider,
     setModelForProvider,
+    setDefaultModel,
+    clearDefaultModel,
     updateProvider,
     importProvider,
     addCustomModel,
@@ -449,7 +485,9 @@ const aiSyncModule: SyncModule = {
       timestamp: await this.getLocalTimestamp(),
       providers: aiStore.providers.map(toRemote),
       activeProviderId: aiStore.activeProviderId,
-      deletedProviders: localDeleted,
+      defaultProviderId: aiStore.defaultProviderId,
+      defaultModelId:    aiStore.defaultModelId,
+      deletedProviders:  localDeleted,
     }
 
     const path = ctx.rp('settings/ai_settings.enc')
@@ -484,8 +522,11 @@ const aiSyncModule: SyncModule = {
       if (p && ts > (p.updatedAt ?? new Date(0).toISOString())) aiStore.removeProvider(id)
     }
 
-    if ((remoteData.timestamp ?? '') > localData.timestamp && remoteData.activeProviderId) {
-      aiStore.setActiveProvider(remoteData.activeProviderId)
+    if ((remoteData.timestamp ?? '') > localData.timestamp) {
+      if (remoteData.activeProviderId) aiStore.setActiveProvider(remoteData.activeProviderId)
+      if (remoteData.defaultProviderId && remoteData.defaultModelId) {
+        aiStore.setDefaultModel(remoteData.defaultProviderId, remoteData.defaultModelId)
+      }
     }
 
     if (!localChanged) return
@@ -501,7 +542,9 @@ const aiSyncModule: SyncModule = {
       timestamp: new Date().toISOString(),
       providers: mergedProviders,
       activeProviderId: aiStore.activeProviderId,
-      deletedProviders: mergedDeleted,
+      defaultProviderId: aiStore.defaultProviderId,
+      defaultModelId:    aiStore.defaultModelId,
+      deletedProviders:  mergedDeleted,
     })
   },
 }

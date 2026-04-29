@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Search, SquarePen, Trash2, ListChecks, X, Pin, Plus, Pencil, ChevronDown, Download, RotateCcw } from 'lucide-vue-next'
+import { Search, SquarePen, Trash2, ListChecks, X, Pin, Plus, Pencil, ChevronDown, Download, RotateCcw, Check, Cpu } from 'lucide-vue-next'
 import { useChatStore }       from '../../stores/chat'
 import { useAssistantsStore, ASSISTANT_COLORS } from '../../stores/assistants'
 import { useAiSettingsStore } from '../../stores/aiSettings'
@@ -149,8 +149,41 @@ function convMenuDelete() {
   closeConvMenu()
 }
 
-onMounted(()  => document.addEventListener('click', closeConvMenu))
-onUnmounted(() => document.removeEventListener('click', closeConvMenu))
+// ─── Global default model picker ────────────────────────────────────────────
+
+const globalModelPickerOpen = ref(false)
+const globalModelPickerPos  = ref({ x: 0, y: 0 })
+
+function openGlobalModelPicker(e: MouseEvent) {
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  globalModelPickerPos.value = { x: rect.right, y: rect.top }
+  globalModelPickerOpen.value = true
+}
+
+function closeGlobalModelPicker() {
+  globalModelPickerOpen.value = false
+}
+
+function selectGlobalModel(providerId: string, modelId: string) {
+  aiSettings.setDefaultModel(providerId, modelId)
+  closeGlobalModelPicker()
+}
+
+function handleGlobalModelPickerOutside(e: MouseEvent) {
+  const picker = document.querySelector('.global-model-picker-dropdown')
+  if (picker && !picker.contains(e.target as Node)) {
+    closeGlobalModelPicker()
+  }
+}
+
+onMounted(()  => {
+  document.addEventListener('click', closeConvMenu)
+  document.addEventListener('click', handleGlobalModelPickerOutside)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', closeConvMenu)
+  document.removeEventListener('click', handleGlobalModelPickerOutside)
+})
 
 // ─── Click item ───────────────────────────────────────────────────────────────
 
@@ -277,14 +310,24 @@ function daysUntilExpiry(deletedAt: string): number {
         </button>
         <Transition name="picker-drop">
           <div v-if="pickerOpen" class="picker-dropdown">
-            <button
-              class="picker-item"
-              :class="{ active: filterAssistantId === null }"
-              @click="selectFilter(null)"
-            >
-              <span class="picker-item-dot all" />
-              <span class="picker-item-name">全部对话</span>
-            </button>
+            <div class="picker-item-row">
+              <button
+                class="picker-item"
+                :class="{ active: filterAssistantId === null }"
+                @click="selectFilter(null)"
+              >
+                <span class="picker-item-dot all" />
+                <span class="picker-item-name">全部对话</span>
+              </button>
+              <button
+                class="picker-model-btn"
+                title="设置全局默认模型"
+                @click.stop="openGlobalModelPicker($event)"
+              >
+                <Cpu :size="10" />
+                <span class="picker-model-label">默认模型</span>
+              </button>
+            </div>
             <div v-if="assistants.assistants.length" class="picker-divider" />
             <div v-for="a in assistants.assistants" :key="a.id" class="picker-item-row">
               <button
@@ -480,32 +523,80 @@ function daysUntilExpiry(deletedAt: string): number {
           </div>
         </div>
       </div>
-      <!-- Recently Deleted -->
-      <template v-if="!searchQuery && filterAssistantId === null && chat.trashedConversations.length > 0">
-        <div class="trash-header" @click="trashOpen = !trashOpen">
-          <span class="trash-label">最近删除 ({{ chat.trashedConversations.length }})</span>
-          <ChevronDown :size="10" class="trash-chevron" :class="{ open: trashOpen }" />
-        </div>
-        <Transition name="trash-expand">
-          <div v-if="trashOpen" class="trash-list">
-            <div
-              v-for="item in chat.trashedConversations"
-              :key="item.id"
-              class="trash-item"
+    </div>
+
+    <!-- Recently Deleted (fixed at bottom like travel notes) -->
+    <div v-if="!searchQuery && filterAssistantId === null && chat.trashedConversations.length > 0" class="trash-section">
+      <button class="trash-toggle" @click="trashOpen = !trashOpen">
+        <ChevronDown :size="11" class="trash-chevron" :class="{ open: trashOpen }" />
+        <Trash2 :size="11" class="trash-toggle-icon" />
+        <span class="trash-toggle-label">最近删除</span>
+        <span class="trash-count-badge">{{ chat.trashedConversations.length }}</span>
+        <button
+          v-if="trashOpen"
+          class="trash-clear-btn"
+          title="清空"
+          @click.stop="chat.clearAllTrash()"
+        >清空</button>
+      </button>
+      <div v-if="trashOpen" class="trash-list">
+        <div
+          v-for="item in chat.trashedConversations"
+          :key="item.id"
+          class="trash-item"
+          @click="chat.openTrashPreview(item.id)"
+        >
+          <span class="trash-item-title" :title="item.title">{{ item.title.length > 16 ? item.title.slice(0, 16) + '…' : item.title }}</span>
+          <span class="trash-item-days">{{ daysUntilExpiry(item.deletedAt) }}天</span>
+          <div class="trash-item-actions">
+            <button
+              class="trash-action-btn restore-btn"
+              title="恢复"
+              @click.stop="chat.restoreFromTrash(item.id)"
             >
-              <span class="trash-item-title" :title="item.title">{{ item.title.length > 14 ? item.title.slice(0, 14) + '…' : item.title }}</span>
-              <span class="trash-item-days">{{ daysUntilExpiry(item.deletedAt) }}天</span>
-              <button class="trash-action restore" title="恢复" @click="chat.restoreFromTrash(item.id)">
-                <RotateCcw :size="11" />
-              </button>
-              <button class="trash-action delete" title="永久删除" @click="chat.permanentDeleteOne(item.id)">
-                <Trash2 :size="11" />
+              <RotateCcw :size="11" />
+            </button>
+            <button
+              class="trash-action-btn perm-delete-btn"
+              title="永久删除"
+              @click.stop="chat.permanentDeleteOne(item.id)"
+            >
+              <Trash2 :size="11" />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Trash preview overlay -->
+    <Teleport to="body">
+      <Transition name="trash-preview-fade">
+        <div v-if="chat.previewTrashedConv" class="trash-preview-overlay" @click.self="chat.closeTrashPreview()">
+          <div class="trash-preview-panel">
+            <div class="trash-preview-header">
+              <span class="trash-preview-title">{{ chat.previewTrashedConv.title }}</span>
+              <button class="trash-preview-close" @click="chat.closeTrashPreview()">
+                <X :size="16" />
               </button>
             </div>
+            <div class="trash-preview-body">
+              <div
+                v-for="msg in chat.previewTrashedConv.messages"
+                :key="msg.id"
+                class="trash-preview-msg"
+                :class="{ user: msg.role === 'user', assistant: msg.role === 'assistant' }"
+              >
+                <div class="trash-preview-role">{{ msg.role === 'user' ? '用户' : 'AI' }}</div>
+                <div class="trash-preview-content">{{ msg.content }}</div>
+                <div v-if="msg.attachments?.length" class="trash-preview-attachments">
+                  <span v-for="att in msg.attachments" :key="att.id" class="trash-preview-att">📎 {{ att.name }}</span>
+                </div>
+              </div>
+            </div>
           </div>
-        </Transition>
-      </template>
-    </div>
+        </div>
+      </Transition>
+    </Teleport>
 
     <!-- Assistant form overlay -->
     <Transition name="form-fade">
@@ -589,6 +680,38 @@ function daysUntilExpiry(deletedAt: string): number {
         <Trash2 :size="13" />
         <span>删除对话</span>
       </button>
+    </div>
+
+    <!-- Global default model picker dropdown -->
+    <div
+      v-if="globalModelPickerOpen"
+      class="global-model-picker-dropdown"
+      :style="{ left: globalModelPickerPos.x + 'px', top: globalModelPickerPos.y + 'px' }"
+      @click.stop
+    >
+      <div v-if="configuredProviders.length === 0" class="sm-no-providers">
+        请先在设置中添加 API Key
+      </div>
+      <template v-else>
+        <div v-for="p in configuredProviders" :key="p.id" class="sm-provider-group">
+          <div class="sm-group-label">{{ p.name }}</div>
+          <button
+            v-for="m in p.models"
+            :key="m.id"
+            class="sm-model-item"
+            :class="{ active: aiSettings.defaultProviderId === p.id && aiSettings.defaultModelId === m.id }"
+            @click="selectGlobalModel(p.id, m.id)"
+          >
+            <Check
+              v-if="aiSettings.defaultProviderId === p.id && aiSettings.defaultModelId === m.id"
+              :size="10"
+              class="sm-check"
+            />
+            <span v-else class="sm-check-ph" />
+            {{ m.name }}
+          </button>
+        </div>
+      </template>
     </div>
   </Teleport>
 </template>
@@ -723,6 +846,7 @@ function daysUntilExpiry(deletedAt: string): number {
 }
 
 .picker-item-row:hover .picker-edit { opacity: 1; }
+.picker-item-row:hover .picker-model-btn { opacity: 1; }
 
 .picker-item {
   display: flex;
@@ -777,6 +901,30 @@ function daysUntilExpiry(deletedAt: string): number {
 }
 
 .picker-edit:hover { background: rgba(0, 0, 0, 0.07); color: #3c3c43; }
+
+.picker-model-btn {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 6px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: #8e8e93;
+  border-radius: 5px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s;
+  margin-right: 3px;
+}
+
+.picker-model-btn:hover { background: rgba(0, 0, 0, 0.07); color: #3c3c43; }
+
+.picker-model-label {
+  font-size: 10px;
+  font-weight: 500;
+}
 
 .add-item { color: #8e8e93; }
 .add-item .picker-item-name { color: #8e8e93; font-weight: 400; }
@@ -1024,43 +1172,94 @@ function daysUntilExpiry(deletedAt: string): number {
 .action-btn:hover { background: rgba(0, 0, 0, 0.06); color: #3c3c43; }
 .action-btn.danger:hover { background: rgba(255, 59, 48, 0.08); color: #ff3b30; }
 
-/* ─── Trash section ──────────────────────────────────────────────────────── */
+/* ─── Trash section (fixed at bottom, travel-notes style) ────────────────── */
 
-.trash-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 10px 4px;
-  cursor: pointer;
-  user-select: none;
+.trash-section {
+  flex-shrink: 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
 }
 
-.trash-label {
-  font-size: 10.5px;
-  font-weight: 500;
-  color: #aeaeb2;
-  letter-spacing: 0.02em;
+.trash-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.trash-toggle:hover {
+  background: rgba(0, 0, 0, 0.03);
 }
 
 .trash-chevron {
   color: #aeaeb2;
+  flex-shrink: 0;
   transition: transform 0.15s;
 }
 .trash-chevron.open { transform: rotate(180deg); }
 
+.trash-toggle-icon {
+  color: #aeaeb2;
+  flex-shrink: 0;
+}
+
+.trash-toggle-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #8e8e93;
+  flex: 1;
+}
+
+.trash-count-badge {
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.08);
+  color: #8e8e93;
+  padding: 1px 6px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.trash-clear-btn {
+  font-size: 10px;
+  color: #ff3b30;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0 2px;
+  flex-shrink: 0;
+  transition: opacity 0.12s;
+}
+
+.trash-clear-btn:hover {
+  opacity: 0.7;
+}
+
 .trash-list {
+  padding: 2px 6px 8px;
   display: flex;
   flex-direction: column;
-  padding-bottom: 4px;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
 }
+
+.trash-list::-webkit-scrollbar { width: 3px; }
+.trash-list::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.10); border-radius: 2px; }
 
 .trash-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border-radius: 7px;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
   transition: background 0.10s;
+  cursor: pointer;
 }
 
 .trash-item:hover { background: rgba(0, 0, 0, 0.04); }
@@ -1069,7 +1268,8 @@ function daysUntilExpiry(deletedAt: string): number {
   flex: 1;
   min-width: 0;
   font-size: 12px;
-  color: #8e8e93;
+  font-weight: 500;
+  color: #6e6e73;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1082,23 +1282,47 @@ function daysUntilExpiry(deletedAt: string): number {
   white-space: nowrap;
 }
 
-.trash-action {
+.trash-item-actions {
+  display: flex;
+  gap: 3px;
   flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.trash-item:hover .trash-item-actions {
+  opacity: 1;
+}
+
+.trash-action-btn {
   width: 22px;
   height: 22px;
   border: none;
-  background: transparent;
   border-radius: 5px;
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  color: #aeaeb2;
-  transition: background 0.10s, color 0.10s;
+  transition: all 0.10s;
 }
 
-.trash-action.restore:hover { background: rgba(34, 63, 121, 0.08); color: #223F79; }
-.trash-action.delete:hover  { background: rgba(255, 59, 48, 0.08); color: #ff3b30; }
+.restore-btn {
+  color: #34c759;
+}
+
+.restore-btn:hover {
+  background: rgba(52, 199, 89, 0.12);
+}
+
+.perm-delete-btn {
+  color: #c7c7cc;
+}
+
+.perm-delete-btn:hover {
+  background: rgba(255, 59, 48, 0.10);
+  color: #ff3b30;
+}
 
 .trash-expand-enter-active, .trash-expand-leave-active {
   transition: opacity 0.15s, transform 0.15s;
@@ -1106,6 +1330,141 @@ function daysUntilExpiry(deletedAt: string): number {
 .trash-expand-enter-from, .trash-expand-leave-to {
   opacity: 0;
   transform: translateY(-4px);
+}
+
+/* ─── Trash preview overlay ───────────────────────────────────────────────── */
+
+.trash-preview-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+  padding: 40px;
+}
+
+.trash-preview-panel {
+  width: 100%;
+  max-width: 640px;
+  max-height: 80vh;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.trash-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+  flex-shrink: 0;
+}
+
+.trash-preview-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1c1c1e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trash-preview-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: #8e8e93;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s;
+  flex-shrink: 0;
+}
+
+.trash-preview-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #3c3c43;
+}
+
+.trash-preview-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.trash-preview-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trash-preview-msg.user {
+  align-items: flex-end;
+}
+
+.trash-preview-msg.assistant {
+  align-items: flex-start;
+}
+
+.trash-preview-role {
+  font-size: 10px;
+  font-weight: 600;
+  color: #aeaeb2;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.trash-preview-content {
+  font-size: 13px;
+  line-height: 1.55;
+  color: #1c1c1e;
+  background: #f5f5f7;
+  padding: 10px 14px;
+  border-radius: 12px;
+  max-width: 90%;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.trash-preview-msg.user .trash-preview-content {
+  background: #223F79;
+  color: white;
+}
+
+.trash-preview-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 90%;
+}
+
+.trash-preview-att {
+  font-size: 11px;
+  color: #8e8e93;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+.trash-preview-fade-enter-active, .trash-preview-fade-leave-active {
+  transition: opacity 0.18s;
+}
+.trash-preview-fade-enter-from, .trash-preview-fade-leave-to {
+  opacity: 0;
 }
 
 /* ─── Assistant form overlay ──────────────────────────────────────────────── */
@@ -1401,4 +1760,63 @@ function daysUntilExpiry(deletedAt: string): number {
   background: rgba(0, 0, 0, 0.06);
   margin: 3px 6px;
 }
+
+/* ─── Conversation model picker dropdown ──────────────────────────────────── */
+.global-model-picker-dropdown {
+  position: fixed;
+  z-index: 9999;
+  min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: rgba(250, 250, 252, 0.97);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 11px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  padding: 5px;
+}
+
+.global-model-picker-dropdown::-webkit-scrollbar { width: 3px; }
+.global-model-picker-dropdown::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.10); border-radius: 2px; }
+
+.sm-no-providers {
+  padding: 10px;
+  font-size: 12px;
+  color: #8e8e93;
+  text-align: center;
+}
+
+.sm-provider-group { margin-bottom: 3px; }
+
+.sm-group-label {
+  padding: 4px 8px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #8e8e93;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sm-model-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 5px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #1c1c1e;
+  cursor: pointer;
+  transition: background 0.08s;
+  text-align: left;
+}
+
+.sm-model-item:hover { background: rgba(0, 0, 0, 0.06); }
+.sm-model-item.active { background: rgba(34, 63, 121, 0.10); color: #223F79; font-weight: 500; }
+
+.sm-check { color: #223F79; flex-shrink: 0; }
+.sm-check-ph { width: 10px; flex-shrink: 0; }
 </style>

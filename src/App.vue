@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useTravelStore } from './stores/travel'
 import { useSyncStore } from './stores/sync'
 import './stores/travelCopilot'  // ensure copilot sync module is registered at startup
 import './stores/chat'           // ensure conversations sync module is registered at startup
 import './stores/assistants'     // ensure assistants sync module is registered at startup
+import './stores/webSearch'      // ensure web search sync module is registered at startup
 import TitleBar from './components/TitleBar.vue'
 import AppSidebar from './components/AppSidebar.vue'
 
@@ -14,6 +15,26 @@ const route = useRoute()
 const travel = useTravelStore()
 
 useSyncStore()
+
+// Prevent global Cmd+A / Ctrl+A from selecting the entire UI, but keep it inside editors.
+function onKeydown(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'a') {
+    const target = e.target as HTMLElement | null
+    if (
+      target &&
+      (target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable ||
+        target.closest('[contenteditable="true"]'))
+    ) {
+      return
+    }
+    e.preventDefault()
+  }
+}
+
+onMounted(() => document.addEventListener('keydown', onKeydown))
+onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 
 const panelFloats = computed(() => route.path === '/travel' && travel.viewMode !== 'editor')
 

@@ -62,6 +62,8 @@ hljs.registerLanguage('php', php)
 hljs.registerLanguage('r', r)
 import DOMPurify from 'dompurify'
 import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Maximize2, Minimize2, Bot, AtSign, Download, Clock, ThumbsUp, ThumbsDown, Trash2, Rows3, Columns2, Globe } from 'lucide-vue-next'
+import { svgStringToPngBlob } from '../../../utils/svgToPng'
+import { copyPngBlobToClipboard } from '../../../utils/clipboard'
 import { useI18n } from 'vue-i18n'
 import type { ChatMessage } from '../../../stores/chat'
 import { useChatStore } from '../../../stores/chat'
@@ -101,6 +103,12 @@ function startEdit() {
   isEditing.value = true
 }
 
+function confirmDeleteMessage() {
+  if (confirm('确定要删除这条消息吗？')) {
+    chat.deleteMessage(props.message.id)
+  }
+}
+
 async function confirmEdit() {
   if (!editText.value.trim()) return
   isEditing.value = false
@@ -124,7 +132,7 @@ renderer.code = ({ text, lang }: Tokens.Code) => {
   if (lang === 'svg') {
     const clean = DOMPurify.sanitize(text, { USE_PROFILES: { svg: true, svgFilters: true } })
     const highlighted = hljs.highlight(text, { language: 'xml' }).value
-    return `<div class="code-block svg-code-block"><div class="code-header"><span class="code-lang">svg</span><button class="svg-toggle-btn" onclick="(function(b){var p=b.closest('.svg-code-block'),pre=p.querySelector('.svg-source-pre');var hidden=pre.style.display==='none';pre.style.display=hidden?'block':'none';b.textContent=hidden?'隐藏代码':'查看代码'})(this)">查看代码</button><button class="copy-btn" onclick="this.closest('.code-block').querySelector('code').dispatchEvent(new CustomEvent('copy-code',{bubbles:true}));this.textContent='已复制';setTimeout(()=>this.textContent='复制',2000)">复制</button></div><div class="svg-preview-area">${clean}</div><pre class="svg-source-pre" style="display:none"><code class="hljs xml">${highlighted}</code></pre></div>`
+    return `<div class="code-block svg-code-block"><div class="code-header"><span class="code-lang">svg</span><button class="svg-toggle-btn" onclick="(function(b){var p=b.closest('.svg-code-block'),pre=p.querySelector('.svg-source-pre');var hidden=pre.style.display==='none';pre.style.display=hidden?'block':'none';b.textContent=hidden?'隐藏代码':'查看代码'})(this)">查看代码</button><button class="copy-btn" onclick="this.closest('.code-block').querySelector('code').dispatchEvent(new CustomEvent('copy-code',{bubbles:true}));this.textContent='已复制';setTimeout(()=>this.textContent='复制',2000)">复制</button></div><div class="svg-preview-area">${clean}<button class="svg-copy-img-btn" data-action="copy-svg-image" title="复制图片">${COPY_SVG}</button></div><pre class="svg-source-pre" style="display:none"><code class="hljs xml">${highlighted}</code></pre></div>`
   }
   const validLang = lang && hljs.getLanguage(lang) ? lang : 'plaintext'
   const highlighted = hljs.highlight(text, { language: validLang }).value
@@ -232,7 +240,7 @@ function lookupLogoUrl(model: string, providerId: string): string | null {
 
 
 const modelLogoUrl = computed<string | null>(() =>
-  lookupLogoUrl(displayedModel.value, displayedProviderId.value)
+  lookupLogoUrl(props.message.model ?? '', props.message.providerId ?? '')
 )
 
 
@@ -411,28 +419,36 @@ let _saveToastTimer: ReturnType<typeof setTimeout> | null = null
 
 async function copyImageToClipboard(src: string) {
   try {
-    let blob: Blob
-    if (src.startsWith('data:')) {
-      const [header, b64] = src.split(',')
-      const mime = header.match(/:(.*?);/)?.[1] ?? 'image/png'
-      const bin = atob(b64)
-      const bytes = new Uint8Array(bin.length)
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-      blob = new Blob([bytes], { type: mime })
+    let pngBlob: Blob
+    if (src.startsWith('data:image/svg+xml')) {
+      // SVG needs special handling: Image + canvas instead of createImageBitmap
+      const base64 = src.split(',')[1]
+      const svgStr = base64 ? decodeURIComponent(escape(atob(base64))) : ''
+      pngBlob = await svgStringToPngBlob(svgStr)
     } else {
-      blob = await fetch(src).then(r => r.blob())
+      let blob: Blob
+      if (src.startsWith('data:')) {
+        const [header, b64] = src.split(',')
+        const mime = header.match(/:(.*?);/)?.[1] ?? 'image/png'
+        const bin = atob(b64)
+        const bytes = new Uint8Array(bin.length)
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+        blob = new Blob([bytes], { type: mime })
+      } else {
+        blob = await fetch(src).then(r => r.blob())
+      }
+      if (blob.type === 'image/png') {
+        pngBlob = blob
+      } else {
+        const bmp = await createImageBitmap(blob)
+        const canvas = document.createElement('canvas')
+        canvas.width = bmp.width
+        canvas.height = bmp.height
+        canvas.getContext('2d')!.drawImage(bmp, 0, 0)
+        pngBlob = await new Promise<Blob>(res => canvas.toBlob(b => res(b!), 'image/png'))
+      }
     }
-    // Always write as image/png — required by Clipboard API
-    let pngBlob = blob
-    if (blob.type !== 'image/png') {
-      const bmp = await createImageBitmap(blob)
-      const canvas = document.createElement('canvas')
-      canvas.width = bmp.width
-      canvas.height = bmp.height
-      canvas.getContext('2d')!.drawImage(bmp, 0, 0)
-      pngBlob = await new Promise<Blob>(res => canvas.toBlob(b => res(b!), 'image/png'))
-    }
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })])
+    await copyPngBlobToClipboard(pngBlob)
     showSaveToast('图片已复制到剪贴板')
   } catch {
     showSaveToast('复制失败，请尝试下载')
@@ -461,6 +477,21 @@ async function onMarkdownBodyClick(e: MouseEvent) {
   if (btn) {
     e.preventDefault()
     e.stopPropagation()
+    if (btn.dataset.action === 'copy-svg-image') {
+      const area = btn.closest('.svg-preview-area') as HTMLElement | null
+      const svgEl = area?.querySelector('svg')
+      if (svgEl) {
+        const serializer = new XMLSerializer()
+        const svgStr = serializer.serializeToString(svgEl)
+        svgStringToPngBlob(svgStr).then(async (pngBlob: Blob) => {
+          await copyPngBlobToClipboard(pngBlob)
+          showSaveToast('图片已复制到剪贴板')
+        }).catch(() => {
+          showSaveToast('复制失败，请尝试下载')
+        })
+      }
+      return
+    }
     const src = btn.dataset.src
     if (!src) return
     if (btn.dataset.action === 'copy-image') {
@@ -585,7 +616,7 @@ function resultDomain(url: string): string {
     <div class="bubble-wrap">
       <!-- Attachments -->
       <div v-if="message.attachments?.length" class="attachments">
-        <div v-for="att in message.attachments" :key="att.id">
+        <div v-for="att in message.attachments" :key="att.id" class="attachment-wrap">
           <img
             v-if="att.mimeType?.startsWith('image/') && att.data"
             :src="`data:${att.mimeType};base64,${att.data}`"
@@ -611,6 +642,14 @@ function resultDomain(url: string): string {
             <span class="file-icon">📎</span>
             <span class="file-name">{{ att.name }}</span>
           </div>
+          <!-- OCR / extracted text viewer -->
+          <details v-if="att.extractedText" class="attachment-ocr">
+            <summary class="ocr-summary">
+              <span class="ocr-label">OCR 文本</span>
+              <span class="ocr-preview">{{ att.extractedText.slice(0, 24) }}{{ att.extractedText.length > 24 ? '…' : '' }}</span>
+            </summary>
+            <div class="ocr-body">{{ att.extractedText }}</div>
+          </details>
         </div>
       </div>
 
@@ -798,6 +837,14 @@ function resultDomain(url: string): string {
             @click="chat.setMessageFeedback(message.id, displayedFeedback === 'negative' ? null : 'negative')"
           >
             <ThumbsDown :size="13" />
+          </button>
+          <button
+            v-if="!activeSlotStreaming"
+            class="action-btn danger"
+            title="删除"
+            @click="confirmDeleteMessage"
+          >
+            <Trash2 :size="13" />
           </button>
         </div>
 
@@ -1110,6 +1157,77 @@ function resultDomain(url: string): string {
   background: rgba(0, 0, 0, 0.05);
   border-radius: 8px;
   font-size: 12px;
+}
+
+.attachment-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.attachment-ocr {
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+  width: 100%;
+  min-width: 0;
+}
+
+.attachment-ocr .ocr-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 11px;
+  list-style: none;
+  user-select: none;
+}
+
+.attachment-ocr .ocr-summary::-webkit-details-marker {
+  display: none;
+}
+
+.attachment-ocr .ocr-summary::before {
+  content: '▶';
+  font-size: 9px;
+  color: #aeaeb2;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.attachment-ocr[open] .ocr-summary::before {
+  transform: rotate(90deg);
+}
+
+.ocr-label {
+  font-weight: 600;
+  color: #8e8e93;
+  flex-shrink: 0;
+}
+
+.ocr-preview {
+  color: #aeaeb2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.ocr-body {
+  padding: 6px 10px 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #3c3c43;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 .file-name {
@@ -1562,6 +1680,11 @@ details[open] .compare-reasoning-summary::before { content: '▼ '; }
 }
 
 .action-btn.negative {
+  color: #ff3b30;
+}
+
+.action-btn.danger:hover {
+  background: rgba(255, 59, 48, 0.10);
   color: #ff3b30;
 }
 
@@ -2038,12 +2161,39 @@ details[open] .compare-reasoning-summary::before { content: '▼ '; }
   padding: 16px;
   background: #ffffff;
   min-height: 60px;
+  position: relative;
 }
 
 .svg-preview-area svg {
   max-width: 100%;
   height: auto;
   max-height: 480px;
+}
+
+.svg-copy-img-btn {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  opacity: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s, background 0.12s;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.svg-preview-area:hover .svg-copy-img-btn {
+  opacity: 1;
+}
+.svg-copy-img-btn:hover {
+  background: rgba(0, 0, 0, 0.75);
 }
 
 .svg-source-pre { background: #1e1e2e; }

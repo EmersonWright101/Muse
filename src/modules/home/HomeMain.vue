@@ -12,6 +12,8 @@ const router = useRouter()
 const lightboxPoster  = ref<AnimalPoster | null>(null)
 const deleteConfirmId = ref<string | null>(null)
 const copiedPosterId  = ref<string | null>(null)
+const saveToast = ref('')
+let _saveToastTimer: ReturnType<typeof setTimeout> | null = null
 
 const posters = computed(() => home.posters)
 const isEmpty = computed(() => posters.value.length === 0 && !home.isGenerating)
@@ -55,19 +57,37 @@ async function copyPosterImage(poster: AnimalPoster) {
     const bin = atob(poster.imageBase64)
     const bytes = new Uint8Array(bin.length)
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-    const blob = new Blob([bytes], { type: 'image/png' })
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+    const { writeImage } = await import('@tauri-apps/plugin-clipboard-manager')
+    await writeImage(bytes)
     copiedPosterId.value = poster.id
     setTimeout(() => { copiedPosterId.value = null }, 2000)
   } catch { /* silently fail on unsupported browser */ }
 }
 
+function showSaveToast(text: string) {
+  saveToast.value = text
+  if (_saveToastTimer) clearTimeout(_saveToastTimer)
+  _saveToastTimer = setTimeout(() => { saveToast.value = '' }, 2500)
+}
+
 async function downloadPosterImage(poster: AnimalPoster) {
   if (!poster.imageBase64) return
-  const a = document.createElement('a')
-  a.href = `data:image/png;base64,${poster.imageBase64}`
-  a.download = `${poster.animalName}-${poster.date}.png`
-  a.click()
+  try {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const { writeFile } = await import('@tauri-apps/plugin-fs')
+    const bin = atob(poster.imageBase64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    const savePath = await save({
+      defaultPath: `${poster.animalName}-${poster.date}.png`,
+      filters: [{ name: 'Image', extensions: ['png'] }],
+    })
+    if (!savePath) return
+    await writeFile(savePath, bytes)
+    showSaveToast('保存成功')
+  } catch {
+    showSaveToast('保存失败')
+  }
 }
 
 function formatDate(dateStr: string): string {
@@ -290,6 +310,11 @@ onMounted(async () => {
           </div>
         </div>
       </div>
+    </Teleport>
+
+    <!-- Save toast -->
+    <Teleport to="body">
+      <div v-if="saveToast" class="save-toast">{{ saveToast }}</div>
     </Teleport>
   </div>
 </template>
@@ -868,6 +893,22 @@ onMounted(async () => {
 
 .confirm-btn.secondary:hover {
   background: rgba(0,0,0,0.10);
+}
+
+.save-toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(30, 30, 30, 0.88);
+  color: #fff;
+  padding: 8px 20px;
+  border-radius: 20px;
+  font-size: 13px;
+  pointer-events: none;
+  z-index: 99999;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .confirm-btn.danger {

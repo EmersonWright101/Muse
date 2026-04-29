@@ -147,6 +147,19 @@ export const useWebSearchStore = defineStore('webSearch', () => {
     return base
   }
 
+  function reload() {
+    const raw = loadRaw()
+    enabled.value = raw.enabled ?? false
+    activeProviderId.value = raw.activeProviderId ?? 'exa'
+    providerApiKeyEnc.value = Object.fromEntries(
+      Object.entries(raw.providers ?? {}).map(([k, v]) => [k, v.apiKeyEnc ?? '']),
+    )
+    providerNumResults.value = Object.fromEntries(
+      Object.entries(raw.providers ?? {}).map(([k, v]) => [k, v.numResults ?? 5]),
+    )
+    exaSearchType.value = raw.providers?.exa?.exaSearchType ?? 'auto'
+  }
+
   return {
     enabled,
     activeProviderId,
@@ -160,6 +173,7 @@ export const useWebSearchStore = defineStore('webSearch', () => {
     monthlyUsage,
     incrementUsage,
     getMonthlyUsage,
+    reload,
   }
 })
 
@@ -170,6 +184,7 @@ import type { SyncModule } from '../services/sync/types'
 
 interface RemoteProviderStore {
   apiKey?: string      // plaintext — safe inside sync-encrypted container
+  apiKeyEnc?: string   // legacy: device-local encrypted key from old sync format
   numResults?: number
   exaSearchType?: 'auto' | 'fast' | 'deep'
 }
@@ -222,15 +237,26 @@ const webSearchSyncModule: SyncModule = {
     const localTs  = this.getLocalTimestamp() as string
     const remoteTs = remoteData.__syncTs ?? new Date(0).toISOString()
 
-    // Apply remote settings to the in-memory store when remote is newer
+    // Apply remote settings to localStorage when remote is newer, then refresh in-memory state via onSynced
     if (remoteTs > localTs) {
-      if (remoteData.enabled !== undefined)          store.enabled          = remoteData.enabled
-      if (remoteData.activeProviderId)               store.activeProviderId = remoteData.activeProviderId
-      for (const [id, rp] of Object.entries(remoteData.providers ?? {})) {
-        if (rp.apiKey !== undefined)  await store.setApiKey(id, rp.apiKey)
-        if (rp.numResults !== undefined) store.setNumResults(id, rp.numResults)
-        if (id === 'exa' && rp.exaSearchType) store.exaSearchType = rp.exaSearchType
+      const providers: Record<string, ProviderStore> = {}
+      for (const { id } of listWebSearchProviders()) {
+        const rp = remoteData.providers?.[id]
+        providers[id] = {
+          // Prefer plaintext apiKey (new format); fall back to legacy apiKeyEnc
+          apiKeyEnc: rp?.apiKey
+            ? await encryptLocal(rp.apiKey)
+            : (rp?.apiKeyEnc ?? ''),
+          numResults: rp?.numResults ?? 5,
+          ...(id === 'exa' ? { exaSearchType: rp?.exaSearchType ?? 'auto' } : {}),
+        }
       }
+      localStorage.setItem(LS_KEY, JSON.stringify({
+        enabled:          remoteData.enabled ?? false,
+        activeProviderId: remoteData.activeProviderId ?? 'exa',
+        providers,
+      } satisfies PersistedSettings))
+      localStorage.setItem(LS_MODIFIED_AT_KEY, remoteTs)
     }
 
     if (!localChanged && remoteTs <= localTs) return
@@ -238,4 +264,9 @@ const webSearchSyncModule: SyncModule = {
   },
 }
 
-syncService.register(webSearchSyncModule)
+syncService.register({
+  ...webSearchSyncModule,
+  async onSynced() {
+    useWebSearchStore().reload()
+  },
+})

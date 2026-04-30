@@ -1253,13 +1253,23 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
 
-    // Primary slot (slot 0): remove this message and re-send to primary model only.
-    conv.messages.splice(idx)
-    const lastUser = [...conv.messages].reverse().find(m => m.role === 'user')
-    if (!lastUser) return
-    const userIdx = conv.messages.lastIndexOf(lastUser)
-    conv.messages.splice(userIdx)
-    await sendMessage(lastUser.content, lastUser.attachments, true)
+    // If this is the last message, use the old tail-splice behavior
+    if (idx === conv.messages.length - 1) {
+      conv.messages.splice(idx)
+      const lastUser = [...conv.messages].reverse().find(m => m.role === 'user')
+      if (!lastUser) return
+      const userIdx = conv.messages.lastIndexOf(lastUser)
+      conv.messages.splice(userIdx)
+      await sendMessage(lastUser.content, lastUser.attachments, true)
+      return
+    }
+
+    // Middle regeneration: regenerate in-place using current conversation model
+    const aiStore = useAiSettingsStore()
+    const pid = conv.providerId ?? aiStore.activeProviderId
+    const mid = conv.model ?? aiStore.activeModelId()
+    if (!pid || !mid) return
+    await regenerateWithModel(messageId, pid, mid, false, -1)
   }
 
   // ─── Variant: regenerate with a different model ─────────────────────────
@@ -1294,8 +1304,21 @@ export const useChatStore = defineStore('chat', () => {
     const payload    = buildPayload(msgsForApi, provider.type, provider.baseUrl)
 
     const msg = conv.messages[msgIdx]
+    const isPrimary = replaceVariantIdx === -1
     let vi: number
-    if (replaceVariantIdx !== undefined) {
+    if (isPrimary) {
+      // Replace primary slot in-place
+      msg.content = ''
+      msg.reasoning = undefined
+      msg.usage = undefined
+      msg.error = undefined
+      msg.mediaOutputs = undefined
+      msg.feedback = undefined
+      msg.model = modelId
+      msg.providerId = providerId
+      msg.activeVariantIdx = 0
+      vi = -1
+    } else if (replaceVariantIdx !== undefined) {
       // Replace existing variant slot in-place (clears old content + mediaOutputs)
       if (!msg.variants) msg.variants = []
       msg.variants[replaceVariantIdx] = { id: newId(), content: '', model: modelId, providerId }
@@ -1308,11 +1331,23 @@ export const useChatStore = defineStore('chat', () => {
       msg.activeVariantIdx = msg.variants.length  // switch to new variant right away
     }
 
-    // Track streaming: use per-variant key so multiple variants can stream simultaneously
-    const varKey = `${messageId}:${vi}`
-    streamingVariantMsgIds.add(messageId)
-    const ac = new AbortController()
-    _variantAbortControllers.set(varKey, ac)
+    // Track streaming
+    let ac: AbortController
+    if (isPrimary) {
+      streamingConvIds.add(conv.id)
+      if (activeConvId.value === conv.id) {
+        streamingText.value = ''
+        streamingReasoning.value = ''
+        streamingMsgId.value = msg.id
+      }
+      ac = new AbortController()
+      _abortControllers.set(conv.id, ac)
+    } else {
+      const varKey = `${messageId}:${vi}`
+      streamingVariantMsgIds.add(messageId)
+      ac = new AbortController()
+      _variantAbortControllers.set(varKey, ac)
+    }
 
     const startedAt = Date.now()
 
@@ -1330,6 +1365,17 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     function cleanupVariant() {
+      if (isPrimary) {
+        _abortControllers.delete(conv.id)
+        streamingConvIds.delete(conv.id)
+        if (activeConvId.value === conv.id) {
+          streamingMsgId.value = null
+          streamingText.value = ''
+          streamingReasoning.value = ''
+        }
+        return
+      }
+      const varKey = `${messageId}:${vi}`
       _variantAbortControllers.delete(varKey)
       // Remove from streaming set only when no more variants of this msg are streaming
       const stillStreaming = [..._variantAbortControllers.keys()].some(k => k.startsWith(messageId + ':'))
@@ -1337,30 +1383,57 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     const handler: StreamChunkHandler = {
-      onToken(token) { msg.variants![vi].content += token },
+      onToken(token) {
+        if (isPrimary) {
+          msg.content += token
+          if (activeConvId.value === conv.id) streamingText.value = msg.content
+        } else {
+          msg.variants![vi].content += token
+        }
+      },
       onReasoningToken(token) {
-        const v = msg.variants![vi]
-        v.reasoning = (v.reasoning ?? '') + token
+        if (isPrimary) {
+          msg.reasoning = (msg.reasoning ?? '') + token
+          if (activeConvId.value === conv.id) streamingReasoning.value = msg.reasoning
+        } else {
+          const v = msg.variants![vi]
+          v.reasoning = (v.reasoning ?? '') + token
+        }
       },
       onMediaOutput(mimeType, data, isUrl) {
-        const v = msg.variants![vi]
-        if (!v.mediaOutputs) v.mediaOutputs = []
-        v.mediaOutputs.push(isUrl ? { mimeType, url: data } : { mimeType, data })
+        if (isPrimary) {
+          if (!msg.mediaOutputs) msg.mediaOutputs = []
+          msg.mediaOutputs.push(isUrl ? { mimeType, url: data } : { mimeType, data })
+        } else {
+          const v = msg.variants![vi]
+          if (!v.mediaOutputs) v.mediaOutputs = []
+          v.mediaOutputs.push(isUrl ? { mimeType, url: data } : { mimeType, data })
+        }
       },
       async onDone(usage) {
         if (usage.costUsd == null) {
           const computed = calculateModelCost(aiStore.providers, providerId, modelId, usage.inputTokens, usage.outputTokens)
           if (computed != null) usage.costUsd = computed
         }
-        msg.variants![vi].usage = { ...usage, durationMs: Date.now() - startedAt }
+        const usageWithDuration = { ...usage, durationMs: Date.now() - startedAt }
+        if (isPrimary) {
+          msg.usage = usageWithDuration
+        } else {
+          msg.variants![vi].usage = usageWithDuration
+        }
         cleanupVariant()
         conv.updatedAt = new Date().toISOString()
         await saveConversation(conv)
         await loadList()
       },
       async onError(err) {
-        msg.variants![vi].content = `Error: ${err}`
-        msg.variants![vi].error   = true
+        if (isPrimary) {
+          msg.content = `Error: ${err}`
+          msg.error = true
+        } else {
+          msg.variants![vi].content = `Error: ${err}`
+          msg.variants![vi].error   = true
+        }
         cleanupVariant()
         await saveConversation(conv)
         await loadList()

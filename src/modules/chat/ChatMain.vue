@@ -809,9 +809,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleSecondModelOut
 .messages-area::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.10); border-radius: 2px; }
 
 .messages-inner {
-  max-width: 860px;
-  margin: 0 auto;
-  padding: 24px 16px 0;
+  padding: 24px 20px 0;
   display: flex;
   flex-direction: column;
   gap: 18px;

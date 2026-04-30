@@ -40,6 +40,7 @@ function confirmAddProvider() {
     builtIn:         false,
   }
   ai.providers.push(newP)
+  ai.persist()
   selectedId.value  = id
   showAddForm.value = false
   newProvName.value = ''
@@ -66,7 +67,10 @@ function doDelete() {
   selectedId.value    = nextId
   confirmDelete.value = false
   const idx = ai.providers.findIndex(p => p.id === id)
-  if (idx !== -1) ai.providers.splice(idx, 1)
+  if (idx !== -1) {
+    ai.providers.splice(idx, 1)
+    ai.persist()
+  }
 }
 
 function cancelDelete() {
@@ -169,6 +173,7 @@ function saveEditModel(m: AIModel) {
     editDraft.value.outputPrice = undefined
   }
   Object.assign(model, editDraft.value)
+  selected.value.updatedAt = new Date().toISOString()
   ai.persist()
   editingModelId.value = null
 }

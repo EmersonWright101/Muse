@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { MessageSquare, MapPin, BarChart3, Settings } from 'lucide-vue-next'
@@ -24,6 +24,69 @@ async function onHeaderMouseDown(e: MouseEvent) {
     await win.startDragging()
   }
 }
+
+// ─── User avatar ─────────────────────────────────────────────────────────────
+
+const LS_AVATAR_KEY = 'muse-user-avatar'
+const userAvatar = ref<string | null>(null)
+
+function loadAvatar() {
+  userAvatar.value = localStorage.getItem(LS_AVATAR_KEY)
+}
+
+function saveAvatar(base64: string) {
+  localStorage.setItem(LS_AVATAR_KEY, base64)
+  userAvatar.value = base64
+}
+
+function clearAvatar() {
+  localStorage.removeItem(LS_AVATAR_KEY)
+  userAvatar.value = null
+}
+
+const logoMenuOpen = ref(false)
+const logoMenuPos = ref({ x: 0, y: 0 })
+
+function openLogoMenu(e: MouseEvent) {
+  e.preventDefault()
+  logoMenuPos.value = { x: e.clientX, y: e.clientY }
+  logoMenuOpen.value = true
+}
+
+function closeLogoMenu() {
+  logoMenuOpen.value = false
+}
+
+const fileInput = ref<HTMLInputElement>()
+
+function pickAvatar() {
+  closeLogoMenu()
+  fileInput.value?.click()
+}
+
+function handleAvatarChange(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  if (!file.type.startsWith('image/')) {
+    alert('请选择图片文件')
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = (ev) => {
+    const result = ev.target?.result as string
+    if (result) saveAvatar(result)
+  }
+  reader.readAsDataURL(file)
+  ;(e.target as HTMLInputElement).value = ''
+}
+
+onMounted(() => {
+  loadAvatar()
+  document.addEventListener('click', closeLogoMenu)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', closeLogoMenu)
+})
 </script>
 
 <template>
@@ -51,12 +114,32 @@ async function onHeaderMouseDown(e: MouseEvent) {
 
     <!-- Logo mark — click to go home -->
     <div class="sidebar-logo">
-      <router-link to="/home" class="logo-link" :title="t('nav.home')">
-        <div class="logo-mark" :class="{ active: isHome }">
+      <router-link to="/home" class="logo-link" :title="t('nav.home')" @contextmenu.prevent="openLogoMenu">
+        <img v-if="userAvatar" :src="userAvatar" class="logo-avatar" :class="{ active: isHome }" alt="" />
+        <div v-else class="logo-mark" :class="{ active: isHome }">
           <span>M</span>
         </div>
       </router-link>
     </div>
+
+    <!-- Logo context menu -->
+    <Teleport to="body">
+      <div
+        v-if="logoMenuOpen"
+        class="logo-context-menu"
+        :style="{ left: logoMenuPos.x + 'px', top: logoMenuPos.y + 'px' }"
+        @click.stop
+      >
+        <button class="logo-menu-item" @click="pickAvatar">
+          <span>更换头像</span>
+        </button>
+        <button v-if="userAvatar" class="logo-menu-item delete" @click="clearAvatar(); closeLogoMenu()">
+          <span>恢复默认</span>
+        </button>
+      </div>
+    </Teleport>
+
+    <input ref="fileInput" type="file" accept="image/*" class="hidden-file-input" @change="handleAvatarChange" />
 
     <!-- Main navigation -->
     <nav class="sidebar-nav">
@@ -206,6 +289,10 @@ async function onHeaderMouseDown(e: MouseEvent) {
   transform: scale(1.06);
 }
 
+.logo-link:hover .logo-avatar {
+  transform: scale(1.06);
+}
+
 .logo-mark span {
   color: white;
   font-size: 17px;
@@ -213,6 +300,60 @@ async function onHeaderMouseDown(e: MouseEvent) {
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
   letter-spacing: -0.5px;
   line-height: 1;
+}
+
+.logo-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  object-fit: cover;
+  box-shadow: 0 2px 8px rgba(34, 63, 121, 0.20);
+  transition: box-shadow 0.15s, transform 0.12s;
+}
+
+.logo-avatar.active {
+  box-shadow: 0 0 0 3px rgba(34, 63, 121, 0.20), 0 2px 8px rgba(34, 63, 121, 0.30);
+}
+
+.logo-context-menu {
+  position: fixed;
+  z-index: 500;
+  background: rgba(250, 250, 252, 0.97);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  padding: 5px;
+  min-width: 140px;
+}
+
+.logo-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #1c1c1e;
+  cursor: pointer;
+  transition: background 0.10s;
+  text-align: left;
+}
+
+.logo-menu-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.logo-menu-item.delete {
+  color: #ff3b30;
+}
+
+.hidden-file-input {
+  display: none;
 }
 
 .sidebar-nav {

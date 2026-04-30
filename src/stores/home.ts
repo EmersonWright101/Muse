@@ -49,6 +49,18 @@ export interface PosterDailyStat {
 
 const LS_KEY             = 'muse-home-settings'
 const LS_MODIFIED_AT_KEY = 'muse-home-posters-modified-at'
+const LS_DELETED_POSTERS_KEY = 'muse-deleted-posters'
+
+function getDeletedPosters(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(LS_DELETED_POSTERS_KEY)
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {}
+  } catch { return {} }
+}
+
+function setDeletedPosters(map: Record<string, string>) {
+  localStorage.setItem(LS_DELETED_POSTERS_KEY, JSON.stringify(map))
+}
 
 export const DEFAULT_PROMPT = '请给我生成一张介绍{animal}的海报，你的图片必须是横幅的16:9，然后文字必须是中文'
 
@@ -443,6 +455,9 @@ export const useHomeStore = defineStore('home', () => {
     } catch { /* ignore */ }
     posters.value = posters.value.filter(p => p.id !== id)
     posterIds.value = posters.value.map(p => p.id)
+    const deleted = getDeletedPosters()
+    deleted[id] = new Date().toISOString()
+    setDeletedPosters(deleted)
     localStorage.setItem(LS_MODIFIED_AT_KEY, new Date().toISOString())
   }
 
@@ -550,15 +565,49 @@ const homeSyncModule: SyncModule = {
     const localMeta: PosterMeta[] = store.posters.map(({ imageBase64: _img, ...rest }) => rest)
     const remoteMeta = await ctx.getEncrypted<PosterMeta[] | null>(manifestPath, null)
 
+    // Sync tombstones
+    const tombstonesPath = ctx.rp('home_posters/tombstones.enc')
+    const localDeleted = getDeletedPosters()
+    const remoteDeleted = await ctx.getEncrypted<Record<string, string> | null>(tombstonesPath, null)
+
     if (localChanged) {
       await ctx.putEncrypted(manifestPath, localMeta)
+      await ctx.putEncrypted(tombstonesPath, localDeleted)
     }
 
-    // Pull poster images not present locally
+    // Merge remote deletions into local tombstones and apply them
+    if (remoteDeleted) {
+      for (const [id, ts] of Object.entries(remoteDeleted)) {
+        if (!localDeleted[id] || ts > localDeleted[id]) {
+          localDeleted[id] = ts
+          // Delete local file if it still exists
+          try {
+            const dir = await getPostersDir()
+            const p = `${dir}/${id}.json`
+            if (await exists(p)) await remove(p)
+          } catch { /* ignore */ }
+          store.posters = store.posters.filter(p => p.id !== id)
+          store.posterIds = store.posters.map(p => p.id)
+        }
+      }
+      setDeletedPosters(localDeleted)
+    }
+
+    // Delete remote images that are in local tombstones but still on remote
+    if (localChanged && remoteMeta) {
+      for (const meta of remoteMeta) {
+        if (localDeleted[meta.id]) {
+          await ctx.webdavDelete(ctx.rp(`home_posters/${meta.id}.enc`))
+        }
+      }
+    }
+
+    // Pull poster images not present locally (and not tombstoned)
     if (remoteMeta) {
       const localIds = new Set(store.posterIds)
       for (const meta of remoteMeta) {
         if (localIds.has(meta.id)) continue
+        if (localDeleted[meta.id]) continue
         const imgPath = ctx.rp(`home_posters/${meta.id}.enc`)
         const imgData = await ctx.getEncrypted<{ imageBase64: string } | null>(imgPath, null)
         if (imgData) {
@@ -581,6 +630,14 @@ const homeSyncModule: SyncModule = {
         await ctx.putEncrypted(imgPath, { imageBase64: poster.imageBase64 })
       }
     }
+
+    // Prune tombstones older than 6 months
+    const sixMonthsAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString()
+    const prunedDeleted: Record<string, string> = {}
+    for (const [id, ts] of Object.entries(localDeleted) as [string, string][]) {
+      if (ts >= sixMonthsAgo) prunedDeleted[id] = ts
+    }
+    setDeletedPosters(prunedDeleted)
 
     localStorage.setItem(LS_MODIFIED_AT_KEY, new Date().toISOString())
   },

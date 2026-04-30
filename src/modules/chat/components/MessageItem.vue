@@ -78,6 +78,17 @@ const chat = useChatStore()
 const ai   = useAiSettingsStore()
 const { t } = useI18n()
 
+// ─── User avatar (shared with sidebar) ────────────────────────────────────────
+const LS_AVATAR_KEY = 'muse-user-avatar'
+const userAvatar = ref<string | null>(null)
+function loadUserAvatar() {
+  userAvatar.value = localStorage.getItem(LS_AVATAR_KEY)
+}
+loadUserAvatar()
+window.addEventListener('storage', (e) => {
+  if (e.key === LS_AVATAR_KEY) loadUserAvatar()
+})
+
 // ─── Copy + edit ─────────────────────────────────────────────────────────────
 
 const copyDone  = ref(false)
@@ -612,6 +623,12 @@ function resultDomain(url: string): string {
       <div v-else class="avatar-mark">M</div>
     </div>
 
+    <!-- User avatar -->
+    <div v-if="isUser" class="avatar user-avatar">
+      <img v-if="userAvatar" :src="userAvatar" class="avatar-logo" alt="" />
+      <div v-else class="avatar-mark user-avatar-fallback">U</div>
+    </div>
+
     <!-- Message bubble -->
     <div class="bubble-wrap">
       <!-- Attachments -->
@@ -654,7 +671,7 @@ function resultDomain(url: string): string {
       </div>
 
       <!-- User message: plain text or inline edit -->
-      <div v-if="isUser" class="bubble user-bubble">
+      <div v-if="isUser" class="bubble user-bubble" :class="{ editing: isEditing }">
         <template v-if="isEditing">
           <textarea
             v-model="editText"
@@ -1039,8 +1056,6 @@ function resultDomain(url: string): string {
 .message-row {
   display: flex;
   gap: 8px;
-  max-width: 860px;
-  margin: 0 auto;
   width: 100%;
   padding: 4px 0;
 }
@@ -1052,6 +1067,14 @@ function resultDomain(url: string): string {
 .assistant-row {
   flex-direction: row;
   align-items: flex-start;
+}
+
+.user-avatar {
+  margin-top: 4px;
+}
+
+.user-avatar-fallback {
+  background: linear-gradient(145deg, #8e8e93 0%, #636366 100%);
 }
 
 .avatar {
@@ -1101,10 +1124,18 @@ function resultDomain(url: string): string {
 }
 
 .user-bubble {
-  background: #223F79;
-  color: white;
+  background: #f0f0f5;
+  color: #1c1c1e;
   border-radius: 16px 4px 16px 16px;
-  max-width: 76%;
+  max-width: 100%;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.user-bubble.editing {
+  min-width: 480px;
+  width: 100%;
+  max-width: 60%;
+  box-sizing: border-box;
 }
 
 .user-text {
@@ -1690,21 +1721,26 @@ details[open] .compare-reasoning-summary::before { content: '▼ '; }
 
 .edit-textarea {
   width: 100%;
-  background: rgba(255, 255, 255, 0.15);
-  border: none;
+  background: #ffffff;
+  border: 1.5px solid rgba(34, 63, 121, 0.25);
   outline: none;
   resize: none;
   font-size: 14px;
   line-height: 1.55;
-  color: white;
+  color: #1c1c1e;
   font-family: inherit;
-  border-radius: 8px;
-  padding: 6px 8px;
+  border-radius: 10px;
+  padding: 8px 10px;
   box-sizing: border-box;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+.edit-textarea:focus {
+  border-color: rgba(34, 63, 121, 0.45);
 }
 
 .assistant-edit-textarea {
-  background: #f5f5f7;
+  background: #ffffff;
   color: #1c1c1e;
   border: 1.5px solid rgba(34, 63, 121, 0.25);
 }
@@ -1718,22 +1754,34 @@ details[open] .compare-reasoning-summary::before { content: '▼ '; }
 
 .edit-confirm-btn {
   font-size: 12px;
-  background: rgba(255, 255, 255, 0.25);
+  background: #223F79;
   color: white;
   border: none;
-  border-radius: 6px;
-  padding: 4px 12px;
+  border-radius: 7px;
+  padding: 5px 14px;
   cursor: pointer;
+  font-weight: 500;
+  transition: opacity 0.12s;
+}
+
+.edit-confirm-btn:hover {
+  opacity: 0.88;
 }
 
 .edit-cancel-btn {
   font-size: 12px;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.7);
+  background: rgba(0, 0, 0, 0.06);
+  color: #3c3c43;
   border: none;
-  border-radius: 6px;
-  padding: 4px 12px;
+  border-radius: 7px;
+  padding: 5px 14px;
   cursor: pointer;
+  font-weight: 500;
+  transition: background 0.12s;
+}
+
+.edit-cancel-btn:hover {
+  background: rgba(0, 0, 0, 0.10);
 }
 
 /* ─── Reasoning block ───────────────────────────────────────────────────────── */

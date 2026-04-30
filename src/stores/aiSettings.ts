@@ -248,12 +248,17 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
 
   function setModelForProvider(providerId: string, modelId: string) {
     const p = providers.value.find(p => p.id === providerId)
-    if (p) p.selectedModelId = modelId
+    if (p) {
+      p.selectedModelId = modelId
+      p.updatedAt = new Date().toISOString()
+      persist()
+    }
   }
 
   function setDefaultModel(providerId: string, modelId: string) {
     defaultProviderId.value = providerId
     defaultModelId.value    = modelId
+    persist()
   }
 
   function clearDefaultModel() {
@@ -304,14 +309,18 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     if (p && !p.models.find(m => m.id === model.id)) {
       const inferred = inferModelCaps(model.id)
       p.models.push({ ...inferred, ...model })
+      p.updatedAt = new Date().toISOString()
+      persist()
     }
-    persist()
   }
 
   function removeCustomModel(providerId: string, modelId: string) {
     const p = providers.value.find(p => p.id === providerId)
-    if (p) p.models = p.models.filter(m => m.id !== modelId)
-    persist()
+    if (p) {
+      p.models = p.models.filter(m => m.id !== modelId)
+      p.updatedAt = new Date().toISOString()
+      persist()
+    }
   }
 
   // ─── Dynamic provider management ───────────────────────────────────────────

@@ -38,7 +38,7 @@ const kpiCards = computed(() => {
     { label: '7天 Token', value: fmt(tok7), sub: '近7天' },
     { label: '30天 Token', value: fmt(tok30), sub: '近30天' },
     { label: '日均 Token', value: fmt(avg), sub: '平均值' },
-    { label: '本月请求', value: String(monthReq), sub: '对话次数' },
+    { label: '近30天请求', value: String(monthReq), sub: '对话次数' },
   ]
 })
 

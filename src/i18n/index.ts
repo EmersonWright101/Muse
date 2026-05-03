@@ -64,7 +64,11 @@ const localeSyncModule: SyncModule = {
     const remoteTs = (remoteData as Record<string, unknown> & { __syncTs?: string }).__syncTs ?? new Date(0).toISOString()
 
     if (remoteTs > localTs && remoteData.locale) {
-      localStorage.setItem(LS_LOCALE_KEY, String(remoteData.locale))
+      const newLocale = String(remoteData.locale) as Locale
+      localStorage.setItem(LS_LOCALE_KEY, newLocale)
+      // Update the running i18n instance without touching modified-at (avoid re-upload)
+      ;(i18n.global.locale as any).value = newLocale
+      document.documentElement.lang = newLocale
     }
 
     if (!localChanged) return

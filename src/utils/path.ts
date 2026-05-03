@@ -21,6 +21,7 @@ const APP_ENTRIES = new Set([
   'conversations',
   'travel_notes',
   'home_posters',
+  'todos',
   'assistants.json',
   'stats-cache.json',
   'copilot-stats.json',

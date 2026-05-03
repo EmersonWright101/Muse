@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, MapPin, BarChart3, Settings } from 'lucide-vue-next'
+import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
 const route = useRoute()
@@ -14,6 +14,7 @@ const isWindows = navigator.userAgent.includes('Windows')
 const navItems = computed(() => [
   { path: '/chat',   icon: MessageSquare, labelKey: 'nav.chat' },
   { path: '/travel', icon: MapPin,        labelKey: 'nav.travel' },
+  { path: '/todo',   icon: CheckSquare,   labelKey: 'nav.todo' },
 ])
 
 const isActive = (path: string) => route.path.startsWith(path)

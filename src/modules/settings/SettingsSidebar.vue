@@ -6,6 +6,7 @@ import {
   CloudUpload,
   Info,
   MessageSquare,
+  CheckSquare,
 } from 'lucide-vue-next'
 import { useUiStore } from '../../stores/uiStore'
 
@@ -16,6 +17,7 @@ const sections = [
   { id: 'general', icon: SlidersHorizontal, labelKey: 'settings.sections.general' },
   { id: 'ai',      icon: Bot,               labelKey: 'settings.sections.ai' },
   { id: 'chat',    icon: MessageSquare,     labelKey: 'settings.sections.chat' },
+  { id: 'todo',    icon: CheckSquare,       labelKey: 'settings.sections.todo' },
   { id: 'sync',    icon: CloudUpload,       labelKey: 'settings.sections.sync' },
   { id: 'about',   icon: Info,              labelKey: 'settings.sections.about' },
 ]

@@ -56,6 +56,10 @@ class SyncService {
     return this.modules
   }
 
+  resetDirsVerified(): void {
+    this._dirsVerified = false
+  }
+
   loadSyncRecord(): LocalSyncRecord {
     try {
       const raw = localStorage.getItem(SYNC_RECORD_LS_KEY)

@@ -2,10 +2,11 @@
 import { computed } from 'vue'
 import { useUiStore } from '../../stores/uiStore'
 import GeneralSettings from './tabs/GeneralSettings.vue'
-import AISettings     from './tabs/AISettings.vue'
-import SyncSettings   from './tabs/SyncSettings.vue'
-import AboutSettings  from './tabs/AboutSettings.vue'
-import ChatSettings   from './tabs/ChatSettings.vue'
+import AISettings      from './tabs/AISettings.vue'
+import SyncSettings    from './tabs/SyncSettings.vue'
+import AboutSettings   from './tabs/AboutSettings.vue'
+import ChatSettings    from './tabs/ChatSettings.vue'
+import TodoSettings    from './tabs/TodoSettings.vue'
 
 const ui = useUiStore()
 
@@ -16,6 +17,7 @@ const sectionComponents: Record<string, unknown> = {
   general: GeneralSettings,
   ai:      AISettings,
   chat:    ChatSettings,
+  todo:    TodoSettings,
   sync:    SyncSettings,
   about:   AboutSettings,
 }

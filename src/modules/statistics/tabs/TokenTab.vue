@@ -11,8 +11,8 @@ const stats = useStatisticsStore()
 const daily = computed(() => stats.dailyStats)
 const maxDaily = computed(() => Math.max(...daily.value.map(d => d.totalTokens), 1))
 
-const totalInput = computed(() => stats.modelStats.reduce((s, m) => s + m.inputTokens, 0))
-const totalOutput = computed(() => stats.modelStats.reduce((s, m) => s + m.outputTokens, 0))
+const totalInput = computed(() => stats.filteredModelStats.reduce((s, m) => s + m.inputTokens, 0))
+const totalOutput = computed(() => stats.filteredModelStats.reduce((s, m) => s + m.outputTokens, 0))
 
 function formatNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`

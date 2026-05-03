@@ -534,27 +534,37 @@ const homeSyncModule: SyncModule = {
       }
     }
 
-    // Sync last generated date
+    // Sync last generated date — take the later of local and remote to avoid re-generating
+    // on a device that hasn't seen a generation done on another device.
     const lastGenPath = ctx.rp('home_posters/last_generated.enc')
     const localLastGen = localStorage.getItem('muse-home-last-generated')
     const remoteLastGen = await ctx.getEncrypted<{ date?: string } | null>(lastGenPath, null)
-    if (localChanged && localLastGen) {
-      await ctx.putEncrypted(lastGenPath, { date: localLastGen })
-    } else if (remoteLastGen?.date) {
-      localStorage.setItem('muse-home-last-generated', remoteLastGen.date)
+    const effectiveLastGen = [localLastGen, remoteLastGen?.date]
+      .filter((d): d is string => Boolean(d))
+      .sort()
+      .at(-1) ?? null
+    if (effectiveLastGen && effectiveLastGen !== localLastGen) {
+      localStorage.setItem('muse-home-last-generated', effectiveLastGen)
+      store.lastGeneratedDate = effectiveLastGen
+    }
+    if (localChanged) {
+      await ctx.putEncrypted(lastGenPath, { date: effectiveLastGen ?? localLastGen })
     }
 
-    // Sync poster stats
+    // Sync poster stats — merge by taking the higher costUsd per day, then persist to disk
     const statsPath = ctx.rp('home_posters/poster-stats.enc')
     const remoteStats = await ctx.getEncrypted<Record<string, PosterDailyStat> | null>(statsPath, null)
+    let statsChanged = false
     if (remoteStats) {
       for (const [date, rs] of Object.entries(remoteStats)) {
         const ls = store.posterStats[date]
         if (!ls || rs.costUsd > ls.costUsd) {
           store.posterStats = { ...store.posterStats, [date]: rs }
+          statsChanged = true
         }
       }
     }
+    if (statsChanged) await savePosterStats(store.posterStats)
     if (localChanged) {
       await ctx.putEncrypted(statsPath, store.posterStats)
     }

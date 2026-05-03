@@ -28,6 +28,13 @@ const router = createRouter({
       },
     },
     {
+      path: '/todo',
+      components: {
+        sidebar: () => import('../modules/todo/TodoSidebar.vue'),
+        main: () => import('../modules/todo/TodoMain.vue'),
+      },
+    },
+    {
       path: '/statistics',
       components: {
         sidebar: () => import('../modules/statistics/StatisticsSidebar.vue'),

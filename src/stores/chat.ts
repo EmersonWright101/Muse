@@ -1710,7 +1710,20 @@ export const useChatStore = defineStore('chat', () => {
 
   // ─── Per-conversation variant layout ─────────────────────────────────────
 
+  const LS_CONV_LAYOUTS = 'muse-variant-layout'
+  const LS_CONV_LAYOUTS_AT = 'muse-variant-layout-modified-at'
+
   const convLayouts = reactive(new Map<string, 'tab' | 'horizontal'>())
+
+  // Load persisted layouts on init
+  try {
+    const raw = localStorage.getItem(LS_CONV_LAYOUTS)
+    if (raw) {
+      for (const [k, v] of Object.entries(JSON.parse(raw) as Record<string, string>)) {
+        convLayouts.set(k, v as 'tab' | 'horizontal')
+      }
+    }
+  } catch { /* ignore */ }
 
   function getConvLayout(convId: string): 'tab' | 'horizontal' {
     return convLayouts.get(convId) ?? 'tab'
@@ -1718,6 +1731,8 @@ export const useChatStore = defineStore('chat', () => {
 
   function setConvLayout(convId: string, layout: 'tab' | 'horizontal') {
     convLayouts.set(convId, layout)
+    localStorage.setItem(LS_CONV_LAYOUTS, JSON.stringify(Object.fromEntries(convLayouts)))
+    localStorage.setItem(LS_CONV_LAYOUTS_AT, new Date().toISOString())
   }
 
   // Init

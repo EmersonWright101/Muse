@@ -72,6 +72,9 @@ export const useSyncStore = defineStore('sync', () => {
 
   watch(() => ({ ...config }), v => localStorage.setItem(SYNC_CONFIG_LS_KEY, JSON.stringify(v)))
 
+  // Reset dir-creation cache when the remote path or server changes so new dirs are created.
+  watch(() => `${config.serverUrl}|${config.remotePath}`, () => syncService.resetDirsVerified())
+
   function dav() {
     return { serverUrl: config.serverUrl, username: config.username, password: config.password }
   }
@@ -102,6 +105,10 @@ export const useSyncStore = defineStore('sync', () => {
     status.progress = ''
 
     try {
+      // Flush any pending debounced AI settings persist BEFORE sync reads localStorage,
+      // so the sync uploads the latest state rather than stale pre-debounce values.
+      await useAiSettingsStore().flush()
+
       const result = await syncService.syncNow({
         dav: dav(),
         password: config.password,
@@ -116,10 +123,6 @@ export const useSyncStore = defineStore('sync', () => {
         return
       }
 
-      // Flush any pending debounced AI settings persist BEFORE snapshotting syncedAt.
-      // saveToStorage() sets LS_MODIFIED_AT_KEY; computing syncedAt afterwards guarantees
-      // syncedAt >= localTs so localChanged stays false on the next sync cycle.
-      await useAiSettingsStore().flush()
       const syncedAt = new Date().toISOString()
 
       syncService.saveSyncRecord({ syncedAt, remoteTs: result.remoteTs })

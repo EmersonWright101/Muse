@@ -16,7 +16,7 @@ async function loadCopilotStatsFile(): Promise<Record<string, CopilotDailyStat>>
 }
 
 export type TimeRange = 'today' | 'week' | 'month' | 'year'
-export type SortBy = 'tokens' | 'cost' | 'requests' | 'provider' | 'name'
+export type SortBy = 'tokens' | 'cost' | 'requests' | 'traffic' | 'provider' | 'name'
 export type Currency = 'usd' | 'cny'
 
 const EXCHANGE_RATE = 7
@@ -83,7 +83,7 @@ export function getModelLogoUrl(modelId: string): string | null {
 
 // ─── Stats cache (incremental aggregation) ───────────────────────────────────
 
-const CACHE_VERSION = 1
+const CACHE_VERSION = 2  // bumped: getEffectiveUsage now prioritises the active variant
 
 interface CachedConvStat {
   updatedAt: string
@@ -125,11 +125,19 @@ async function writeStatsCache(cache: StatsCache): Promise<void> {
 }
 
 function getEffectiveUsage(msg: ChatMessage) {
-  let usage = msg.usage
-  if (!usage && msg.variants && msg.activeVariantIdx != null && msg.activeVariantIdx > 0) {
+  // When a non-primary variant is active, its usage takes priority over the primary slot's
+  // usage so that token counts and cost match what the user is actually viewing.
+  if (msg.activeVariantIdx != null && msg.activeVariantIdx > 0 && msg.variants) {
     const variant = msg.variants[msg.activeVariantIdx - 1]
-    usage = variant?.usage
+    if (variant?.usage) {
+      return {
+        inputTokens: variant.usage.inputTokens || 0,
+        outputTokens: variant.usage.outputTokens || 0,
+        cost: variant.usage.costUsd || 0,
+      }
+    }
   }
+  const usage = msg.usage
   if (!usage) return null
   return {
     inputTokens: usage.inputTokens || 0,
@@ -254,6 +262,9 @@ export const useStatisticsStore = defineStore('statistics', () => {
     if (key) {
       return list.sort((a, b) => (b[key] as number) - (a[key] as number))
     }
+    if (sortBy.value === 'traffic') {
+      return list.sort((a, b) => (b.uploadsMB + b.downloadsMB) - (a.uploadsMB + a.downloadsMB))
+    }
     if (sortBy.value === 'provider') {
       return list.sort((a, b) => a.provider.localeCompare(b.provider))
     }
@@ -327,6 +338,9 @@ export const useStatisticsStore = defineStore('statistics', () => {
     if (key) {
       return list.sort((a, b) => (b[key] as number) - (a[key] as number))
     }
+    if (sortBy.value === 'traffic') {
+      return list.sort((a, b) => (b.uploadsMB + b.downloadsMB) - (a.uploadsMB + a.downloadsMB))
+    }
     if (sortBy.value === 'provider') {
       return list.sort((a, b) => a.provider.localeCompare(b.provider))
     }
@@ -351,8 +365,12 @@ export const useStatisticsStore = defineStore('statistics', () => {
     for (const msg of conv.messages) {
       const usage = getEffectiveUsage(msg)
       const date = msg.timestamp.slice(0, 10)
-      const modelId = msg.model || conv.model || meta.model || 'unknown'
-      const providerId = msg.providerId || conv.providerId || meta.providerId || 'unknown'
+      // Use the active variant's model/provider so stats match what the user is viewing
+      const activeVariant = msg.activeVariantIdx && msg.activeVariantIdx > 0 && msg.variants
+        ? msg.variants[msg.activeVariantIdx - 1] ?? null
+        : null
+      const modelId = activeVariant?.model || msg.model || conv.model || meta.model || 'unknown'
+      const providerId = activeVariant?.providerId || msg.providerId || conv.providerId || meta.providerId || 'unknown'
 
       if (!modelMap.has(modelId)) {
         modelMap.set(modelId, {

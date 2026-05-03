@@ -1,5 +1,6 @@
 import { syncService } from '../../services/sync'
 import type { SyncModule } from '../../services/sync/types'
+import { useChatStore } from '../../stores/chat'
 
 const MOD_LAYOUT = 'variantLayout'
 const LS_LAYOUT_KEY = 'muse-variant-layout'
@@ -35,6 +36,17 @@ const layoutSyncModule: SyncModule = {
 
     if (!localChanged) return
     await ctx.putEncrypted(path, { ...localData, __syncTs: new Date().toISOString() })
+  },
+  async onSynced() {
+    const raw = localStorage.getItem(LS_LAYOUT_KEY)
+    if (!raw) return
+    try {
+      const chatStore = useChatStore()
+      const parsed = JSON.parse(raw) as Record<string, string>
+      for (const [k, v] of Object.entries(parsed)) {
+        chatStore.setConvLayout(k, v as 'tab' | 'horizontal')
+      }
+    } catch { /* ignore */ }
   },
 }
 

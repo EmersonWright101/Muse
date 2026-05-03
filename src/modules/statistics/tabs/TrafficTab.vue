@@ -11,8 +11,8 @@ const stats = useStatisticsStore()
 const daily = computed(() => stats.dailyStats)
 const maxDailyTraffic = computed(() => Math.max(...daily.value.map(d => d.uploadsMB + d.downloadsMB), 0.01))
 
-const totalUp = computed(() => stats.modelStats.reduce((s, m) => s + m.uploadsMB, 0))
-const totalDown = computed(() => stats.modelStats.reduce((s, m) => s + m.downloadsMB, 0))
+const totalUp = computed(() => stats.filteredModelStats.reduce((s, m) => s + m.uploadsMB, 0))
+const totalDown = computed(() => stats.filteredModelStats.reduce((s, m) => s + m.downloadsMB, 0))
 
 function formatMB(n: number): string {
   if (n >= 1024) return `${(n / 1024).toFixed(2)} GB`
@@ -26,7 +26,7 @@ const iconThreshold = ICON_MIN_PX / CHART_HEIGHT
 const maxModelTraffic = computed(() => Math.max(...stats.filteredSortedModelStats.map(m => m.uploadsMB + m.downloadsMB), 0.01))
 
 const sortOptions: { key: SortBy; label: string; icon: typeof ArrowUpDown }[] = [
-  { key: 'requests', label: '流量', icon: ArrowUpDown },
+  { key: 'traffic', label: '流量', icon: ArrowUpDown },
   { key: 'provider', label: '供应商', icon: Building2 },
   { key: 'name', label: '名称', icon: Type },
 ]

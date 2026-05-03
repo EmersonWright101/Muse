@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings } from 'lucide-vue-next'
+import assistantIcon from '../assets/icons/AIAssistant@2x.svg'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
 const route = useRoute()
@@ -12,9 +13,10 @@ const win = getCurrentWindow()
 const isWindows = navigator.userAgent.includes('Windows')
 
 const navItems = computed(() => [
-  { path: '/chat',   icon: MessageSquare, labelKey: 'nav.chat' },
-  { path: '/travel', icon: MapPin,        labelKey: 'nav.travel' },
-  { path: '/todo',   icon: CheckSquare,   labelKey: 'nav.todo' },
+  { path: '/chat',      icon: MessageSquare, labelKey: 'nav.chat',      avatar: false },
+  { path: '/assistant', icon: null,          labelKey: 'nav.assistant', customIcon: assistantIcon },
+  { path: '/travel',    icon: MapPin,        labelKey: 'nav.travel',    avatar: false },
+  { path: '/todo',      icon: CheckSquare,   labelKey: 'nav.todo',      avatar: false, iconSize: 18 },
 ])
 
 const isActive = (path: string) => route.path.startsWith(path)
@@ -152,7 +154,8 @@ onUnmounted(() => {
         :class="{ active: isActive(item.path) }"
         :title="t(item.labelKey)"
       >
-        <component :is="item.icon" :size="21" />
+        <img v-if="item.customIcon" :src="item.customIcon" class="nav-custom-icon" />
+        <component v-else-if="item.icon" :is="item.icon" :size="item.iconSize || 21" />
       </router-link>
     </nav>
 
@@ -398,4 +401,14 @@ onUnmounted(() => {
   background: rgba(34, 63, 121, 0.10);
   color: #223F79;
 }
+
+.nav-custom-icon {
+  width: 21px;
+  height: 21px;
+  object-fit: contain;
+  opacity: 0.55;
+  transition: opacity 0.12s;
+}
+.nav-item:hover .nav-custom-icon { opacity: 0.75; }
+.nav-item.active .nav-custom-icon { opacity: 1; }
 </style>

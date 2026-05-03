@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useTodoStore } from '../../stores/todo'
 import TaskItem from './components/TaskItem.vue'
 import TaskDetail from './components/TaskDetail.vue'
@@ -147,6 +147,18 @@ const dateLabel = computed(() => {
 const starredTasks = computed(() =>
   store.tasks.filter(t => t.starred && !t.completed)
 )
+
+// ─── API error toast ──────────────────────────────────────────────────────────
+
+const apiErrorToast = ref<string | null>(null)
+let _errorToastTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(() => store.apiError, (msg) => {
+  if (!msg) return
+  apiErrorToast.value = msg
+  if (_errorToastTimer) clearTimeout(_errorToastTimer)
+  _errorToastTimer = setTimeout(() => { apiErrorToast.value = null }, 4000)
+})
 
 </script>
 
@@ -400,6 +412,13 @@ const starredTasks = computed(() =>
         </div>
       </div>
     </div>
+
+    <!-- API error toast -->
+    <Transition name="api-toast">
+      <div v-if="apiErrorToast" class="api-error-toast">
+        {{ apiErrorToast }}
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -411,6 +430,7 @@ const starredTasks = computed(() =>
   height: 100%;
   overflow: hidden;
   background: #ffffff;
+  position: relative;
 }
 
 .main-panel {
@@ -978,5 +998,35 @@ const starredTasks = computed(() =>
   color: #c7c7cc;
   text-align: center;
   padding: 4px 0 8px;
+}
+
+.api-error-toast {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #ff3b30;
+  color: #fff;
+  font-size: 13px;
+  padding: 9px 18px;
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  max-width: 480px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  z-index: 999;
+}
+
+.api-toast-enter-active,
+.api-toast-leave-active {
+  transition: opacity 0.2s, transform 0.2s;
+}
+
+.api-toast-enter-from,
+.api-toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px);
 }
 </style>

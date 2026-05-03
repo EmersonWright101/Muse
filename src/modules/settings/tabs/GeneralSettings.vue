@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { FolderOpen, AlertTriangle, Check, X, ChevronDown, Pencil, Trash2, Plus, RotateCcw } from 'lucide-vue-next'
+import { FolderOpen, AlertTriangle, Check, X, ChevronDown, Pencil, Trash2, Plus, RotateCcw, Eye, EyeOff, Wifi, WifiOff } from 'lucide-vue-next'
+import { usePapersStore } from '../../../stores/papers'
 import { open } from '@tauri-apps/plugin-dialog'
 import { readDir, remove } from '@tauri-apps/plugin-fs'
 import { getDataRoot, setDataRoot, resolveDataRoot, migrateData } from '../../../utils/path'
@@ -163,6 +164,35 @@ function setLocale(code: string) {
   localStorage.setItem('muse-locale', code)
 }
 
+// ── ArXiv backend connection ─────────────────────────────────────────────────
+
+const papers = usePapersStore()
+const papersKeyVisible = ref(false)
+const papersPinging    = ref(false)
+const papersPingResult = ref<'ok' | 'err' | null>(null)
+
+function saveBackendConn() {
+  papers.persistConn()
+  papersPingResult.value = null
+}
+
+async function pingBackend() {
+  if (!papers.baseUrl) return
+  papersPinging.value = true
+  papersPingResult.value = null
+  try {
+    const r = await fetch(`${papers.baseUrl}/api/papers/ping`, {
+      headers: { Authorization: `Bearer ${papers.apiKey}` },
+      signal: AbortSignal.timeout(5000),
+    })
+    papersPingResult.value = r.ok ? 'ok' : 'err'
+  } catch {
+    papersPingResult.value = 'err'
+  } finally {
+    papersPinging.value = false
+  }
+}
+
 // Data path
 const currentPath = ref('')
 const isCustom = ref(false)
@@ -271,18 +301,6 @@ async function confirmDeleteOld() {
           <span class="lang-label">{{ lang.label }}</span>
           <span v-if="locale === lang.code" class="lang-check">✓</span>
         </button>
-      </div>
-    </div>
-
-    <div class="section-card">
-      <h2 class="section-title">对话记录</h2>
-      <div class="info-row">
-        <span class="info-label">储存位置</span>
-        <span class="info-value">{{ currentPath }}/conversations</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">加密方式</span>
-        <span class="info-value">API Key 使用 AES-256-GCM 加密存储</span>
       </div>
     </div>
 
@@ -553,6 +571,57 @@ async function confirmDeleteOld() {
         >
           {{ opt.label() }}
         </button>
+      </div>
+    </div>
+
+    <!-- ── Backend Server Config ───────────────────────────────── -->
+    <div class="section-card">
+      <h2 class="section-title">后端服务器配置</h2>
+      <p class="section-desc">配置你的后端服务地址与鉴权 Token，论文推送与待办同步将共用该服务器。</p>
+
+      <div class="papers-field">
+        <label class="papers-label">服务地址</label>
+        <input
+          v-model="papers.baseUrl"
+          type="text"
+          class="papers-input"
+          placeholder="http://your-server"
+          spellcheck="false"
+          autocomplete="off"
+          @blur="saveBackendConn"
+          @keydown.enter.prevent="saveBackendConn"
+        />
+      </div>
+
+      <div class="papers-field">
+        <label class="papers-label">API Key</label>
+        <div class="papers-key-row">
+          <input
+            v-model="papers.apiKey"
+            :type="papersKeyVisible ? 'text' : 'password'"
+            class="papers-input"
+            placeholder="Bearer Token…"
+            spellcheck="false"
+            autocomplete="off"
+            @blur="saveBackendConn"
+            @keydown.enter.prevent="saveBackendConn"
+          />
+          <button class="papers-icon-btn" :title="papersKeyVisible ? '隐藏' : '显示'" @click="papersKeyVisible = !papersKeyVisible">
+            <EyeOff v-if="papersKeyVisible" :size="13" />
+            <Eye v-else :size="13" />
+          </button>
+          <button class="papers-ping-btn" :disabled="!papers.baseUrl || papersPinging" @click="pingBackend">
+            <span v-if="papersPinging" class="papers-spin" />
+            <Wifi v-else :size="13" />
+            {{ papersPinging ? '测试中…' : '测试连接' }}
+          </button>
+        </div>
+        <div v-if="papersPingResult === 'ok'" class="papers-ping-result ok">
+          <Check :size="12" /> 连接成功
+        </div>
+        <div v-else-if="papersPingResult === 'err'" class="papers-ping-result err">
+          <WifiOff :size="12" /> 连接失败，请检查地址和 Key
+        </div>
       </div>
     </div>
 
@@ -917,12 +986,6 @@ async function confirmDeleteOld() {
   background: rgba(34, 63, 121, 0.08);
   border-color: rgba(34, 63, 121, 0.25);
   color: #223F79;
-}
-
-.info-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
 }
 
 /* Poster settings */
@@ -1483,16 +1546,85 @@ async function confirmDeleteOld() {
   background: rgba(34, 63, 121, 0.18);
 }
 
-.info-label {
+/* ── ArXiv backend ──────────────────────────────────────────────────────────── */
+
+.papers-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.papers-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #3c3c43;
+}
+
+.papers-input {
+  height: 32px;
+  border: 1.5px solid rgba(0, 0, 0, 0.10);
+  border-radius: 8px;
+  padding: 0 10px;
   font-size: 13px;
-  color: #8e8e93;
-  width: 70px;
+  color: #1c1c1e;
+  background: white;
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  transition: border-color 0.15s;
+}
+
+.papers-input:focus { border-color: rgba(34, 63, 121, 0.4); }
+
+.papers-key-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.papers-key-row .papers-input { flex: 1; width: auto; }
+
+.papers-icon-btn {
+  width: 32px; height: 32px;
+  border: 1.5px solid rgba(0, 0, 0, 0.10);
+  border-radius: 8px; background: white; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  color: #8e8e93; flex-shrink: 0; transition: border-color 0.15s, color 0.15s;
+}
+.papers-icon-btn:hover { color: #3c3c43; border-color: rgba(0,0,0,0.2); }
+
+.papers-ping-btn {
+  display: flex; align-items: center; gap: 5px;
+  height: 32px; padding: 0 12px;
+  border: 1.5px solid rgba(34, 63, 121, 0.2);
+  border-radius: 8px;
+  background: rgba(34, 63, 121, 0.06);
+  color: #223F79;
+  font-size: 12px; font-weight: 500;
+  cursor: pointer; flex-shrink: 0;
+  transition: background 0.12s;
+}
+.papers-ping-btn:hover:not(:disabled) { background: rgba(34, 63, 121, 0.12); }
+.papers-ping-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.papers-spin {
+  width: 12px; height: 12px;
+  border: 1.5px solid rgba(34, 63, 121, 0.3);
+  border-top-color: #223F79;
+  border-radius: 50%;
+  animation: papers-rotate 0.7s linear infinite;
   flex-shrink: 0;
 }
 
-.info-value {
-  font-size: 13px;
-  color: #3c3c43;
-  word-break: break-all;
+@keyframes papers-rotate { to { transform: rotate(360deg); } }
+
+.papers-ping-result {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 500;
+  padding: 5px 8px;
+  border-radius: 7px;
 }
+.papers-ping-result.ok  { background: rgba(52, 199, 89, 0.10); color: #34c759; }
+.papers-ping-result.err { background: rgba(255, 59, 48, 0.08); color: #ff3b30; }
 </style>

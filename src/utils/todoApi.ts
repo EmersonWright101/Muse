@@ -7,35 +7,22 @@
  * API base: {url}/api/todo
  */
 
+import { getBackendConfig, setBackendConfig } from './backendConfig'
 import type { TodoTask, TodoProject } from './todoStorage'
 
-// ─── Config (stored in localStorage) ─────────────────────────────────────────
-
-const LS_URL_KEY    = 'muse-todo-api-url'
-const LS_APIKEY_KEY = 'muse-todo-api-key'
+// ─── Config (shared with papers backend) ─────────────────────────────────────
 
 export interface TodoApiConfig {
-  url:    string   // e.g.  "http://localhost:3000"
+  url:    string   // base server URL, e.g. "http://localhost:3000"
   apiKey: string   // Bearer token; may be empty for dev
 }
 
 export function getApiConfig(): TodoApiConfig | null {
-  const url = localStorage.getItem(LS_URL_KEY)?.trim()
-  if (!url) return null
-  return {
-    url:    url.replace(/\/+$/, ''),
-    apiKey: localStorage.getItem(LS_APIKEY_KEY) ?? '',
-  }
+  return getBackendConfig()
 }
 
 export function setApiConfig(cfg: TodoApiConfig | null): void {
-  if (cfg?.url.trim()) {
-    localStorage.setItem(LS_URL_KEY,    cfg.url.trim().replace(/\/+$/, ''))
-    localStorage.setItem(LS_APIKEY_KEY, cfg.apiKey.trim())
-  } else {
-    localStorage.removeItem(LS_URL_KEY)
-    localStorage.removeItem(LS_APIKEY_KEY)
-  }
+  setBackendConfig(cfg)
 }
 
 // ─── Low-level fetch ──────────────────────────────────────────────────────────

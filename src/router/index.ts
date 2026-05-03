@@ -21,6 +21,13 @@ const router = createRouter({
       },
     },
     {
+      path: '/assistant',
+      components: {
+        sidebar: () => import('../modules/assistant/AssistantSidebar.vue'),
+        main: () => import('../modules/assistant/AssistantMain.vue'),
+      },
+    },
+    {
       path: '/travel',
       components: {
         sidebar: () => import('../modules/travel/TravelSidebar.vue'),

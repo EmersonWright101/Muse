@@ -5,8 +5,9 @@ import GeneralSettings from './tabs/GeneralSettings.vue'
 import AISettings      from './tabs/AISettings.vue'
 import SyncSettings    from './tabs/SyncSettings.vue'
 import AboutSettings   from './tabs/AboutSettings.vue'
-import ChatSettings    from './tabs/ChatSettings.vue'
-import TodoSettings    from './tabs/TodoSettings.vue'
+import ChatSettings      from './tabs/ChatSettings.vue'
+import AssistantSettings from './tabs/AssistantSettings.vue'
+import TodoSettings      from './tabs/TodoSettings.vue'
 
 const ui = useUiStore()
 
@@ -16,8 +17,9 @@ const PlaceholderTab = { template: '<div style="padding:28px 32px;color:#8e8e93;
 const sectionComponents: Record<string, unknown> = {
   general: GeneralSettings,
   ai:      AISettings,
-  chat:    ChatSettings,
-  todo:    TodoSettings,
+  chat:      ChatSettings,
+  assistant: AssistantSettings,
+  todo:      TodoSettings,
   sync:    SyncSettings,
   about:   AboutSettings,
 }

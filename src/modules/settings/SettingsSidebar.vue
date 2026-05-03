@@ -8,18 +8,20 @@ import {
   MessageSquare,
   CheckSquare,
 } from 'lucide-vue-next'
+import assistantIcon from '../../assets/icons/AIAssistant@2x.svg'
 import { useUiStore } from '../../stores/uiStore'
 
 const { t } = useI18n()
 const ui    = useUiStore()
 
 const sections = [
-  { id: 'general', icon: SlidersHorizontal, labelKey: 'settings.sections.general' },
-  { id: 'ai',      icon: Bot,               labelKey: 'settings.sections.ai' },
-  { id: 'chat',    icon: MessageSquare,     labelKey: 'settings.sections.chat' },
-  { id: 'todo',    icon: CheckSquare,       labelKey: 'settings.sections.todo' },
-  { id: 'sync',    icon: CloudUpload,       labelKey: 'settings.sections.sync' },
-  { id: 'about',   icon: Info,              labelKey: 'settings.sections.about' },
+  { id: 'general',   icon: SlidersHorizontal, labelKey: 'settings.sections.general' },
+  { id: 'ai',        icon: Bot,               labelKey: 'settings.sections.ai' },
+  { id: 'chat',      icon: MessageSquare,     labelKey: 'settings.sections.chat' },
+  { id: 'assistant', icon: null, customIcon: assistantIcon, labelKey: 'settings.sections.assistant' },
+  { id: 'todo',      icon: CheckSquare,       labelKey: 'settings.sections.todo' },
+  { id: 'sync',      icon: CloudUpload,       labelKey: 'settings.sections.sync' },
+  { id: 'about',     icon: Info,              labelKey: 'settings.sections.about' },
 ]
 
 function select(id: string) {
@@ -43,7 +45,8 @@ function select(id: string) {
         :class="{ active: ui.settingsSection === section.id }"
         @click="select(section.id)"
       >
-        <component :is="section.icon" :size="15" class="item-icon" />
+        <img v-if="section.customIcon" :src="section.customIcon" class="item-icon custom-icon" />
+        <component v-else :is="section.icon" :size="15" class="item-icon" />
         <span class="item-label">{{ t(section.labelKey) }}</span>
       </div>
     </div>
@@ -102,6 +105,16 @@ function select(id: string) {
 
 .item-icon { color: #8e8e93; flex-shrink: 0; }
 .list-item.active .item-icon { color: #223F79; }
+
+.custom-icon {
+  width: 15px;
+  height: 15px;
+  object-fit: contain;
+  opacity: 0.55;
+  transition: opacity 0.12s;
+}
+.list-item:hover .custom-icon { opacity: 0.75; }
+.list-item.active .custom-icon { opacity: 1; }
 
 .item-label { font-size: 13px; color: #3c3c43; }
 .list-item.active .item-label { color: #223F79; font-weight: 500; }

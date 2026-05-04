@@ -343,7 +343,10 @@ function isSlotStreaming(msgId: string, slotIdx: number): boolean {
 }
 
 // Whether the currently-active tab/slot is streaming (used for bubble animation + button visibility)
-const activeSlotStreaming = computed(() => isSlotStreaming(props.message.id, activeVariantIdx.value))
+const activeSlotStreaming = computed(() => {
+  if (props.streaming) return true
+  return isSlotStreaming(props.message.id, activeVariantIdx.value)
+})
 
 // Per-slot feedback getter/setter for horizontal mode
 function slotFeedback(msg: typeof props.message, slotIdx: number): 'positive' | 'negative' | null {

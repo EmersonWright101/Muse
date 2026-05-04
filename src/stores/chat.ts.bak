@@ -752,26 +752,9 @@ export const useChatStore = defineStore('chat', () => {
   const error              = ref<string | null>(null)
   const selectedConvIds    = reactive<Set<string>>(new Set())
   const batchMode          = ref(false)
-
-  // Per-conversation streaming UI state (supports split view)
-  const _streamingTexts = reactive(new Map<string, string>())
-  const _streamingReasonings = reactive(new Map<string, string>())
-  const _streamingMsgIds = reactive(new Map<string, string | null>())
-
-  // Backward-compatible computed refs (based on active conversation)
-  const streamingText = computed({
-    get: () => activeConvId.value ? (_streamingTexts.get(activeConvId.value) ?? '') : '',
-    set: (v: string) => { if (activeConvId.value) _streamingTexts.set(activeConvId.value, v) }
-  })
-  const streamingReasoning = computed({
-    get: () => activeConvId.value ? (_streamingReasonings.get(activeConvId.value) ?? '') : '',
-    set: (v: string) => { if (activeConvId.value) _streamingReasonings.set(activeConvId.value, v) }
-  })
-  const streamingMsgId = computed({
-    get: () => activeConvId.value ? (_streamingMsgIds.get(activeConvId.value) ?? null) : null,
-    set: (v: string | null) => { if (activeConvId.value) _streamingMsgIds.set(activeConvId.value, v) }
-  })
-
+  const streamingText         = ref('')
+  const streamingMsgId        = ref<string | null>(null)
+  const streamingReasoning    = ref('')
   // Set of message IDs that currently have at least one variant streaming
   const streamingVariantMsgIds = reactive<Set<string>>(new Set())
   const useReasoning       = ref(false)
@@ -784,33 +767,9 @@ export const useChatStore = defineStore('chat', () => {
   const secondProviderId = ref<string | null>(null)
   const secondModelId_   = ref<string | null>(null)
 
-  // Split view / secondary conversation
-  const splitView = ref(false)
-  const secondaryActiveConvId = ref<string | null>(null)
-  const secondaryActiveConv = ref<Conversation | null>(null)
-
-  // Independent popup-window conversations (keyed by conv ID)
-  const _windowConvs = reactive(new Map<string, Conversation>())
-
-  function getStreamingText(convId: string): string { return _streamingTexts.get(convId) ?? '' }
-  function getStreamingReasoning(convId: string): string { return _streamingReasonings.get(convId) ?? '' }
-  function getStreamingMsgId(convId: string): string | null { return _streamingMsgIds.get(convId) ?? null }
-  function isStreamingFor(convId: string): boolean { return streamingConvIds.has(convId) }
-
   function setSecondModel(pid: string | null, mid: string | null) {
     secondProviderId.value = pid
     secondModelId_.value   = mid
-  }
-
-  function registerWindowConv(conv: Conversation) {
-    _windowConvs.set(conv.id, conv)
-  }
-  function unregisterWindowConv(id: string) {
-    _windowConvs.delete(id)
-  }
-
-  async function fetchConversation(id: string): Promise<Conversation | null> {
-    return loadConversation(id)
   }
 
   // One AbortController per in-flight conversation main-message stream
@@ -970,23 +929,20 @@ export const useChatStore = defineStore('chat', () => {
 
   // ─── Send message (with streaming) ─────────────────────────────────────
 
-  async function _sendToConv(
-    conv: Conversation,
-    userContent: string,
-    attachments?: AttachmentMeta[],
-    skipSecondModel = false,
-    useConvModel = false,
-  ) {
+  async function sendMessage(userContent: string, attachments?: AttachmentMeta[], skipSecondModel = false) {
     if (!userContent.trim() && !attachments?.length) return
 
     const aiStore = useAiSettingsStore()
+
+    if (!activeConv.value) newConversation()
+    const conv = activeConv.value!
 
     // Block only if THIS conversation is already streaming
     if (streamingConvIds.has(conv.id)) return
 
     // Update provider/model if changed
-    const pid = useConvModel ? (conv.providerId || aiStore.activeProviderId) : aiStore.activeProviderId
-    const mid = useConvModel ? (conv.model || aiStore.activeModelId()) : aiStore.activeModelId()
+    const pid   = aiStore.activeProviderId
+    const mid   = aiStore.activeModelId()
     conv.providerId = pid
     conv.model      = mid
 
@@ -1015,9 +971,12 @@ export const useChatStore = defineStore('chat', () => {
 
     // Mark this conversation as streaming
     streamingConvIds.add(conv.id)
-    _streamingTexts.set(conv.id, '')
-    _streamingReasonings.set(conv.id, '')
-    _streamingMsgIds.set(conv.id, assistantMsg.id)
+    // Update UI streaming refs only when this is the visible conversation
+    if (activeConvId.value === conv.id) {
+      streamingText.value      = ''
+      streamingReasoning.value = ''
+      streamingMsgId.value     = assistantMsg.id
+    }
     error.value = null
 
     const ac = new AbortController()
@@ -1032,8 +991,10 @@ export const useChatStore = defineStore('chat', () => {
       assistantMsg.error   = true
       streamingConvIds.delete(conv.id)
       _abortControllers.delete(conv.id)
-      _streamingMsgIds.delete(conv.id)
-      _streamingTexts.delete(conv.id)
+      if (activeConvId.value === conv.id) {
+        streamingMsgId.value = null
+        streamingText.value  = ''
+      }
       await saveConversation(conv)
       await loadList()
       return
@@ -1111,12 +1072,13 @@ export const useChatStore = defineStore('chat', () => {
       onToken(token) {
         localText            += token
         assistantMsg.content  = localText
-        _streamingTexts.set(conv.id, localText)
+        // Only push to the shared streamingText ref when this conv is visible (drives scroll)
+        if (activeConvId.value === conv.id) streamingText.value = localText
       },
       onReasoningToken(token) {
         localReasoning         += token
         assistantMsg.reasoning  = localReasoning
-        _streamingReasonings.set(conv.id, localReasoning)
+        if (activeConvId.value === conv.id) streamingReasoning.value = localReasoning
       },
       onMediaOutput(mimeType, data, isUrl) {
         if (!assistantMsg.mediaOutputs) assistantMsg.mediaOutputs = []
@@ -1150,9 +1112,11 @@ export const useChatStore = defineStore('chat', () => {
         assistantMsg.usage = { ...usage, durationMs: Date.now() - startedAt }
         streamingConvIds.delete(conv.id)
         _abortControllers.delete(conv.id)
-        _streamingMsgIds.delete(conv.id)
-        _streamingTexts.delete(conv.id)
-        _streamingReasonings.delete(conv.id)
+        if (activeConvId.value === conv.id) {
+          streamingMsgId.value     = null
+          streamingText.value      = ''
+          streamingReasoning.value = ''
+        }
         conv.updatedAt = new Date().toISOString()
         await saveConversation(conv)
         scheduleLoadList()
@@ -1164,9 +1128,11 @@ export const useChatStore = defineStore('chat', () => {
         assistantMsg.error   = true
         streamingConvIds.delete(conv.id)
         _abortControllers.delete(conv.id)
-        _streamingMsgIds.delete(conv.id)
-        _streamingTexts.delete(conv.id)
-        _streamingReasonings.delete(conv.id)
+        if (activeConvId.value === conv.id) {
+          streamingMsgId.value     = null
+          streamingText.value      = ''
+          streamingReasoning.value = ''
+        }
         await saveConversation(conv)
         scheduleLoadList()
       },
@@ -1235,172 +1201,29 @@ export const useChatStore = defineStore('chat', () => {
       } else {
         streamingConvIds.delete(conv.id)
         _abortControllers.delete(conv.id)
-        _streamingMsgIds.delete(conv.id)
-        _streamingTexts.delete(conv.id)
-        _streamingReasonings.delete(conv.id)
+        if (activeConvId.value === conv.id) {
+          streamingMsgId.value     = null
+          streamingText.value      = ''
+          streamingReasoning.value = ''
+        }
       }
-    }
-  }
-
-  async function sendMessage(userContent: string, attachments?: AttachmentMeta[], skipSecondModel = false) {
-    if (!activeConv.value) newConversation()
-    const conv = activeConv.value!
-    await _sendToConv(conv, userContent, attachments, skipSecondModel, false)
-  }
-
-  async function sendMessageTo(convId: string, userContent: string, attachments?: AttachmentMeta[]) {
-    if (convId === activeConvId.value && activeConv.value) {
-      return sendMessage(userContent, attachments)
-    }
-    if (convId === secondaryActiveConvId.value && secondaryActiveConv.value) {
-      return _sendToConv(secondaryActiveConv.value, userContent, attachments, true, true)
-    }
-    // Window conv: reuse the already-loaded reactive object so UI updates live
-    const windowConv = _windowConvs.get(convId)
-    if (windowConv) {
-      return _sendToConv(windowConv, userContent, attachments, true, true)
-    }
-    // Fallback: load conversation on the fly
-    const conv = await loadConversation(convId)
-    if (!conv) return
-    return _sendToConv(conv, userContent, attachments, true, true)
-  }
-
-  async function openSecondaryConversation(id: string) {
-    if (id === activeConvId.value) return
-    const conv = await loadConversation(id)
-    if (conv) {
-      secondaryActiveConv.value = conv
-      secondaryActiveConvId.value = id
-      splitView.value = true
-    }
-  }
-
-  function closeSecondaryConversation() {
-    // Abort any active stream on the secondary conversation
-    if (secondaryActiveConvId.value) {
-      _abortControllers.get(secondaryActiveConvId.value)?.abort()
-      _abortControllers.delete(secondaryActiveConvId.value)
-      streamingConvIds.delete(secondaryActiveConvId.value)
-      _streamingMsgIds.delete(secondaryActiveConvId.value)
-      _streamingTexts.delete(secondaryActiveConvId.value)
-      _streamingReasonings.delete(secondaryActiveConvId.value)
-    }
-    secondaryActiveConv.value = null
-    secondaryActiveConvId.value = null
-    splitView.value = false
-  }
-
-  function closeLeftPanel() {
-    if (secondaryActiveConvId.value) {
-      // Promote secondary to active, preserving any live stream on it
-      activeConv.value   = secondaryActiveConv.value
-      activeConvId.value = secondaryActiveConvId.value
-    }
-    // Clear secondary refs without aborting streams (promoted conv may still be streaming)
-    secondaryActiveConv.value   = null
-    secondaryActiveConvId.value = null
-    splitView.value             = false
-  }
-
-  function toggleSplitView() {
-    if (splitView.value) {
-      closeSecondaryConversation()
-    } else {
-      // Try to open the most recent conversation that is not the active one
-      const other = conversations.value.find(c => c.id !== activeConvId.value)
-      if (other) {
-        openSecondaryConversation(other.id)
-      } else {
-        splitView.value = true
-      }
-    }
-  }
-
-  async function openConversationWindow(convId: string) {
-    // Detect if running inside Tauri
-    const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
-
-    if (!isTauri) {
-      // Fallback for browser dev mode: open in new tab
-      window.open('/#/chat-window?convId=' + encodeURIComponent(convId), '_blank')
-      return
-    }
-
-    try {
-      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-      const conv = await loadConversation(convId)
-      const title = conv?.title ?? 'Muse Chat'
-      const label = 'chat-window-' + convId
-
-      // Check if window already exists
-      const existing = await WebviewWindow.getByLabel(label)
-      if (existing) {
-        await existing.setFocus()
-        return
-      }
-
-      const isMac = navigator.userAgent.toLowerCase().includes('macintosh')
-
-      const webview = new WebviewWindow(label, {
-        url: '/#/chat-window?convId=' + encodeURIComponent(convId),
-        title,
-        width: 900,
-        height: 720,
-        minWidth: 400,
-        minHeight: 500,
-        center: true,
-        decorations: isMac,
-        titleBarStyle: isMac ? 'overlay' : undefined,
-        hiddenTitle: isMac,
-        transparent: true,
-        shadow: true,
-      })
-
-      webview.once('tauri://created', () => {
-        console.log('Chat window created:', label)
-      })
-      webview.once('tauri://error', (e) => {
-        console.error('Failed to create chat window:', e)
-      })
-    } catch (err) {
-      console.error('Error creating chat window:', err)
     }
   }
 
   // ─── Edit and resend ────────────────────────────────────────────────────
 
-  function _getConvForMessage(messageId: string): Conversation | null {
-    if (activeConv.value) {
-      const hasMsg = activeConv.value.messages.some(m => m.id === messageId)
-      if (hasMsg) return activeConv.value
-    }
-    if (secondaryActiveConv.value) {
-      const hasMsg = secondaryActiveConv.value.messages.some(m => m.id === messageId)
-      if (hasMsg) return secondaryActiveConv.value
-    }
-    return null
-  }
-
   async function editAndResend(messageId: string, newContent: string) {
-    const conv = _getConvForMessage(messageId)
-    if (!conv) return
-    const isSec = secondaryActiveConv.value?.id === conv.id
-    if (!isSec && isStreaming.value) return
-    if (isSec && streamingConvIds.has(conv.id)) return
+    if (!activeConv.value || isStreaming.value) return
+    const conv = activeConv.value
     const idx  = conv.messages.findIndex(m => m.id === messageId)
     if (idx < 0 || conv.messages[idx].role !== 'user') return
     conv.messages.splice(idx)
-    if (isSec) {
-      await _sendToConv(conv, newContent, undefined, true, true)
-    } else {
-      await sendMessage(newContent)
-    }
+    await sendMessage(newContent)
   }
 
   async function editMessage(messageId: string, newContent: string) {
-    const conv = _getConvForMessage(messageId)
-    if (!conv) return
+    if (!activeConv.value) return
+    const conv = activeConv.value
     const msg  = conv.messages.find(m => m.id === messageId)
     if (!msg) return
     msg.content    = newContent
@@ -1409,8 +1232,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function deleteMessage(messageId: string) {
-    const conv = _getConvForMessage(messageId)
-    if (!conv) return
+    if (!activeConv.value) return
+    const conv = activeConv.value
     const idx = conv.messages.findIndex(m => m.id === messageId)
     if (idx < 0) return
     conv.messages.splice(idx, 1)
@@ -1418,11 +1241,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function regenerate(messageId: string, slotIdx = 0) {
-    const conv = _getConvForMessage(messageId)
-    if (!conv) return
-    const isSec = secondaryActiveConv.value?.id === conv.id
-    if (!isSec && isStreaming.value) return
-    if (isSec && streamingConvIds.has(conv.id)) return
+    if (!activeConv.value || isStreaming.value) return
+    const conv = activeConv.value
     const idx  = conv.messages.findIndex(m => m.id === messageId)
     if (idx < 0) return
     const msg = conv.messages[idx]
@@ -1441,11 +1261,7 @@ export const useChatStore = defineStore('chat', () => {
       if (!lastUser) return
       const userIdx = conv.messages.lastIndexOf(lastUser)
       conv.messages.splice(userIdx)
-      if (isSec) {
-        await _sendToConv(conv, lastUser.content, lastUser.attachments, true, true)
-      } else {
-        await sendMessage(lastUser.content, lastUser.attachments, true)
-      }
+      await sendMessage(lastUser.content, lastUser.attachments, true)
       return
     }
 
@@ -1462,10 +1278,10 @@ export const useChatStore = defineStore('chat', () => {
 
   // replaceVariantIdx: if set, replaces an existing variant slot in-place instead of pushing a new one
   async function regenerateWithModel(messageId: string, providerId: string, modelId: string, _force = false, replaceVariantIdx?: number) {
-    const conv = _getConvForMessage(messageId)
-    if (!conv) return
+    if (!activeConv.value) return
     // Block only if main message of this conv is streaming — unless forced (dual-model simultaneous)
-    if (!_force && _streamingMsgIds.has(conv.id) && streamingConvIds.has(conv.id)) return
+    if (!_force && streamingMsgId.value !== null && streamingConvIds.has(activeConv.value.id)) return
+    const conv   = activeConv.value
     const msgIdx = conv.messages.findIndex(m => m.id === messageId)
     if (msgIdx < 0) return
 
@@ -1520,9 +1336,11 @@ export const useChatStore = defineStore('chat', () => {
     let ac: AbortController
     if (isPrimary) {
       streamingConvIds.add(conv.id)
-      _streamingTexts.set(conv.id, '')
-      _streamingReasonings.set(conv.id, '')
-      _streamingMsgIds.set(conv.id, msg.id)
+      if (activeConvId.value === conv.id) {
+        streamingText.value = ''
+        streamingReasoning.value = ''
+        streamingMsgId.value = msg.id
+      }
       ac = new AbortController()
       _abortControllers.set(conv.id, ac)
     } else {
@@ -1547,14 +1365,15 @@ export const useChatStore = defineStore('chat', () => {
       systemPrompt = systemPrompt ? `${systemPrompt}\n\n${ctx}` : ctx
     }
 
-    const targetConv = conv!
     function cleanupVariant() {
       if (isPrimary) {
-        _abortControllers.delete(targetConv.id)
-        streamingConvIds.delete(targetConv.id)
-        _streamingMsgIds.delete(targetConv.id)
-        _streamingTexts.delete(targetConv.id)
-        _streamingReasonings.delete(targetConv.id)
+        _abortControllers.delete(conv.id)
+        streamingConvIds.delete(conv.id)
+        if (activeConvId.value === conv.id) {
+          streamingMsgId.value = null
+          streamingText.value = ''
+          streamingReasoning.value = ''
+        }
         return
       }
       const varKey = `${messageId}:${vi}`
@@ -1568,7 +1387,7 @@ export const useChatStore = defineStore('chat', () => {
       onToken(token) {
         if (isPrimary) {
           msg.content += token
-          _streamingTexts.set(conv.id, msg.content)
+          if (activeConvId.value === conv.id) streamingText.value = msg.content
         } else {
           msg.variants![vi].content += token
         }
@@ -1576,7 +1395,7 @@ export const useChatStore = defineStore('chat', () => {
       onReasoningToken(token) {
         if (isPrimary) {
           msg.reasoning = (msg.reasoning ?? '') + token
-          _streamingReasonings.set(conv.id, msg.reasoning)
+          if (activeConvId.value === conv.id) streamingReasoning.value = msg.reasoning
         } else {
           const v = msg.variants![vi]
           v.reasoning = (v.reasoning ?? '') + token
@@ -1676,17 +1495,13 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function setActiveVariant(messageId: string, idx: number) {
-    const conv = _getConvForMessage(messageId)
-    const msg = conv?.messages.find(m => m.id === messageId)
+    const msg = activeConv.value?.messages.find(m => m.id === messageId)
     if (msg) msg.activeVariantIdx = idx
   }
 
   function deleteVariant(messageId: string, idx: number) {
-    const conv = _getConvForMessage(messageId)
-    if (!conv) return
-    const isSec = secondaryActiveConv.value?.id === conv.id
-    if (!isSec && isStreaming.value) return
-    if (isSec && streamingConvIds.has(conv.id)) return
+    if (!activeConv.value || isStreaming.value) return
+    const conv = activeConv.value
 
     if (idx === 0) {
       const msg = conv.messages.find(m => m.id === messageId)
@@ -1728,9 +1543,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function setMessageFeedback(messageId: string, feedback: 'positive' | 'negative' | null) {
-    const conv = _getConvForMessage(messageId)
-    if (!conv) return
-    const msg = conv.messages.find(m => m.id === messageId)
+    if (!activeConv.value) return
+    const msg = activeConv.value.messages.find(m => m.id === messageId)
     if (!msg) return
     const idx = msg.activeVariantIdx ?? 0
     setVariantFeedbackBySlot(messageId, idx, feedback)
@@ -1738,31 +1552,22 @@ export const useChatStore = defineStore('chat', () => {
 
   // Set feedback for an explicit slot index (0 = main, 1+ = variants[idx-1])
   function setVariantFeedbackBySlot(messageId: string, slotIdx: number, feedback: 'positive' | 'negative' | null) {
-    const conv = _getConvForMessage(messageId)
-    if (!conv) return
-    const msg = conv.messages.find(m => m.id === messageId)
+    if (!activeConv.value) return
+    const msg = activeConv.value.messages.find(m => m.id === messageId)
     if (!msg) return
     if (slotIdx === 0) {
       msg.feedback = feedback ?? undefined
     } else if (msg.variants && msg.variants[slotIdx - 1]) {
       msg.variants[slotIdx - 1].feedback = feedback ?? undefined
     }
-    saveConversation(conv)
+    saveConversation(activeConv.value)
   }
 
   // ─── Context cutoff ─────────────────────────────────────────────────────
 
-  function clearContext(cid?: string) {
-    const targetId = cid ?? activeConvId.value
-    if (!targetId) return
-    if (!cid && isStreaming.value) return
-    if (cid && streamingConvIds.has(cid)) return
-    const conv = targetId === activeConvId.value
-      ? activeConv.value
-      : targetId === secondaryActiveConvId.value
-        ? secondaryActiveConv.value
-        : _windowConvs.get(targetId) ?? null
-    if (!conv) return
+  function clearContext() {
+    if (!activeConv.value || isStreaming.value) return
+    const conv    = activeConv.value
     const lastMsg = conv.messages.at(-1)
     if (!lastMsg) return
     conv.contextCutoffMsgId = lastMsg.id
@@ -1770,15 +1575,9 @@ export const useChatStore = defineStore('chat', () => {
     saveConversation(conv)
   }
 
-  function removeContextCutoff(cid?: string) {
-    const targetId = cid ?? activeConvId.value
-    if (!targetId) return
-    const conv = targetId === activeConvId.value
-      ? activeConv.value
-      : targetId === secondaryActiveConvId.value
-        ? secondaryActiveConv.value
-        : _windowConvs.get(targetId) ?? null
-    if (!conv) return
+  function removeContextCutoff() {
+    if (!activeConv.value) return
+    const conv = activeConv.value
     conv.contextCutoffMsgId = undefined
     conv.updatedAt          = new Date().toISOString()
     saveConversation(conv)
@@ -1786,11 +1585,11 @@ export const useChatStore = defineStore('chat', () => {
 
   // ─── Stop streaming ─────────────────────────────────────────────────────
 
-  function stopStreaming(cid?: string) {
-    const target = cid ?? activeConvId.value
-    if (target) {
-      _abortControllers.get(target)?.abort()
-      _abortControllers.delete(target)
+  function stopStreaming() {
+    const cid = activeConvId.value
+    if (cid) {
+      _abortControllers.get(cid)?.abort()
+      _abortControllers.delete(cid)
     }
   }
 
@@ -1800,17 +1599,10 @@ export const useChatStore = defineStore('chat', () => {
     _abortControllers.get(id)?.abort()
     _abortControllers.delete(id)
     streamingConvIds.delete(id)
-    _streamingMsgIds.delete(id)
-    _streamingTexts.delete(id)
-    _streamingReasonings.delete(id)
     await trashConversation(id)
     if (activeConvId.value === id) {
       activeConv.value   = null
       activeConvId.value = null
-    }
-    if (secondaryActiveConvId.value === id) {
-      secondaryActiveConv.value = null
-      secondaryActiveConvId.value = null
     }
     selectedConvIds.delete(id)
     await loadList()
@@ -1823,9 +1615,6 @@ export const useChatStore = defineStore('chat', () => {
       _abortControllers.get(id)?.abort()
       _abortControllers.delete(id)
       streamingConvIds.delete(id)
-      _streamingMsgIds.delete(id)
-      _streamingTexts.delete(id)
-      _streamingReasonings.delete(id)
     }
     for (const id of ids) {
       await trashConversation(id)
@@ -1833,10 +1622,6 @@ export const useChatStore = defineStore('chat', () => {
     if (activeConvId.value && selectedConvIds.has(activeConvId.value)) {
       activeConv.value   = null
       activeConvId.value = null
-    }
-    if (secondaryActiveConvId.value && selectedConvIds.has(secondaryActiveConvId.value)) {
-      secondaryActiveConv.value = null
-      secondaryActiveConvId.value = null
     }
     selectedConvIds.clear()
     batchMode.value = false
@@ -1970,13 +1755,6 @@ export const useChatStore = defineStore('chat', () => {
     trashedConversations, loadTrashList, restoreFromTrash, permanentDeleteOne, clearAllTrash,
     previewTrashedConv, openTrashPreview, closeTrashPreview,
     getConvLayout, setConvLayout,
-    // Split view
-    splitView, secondaryActiveConvId, secondaryActiveConv,
-    openSecondaryConversation, closeSecondaryConversation, closeLeftPanel, toggleSplitView,
-    sendMessageTo,
-    openConversationWindow,
-    registerWindowConv, unregisterWindowConv, fetchConversation,
-    getStreamingText, getStreamingReasoning, getStreamingMsgId, isStreamingFor,
   }
 })
 

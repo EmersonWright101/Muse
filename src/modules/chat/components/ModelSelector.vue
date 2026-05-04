@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ChevronDown, Check } from 'lucide-vue-next'
 import { useAiSettingsStore, type AIProvider } from '../../../stores/aiSettings'
 
-const props = defineProps<{ dropDown?: boolean }>()
+const props = defineProps<{ dropDown?: boolean; compact?: boolean }>()
 const emit = defineEmits<{ (e: 'select', providerId: string, modelId: string): void }>()
 
 const ai    = useAiSettingsStore()
@@ -71,7 +71,7 @@ function providerIcon(p: AIProvider): string | null {
 
 <template>
   <div ref="root" class="model-selector">
-    <button class="selector-btn" @click="open = !open">
+    <button class="selector-btn" :class="{ compact: props.compact }" @click="open = !open">
       <img
         v-if="activeProvider && providerIcon(activeProvider)"
         :src="providerIcon(activeProvider)!"
@@ -80,8 +80,8 @@ function providerIcon(p: AIProvider): string | null {
       />
       <span v-else class="provider-dot-fallback" />
       <span class="selector-label">
-        <span class="selector-provider">{{ activeProvider?.name ?? '选择模型' }}</span>
-        <span v-if="activeModel" class="selector-sep">·</span>
+        <span v-if="!props.compact" class="selector-provider">{{ activeProvider?.name ?? '选择模型' }}</span>
+        <span v-if="!props.compact && activeModel" class="selector-sep">·</span>
         <span v-if="activeModel" class="selector-model">{{ activeModel.name }}</span>
       </span>
       <ChevronDown :size="12" class="chevron" :class="{ rotated: open }" />
@@ -149,6 +149,11 @@ function formatCtx(n: number): string {
   font-size: 12px;
   color: #3c3c43;
   transition: background 0.12s;
+}
+
+.selector-btn.compact {
+  padding: 4px 6px;
+  gap: 0;
 }
 
 .selector-btn:hover { background: rgba(0, 0, 0, 0.08); }

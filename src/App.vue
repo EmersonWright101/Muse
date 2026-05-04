@@ -40,28 +40,36 @@ const panelFloats = computed(() => route.path === '/travel' && travel.viewMode !
 
 // Routes without a sidebar component — hide the panel column entirely for these
 const routeHasSidebar = computed(() => route.path !== '/home')
+
+// Independent chat window: no sidebar, no title bar, full-screen content
+const isChatWindow = computed(() => route.path === '/chat-window')
 </script>
 
 <template>
-  <div class="app-layout">
-    <!-- Icon sidebar runs full height (contains traffic lights at top) -->
-    <AppSidebar />
+  <div class="app-layout" :class="{ 'chat-window-mode': isChatWindow }">
+    <template v-if="!isChatWindow">
+      <!-- Icon sidebar runs full height (contains traffic lights at top) -->
+      <AppSidebar />
 
-    <!-- Right column: title bar + content -->
-    <div class="app-right">
-      <TitleBar :panel-visible="showPanel" @toggle="showPanel = !showPanel" />
+      <!-- Right column: title bar + content -->
+      <div class="app-right">
+        <TitleBar :panel-visible="showPanel" @toggle="showPanel = !showPanel" />
 
-      <div class="content-area" :class="{ 'panel-floats': panelFloats }">
-        <Transition name="panel-slide">
-          <div v-show="showPanel && routeHasSidebar" class="panel-column">
-            <router-view name="sidebar" />
+        <div class="content-area" :class="{ 'panel-floats': panelFloats }">
+          <Transition name="panel-slide">
+            <div v-show="showPanel && routeHasSidebar" class="panel-column">
+              <router-view name="sidebar" />
+            </div>
+          </Transition>
+          <div class="main-column">
+            <router-view name="main" />
           </div>
-        </Transition>
-        <div class="main-column">
-          <router-view name="main" />
         </div>
       </div>
-    </div>
+    </template>
+
+    <!-- Chat window mode: full screen, no chrome -->
+    <router-view v-else name="main" />
   </div>
 </template>
 
@@ -101,6 +109,10 @@ body {
   width: 100vw;
   overflow: hidden;
   border-radius: 12px;
+}
+
+.app-layout.chat-window-mode {
+  border-radius: 0;
 }
 
 /* Right column: title bar stacked above content */

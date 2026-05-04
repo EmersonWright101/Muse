@@ -21,6 +21,12 @@ const router = createRouter({
       },
     },
     {
+      path: '/chat-window',
+      components: {
+        main: () => import('../modules/chat/ChatWindow.vue'),
+      },
+    },
+    {
       path: '/assistant',
       components: {
         sidebar: () => import('../modules/assistant/AssistantSidebar.vue'),

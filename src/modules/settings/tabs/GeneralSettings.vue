@@ -7,6 +7,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { readDir, remove } from '@tauri-apps/plugin-fs'
 import { getDataRoot, setDataRoot, resolveDataRoot, migrateData } from '../../../utils/path'
 import { getTrashRetentionDays, setTrashRetentionDays } from '../../../utils/travelStorage'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { useHomeStore, DEFAULT_PROMPT, FREQUENCY_OPTIONS } from '../../../stores/home'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
 import { useStatisticsStore } from '../../../stores/statistics'
@@ -192,7 +193,7 @@ async function pingBackend() {
   papersPinging.value = true
   papersPingResult.value = null
   try {
-    const r = await fetch(`${papers.baseUrl}/api/papers/ping`, {
+    const r = await tauriFetch(`${papers.baseUrl}/api/papers/ping`, {
       headers: { Authorization: `Bearer ${papers.apiKey}` },
       signal: AbortSignal.timeout(5000),
     })

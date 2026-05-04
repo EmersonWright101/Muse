@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（不含 v 前缀，如 1.2.9）'
+        required: true
+        type: string
 
 jobs:
   create-release:
@@ -13,17 +19,27 @@ jobs:
     outputs:
       release_id: ${{ steps.create-release.outputs.result }}
       release_body: ${{ steps.tag-message.outputs.message }}
+      tag_name: ${{ steps.tag-name.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Determine tag name
+        id: tag-name
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Get tag message
         id: tag-message
         shell: bash
         run: |
-          TAG_NAME=${GITHUB_REF#refs/tags/}
-          # 优先使用 annotated tag 的 message;如果是 lightweight tag 就 fallback 到自动生成
+          TAG_NAME=${{ steps.tag-name.outputs.tag }}
           MESSAGE=$(git tag -l --format='%(contents)' "$TAG_NAME")
           if [ -z "$MESSAGE" ]; then
             MESSAGE="See commit history for changes."
@@ -39,9 +55,10 @@ jobs:
         uses: actions/github-script@v7
         env:
           RELEASE_BODY: ${{ steps.tag-message.outputs.message }}
+          TAG_NAME: ${{ steps.tag-name.outputs.tag }}
         with:
           script: |
-            const tagName = context.ref.replace('refs/tags/', '');
+            const tagName = process.env.TAG_NAME;
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -50,6 +67,7 @@ jobs:
               body: process.env.RELEASE_BODY,
               draft: true,
               prerelease: false,
+              target_commitish: context.sha,
             })
             return data.id
 
@@ -75,11 +93,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Sync version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Sync version
         shell: bash
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          TAG=${{ needs.create-release.outputs.tag_name }}
+          VERSION=${TAG#v}
           tmp=$(mktemp)
           jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > "$tmp" && mv "$tmp" src-tauri/tauri.conf.json
 

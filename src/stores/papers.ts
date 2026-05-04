@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { getBackendConfig, setBackendConfig } from '../utils/backendConfig'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -47,7 +48,15 @@ export interface Paper {
   pdf_downloaded: boolean
   crawled_at: string
   fetch_date: string
-  source?: string
+  source: string
+  good?: boolean | null
+  tags?: string[]
+  matched_tags?: string[]
+  upvotes?: number | null
+  read?: boolean
+  favorite?: boolean
+  deleted?: boolean
+  deleted_at?: string | null
 }
 
 export interface CrawlJob {
@@ -79,6 +88,45 @@ export interface PaperStats {
   pdfs_stored: number
   last_crawl_at: string | null
   last_crawl_status: string | null
+}
+
+export interface PaperDashboard {
+  total_papers: number
+  total_ever_crawled: number
+  analyzed_papers: number
+  unanalyzed_papers: number
+  good_papers: number
+  pdfs_stored: number
+  pdf_bytes: number
+  db_size_bytes: number
+  total_tokens_input: number
+  total_tokens_output: number
+  total_tokens: number
+  api_requests_count: number
+  cost_usd: number
+}
+
+export interface PaperSourceStat {
+  source: string
+  total: number
+  analyzed: number
+  last_crawl_at: string | null
+  last_crawl_status: string | null
+}
+
+export interface PaperAnalysisProvider {
+  id: number
+  name: string
+  model: string
+  base_url: string
+  price_input_usd_per_m: number
+  price_output_usd_per_m: number
+}
+
+export interface PaperStatistics {
+  dashboard: PaperDashboard
+  sources: PaperSourceStat[]
+  analysis_provider: PaperAnalysisProvider
   last_crawl_source: string | null
 }
 
@@ -90,9 +138,6 @@ export interface PaperSource {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 export const PAPERS_CHANNEL_ID = '__arxiv_push__'
-
-export const DEFAULT_ANALYSIS_PROMPT =
-  '根据以下感兴趣的主题：{topics}\n\n请分析论文：\n标题：{title}\n作者：{authors}\n摘要：{abstract}\n\n请给出相关度评分（0-10）、评分理由、关键贡献（3-5条）和中文摘要。'
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 
@@ -108,9 +153,6 @@ export const usePapersStore = defineStore('papers', () => {
 
   const isConfigured = computed(() => !!baseUrl.value)
 
-  // Backend config state
-  const config       = ref<Partial<PaperConfig>>({})
-  const configLoaded = ref(false)
 
   // Push channel papers
   const pushPapers     = ref<Paper[]>([])
@@ -118,6 +160,11 @@ export const usePapersStore = defineStore('papers', () => {
   const pushTotal      = ref(0)
   const isFetchingPush = ref(false)
   const pushError      = ref('')
+
+  // Time range mode
+  const pushMode     = ref<'today' | '1d' | '1w' | '1m' | 'custom'>('today')
+  const pushDateFrom = ref(new Date().toISOString().slice(0, 10))
+  const pushDateTo   = ref(new Date().toISOString().slice(0, 10))
 
   // Per-paper analyzing state
   const analyzingIds = ref<Set<string>>(new Set())
@@ -133,6 +180,16 @@ export const usePapersStore = defineStore('papers', () => {
   // Stats & Scheduler
   const stats     = ref<PaperStats | null>(null)
   const scheduler = ref<SchedulerStatus | null>(null)
+
+  // Paper statistics (/api/papers/statistics)
+  const paperStatistics = ref<PaperStatistics | null>(null)
+  const isFetchingPaperStats = ref(false)
+  const paperStatsError = ref('')
+
+  // Trash / Recently deleted
+  const deletedPapers     = ref<Paper[]>([])
+  const isFetchingDeleted = ref(false)
+  const deletedError      = ref('')
 
   // Toast notification
   const toast = ref<{ msg: string; type: 'ok' | 'err' | 'info' } | null>(null)
@@ -150,7 +207,7 @@ export const usePapersStore = defineStore('papers', () => {
   }
 
   async function apiFetch(path: string, init: RequestInit = {}) {
-    return fetch(`${baseUrl.value}/api/papers${path}`, {
+    return tauriFetch(`${baseUrl.value}/api/papers${path}`, {
       ...init,
       headers: { ...makeHeaders(), ...(init.headers as Record<string, string> ?? {}) },
     })
@@ -159,26 +216,6 @@ export const usePapersStore = defineStore('papers', () => {
   function showToast(msg: string, type: 'ok' | 'err' | 'info' = 'info') {
     toast.value = { msg, type }
     setTimeout(() => { toast.value = null }, 3500)
-  }
-
-  // ─── Config ──────────────────────────────────────────────────────────────────
-
-  async function fetchConfig() {
-    if (!isConfigured.value) return
-    try {
-      const r = await apiFetch('/config')
-      if (r.ok) { config.value = await r.json(); configLoaded.value = true }
-    } catch { /* ignore */ }
-  }
-
-  async function saveConfig(partial: Partial<PaperConfig>): Promise<boolean> {
-    if (!isConfigured.value) return false
-    try {
-      const r = await apiFetch('/config', { method: 'PUT', body: JSON.stringify(partial) })
-      if (r.ok) { config.value = await r.json(); showToast('配置已保存', 'ok'); return true }
-      showToast('保存失败：' + r.status, 'err')
-    } catch { showToast('网络错误', 'err') }
-    return false
   }
 
   // ─── Push papers ─────────────────────────────────────────────────────────────
@@ -193,16 +230,23 @@ export const usePapersStore = defineStore('papers', () => {
 
   async function fetchPushPapers(date?: string) {
     if (!isConfigured.value) return
-    if (date) pushDate.value = date
+    if (date) { pushDate.value = date; pushMode.value = 'today' }
     isFetchingPush.value = true
     pushError.value = ''
     const p = new URLSearchParams({
       page: '1',
-      page_size: '50',
+      page_size: '100',
       sort_by: 'relevance_score',
       sort_order: 'desc',
-      fetch_date: pushDate.value,
     })
+    if (pushMode.value === 'today') {
+      p.set('fetch_date', pushDate.value)
+    } else if (pushMode.value === 'custom') {
+      if (pushDateFrom.value) p.set('date_from', pushDateFrom.value)
+      if (pushDateTo.value)   p.set('date_to',   pushDateTo.value)
+    } else {
+      p.set('time_range', pushMode.value)
+    }
     if (selectedSource.value) p.set('source', selectedSource.value)
     try {
       const r = await apiFetch(`/papers?${p}`)
@@ -220,13 +264,121 @@ export const usePapersStore = defineStore('papers', () => {
     }
   }
 
+  async function selectSource(source: string | null) {
+    selectedSource.value = source
+    await fetchPushPapers()
+  }
+
+  async function fetchDeletedPapers() {
+    if (!isConfigured.value) return
+    isFetchingDeleted.value = true
+    deletedError.value = ''
+    try {
+      const r = await apiFetch('/papers?include_deleted=true')
+      if (r.ok) {
+        const d = await r.json()
+        deletedPapers.value = (d.papers ?? []).filter((p: Paper) => p.deleted)
+      } else {
+        deletedError.value = `获取回收站失败 (${r.status})`
+      }
+    } catch {
+      deletedError.value = '网络错误'
+    } finally {
+      isFetchingDeleted.value = false
+    }
+  }
+
+  async function softDeletePaper(paperId: string, source = 'arxiv') {
+    if (!isConfigured.value) return
+    try {
+      const r = await apiFetch(`/papers/${paperId}/deleted?deleted=true&source=${source}`, { method: 'PUT' })
+      if (r.ok) {
+        const idx = pushPapers.value.findIndex(p => p.id === paperId)
+        if (idx >= 0) pushPapers.value.splice(idx, 1)
+        showToast('已移入回收站', 'info')
+      } else showToast('删除失败', 'err')
+    } catch { showToast('网络错误', 'err') }
+  }
+
+  async function restorePaper(paperId: string, source = 'arxiv') {
+    if (!isConfigured.value) return
+    try {
+      const r = await apiFetch(`/papers/${paperId}/deleted?deleted=false&source=${source}`, { method: 'PUT' })
+      if (r.ok) {
+        const idx = deletedPapers.value.findIndex(p => p.id === paperId)
+        if (idx >= 0) deletedPapers.value.splice(idx, 1)
+        await fetchPushPapers()
+        showToast('已恢复', 'ok')
+      } else showToast('恢复失败', 'err')
+    } catch { showToast('网络错误', 'err') }
+  }
+
+  // Toggle: clicking the same value again cancels it (→ null); clicking the opposite switches.
+  async function togglePaperGood(paperId: string, value: boolean, source = 'arxiv') {
+    if (!isConfigured.value) return
+    const paper = pushPapers.value.find(p => p.id === paperId)
+    const cancel = paper?.good === value
+    try {
+      if (cancel) {
+        const r = await apiFetch(`/papers/${paperId}/good?source=${source}`, { method: 'DELETE' })
+        if (r.ok) {
+          const idx = pushPapers.value.findIndex(p => p.id === paperId)
+          if (idx >= 0) pushPapers.value[idx] = { ...pushPapers.value[idx], good: null }
+        }
+      } else {
+        const r = await apiFetch(`/papers/${paperId}/good?good=${value}&source=${source}`, { method: 'PUT' })
+        if (r.ok) {
+          const updated: Paper = await r.json()
+          const idx = pushPapers.value.findIndex(p => p.id === paperId)
+          if (idx >= 0) pushPapers.value[idx] = updated
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function markRead(paperId: string, source = 'arxiv') {
+    if (!isConfigured.value) return
+    const paper = pushPapers.value.find(p => p.id === paperId)
+    if (paper?.read) return
+    try {
+      const r = await apiFetch(`/papers/${paperId}/read?read=true&source=${source}`, { method: 'PUT' })
+      if (r.ok) {
+        const updated: Paper = await r.json()
+        const idx = pushPapers.value.findIndex(p => p.id === paperId)
+        if (idx >= 0) pushPapers.value[idx] = updated
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function toggleFavorite(paperId: string, source = 'arxiv') {
+    if (!isConfigured.value) return
+    const paper = pushPapers.value.find(p => p.id === paperId)
+    const isFav = paper?.favorite ?? false
+    try {
+      if (isFav) {
+        const r = await apiFetch(`/papers/${paperId}/favorite?source=${source}`, { method: 'DELETE' })
+        if (r.ok) {
+          const idx = pushPapers.value.findIndex(p => p.id === paperId)
+          if (idx >= 0) pushPapers.value[idx] = { ...pushPapers.value[idx], favorite: false }
+        }
+      } else {
+        const r = await apiFetch(`/papers/${paperId}/favorite?favorite=true&source=${source}`, { method: 'PUT' })
+        if (r.ok) {
+          const updated: Paper = await r.json()
+          const idx = pushPapers.value.findIndex(p => p.id === paperId)
+          if (idx >= 0) pushPapers.value[idx] = updated
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
   // ─── Analyze ─────────────────────────────────────────────────────────────────
 
-  async function analyzePaper(id: string): Promise<boolean> {
+  async function analyzePaper(id: string, source = 'arxiv'): Promise<boolean> {
     if (!isConfigured.value) return false
     const ids = new Set(analyzingIds.value); ids.add(id); analyzingIds.value = ids
     try {
-      const r = await apiFetch(`/papers/${id}/analyze`, { method: 'POST' })
+      const r = await apiFetch(`/papers/${id}/analyze?source=${source}`, { method: 'POST' })
       if (r.ok) {
         const updated: Paper = await r.json()
         const idx = pushPapers.value.findIndex(p => p.id === id)
@@ -280,10 +432,10 @@ export const usePapersStore = defineStore('papers', () => {
 
   // ─── PDF ─────────────────────────────────────────────────────────────────────
 
-  async function downloadPdf(id: string) {
+  async function downloadPdf(id: string, source = 'arxiv') {
     if (!isConfigured.value) return
     try {
-      const r = await apiFetch(`/papers/${id}/pdf`, { method: 'POST' })
+      const r = await apiFetch(`/papers/${id}/pdf?source=${source}`, { method: 'POST' })
       if (r.ok) {
         const idx = pushPapers.value.findIndex(p => p.id === id)
         if (idx >= 0) pushPapers.value[idx] = { ...pushPapers.value[idx], pdf_downloaded: true }
@@ -292,9 +444,9 @@ export const usePapersStore = defineStore('papers', () => {
     } catch { showToast('网络错误', 'err') }
   }
 
-  async function openPdf(id: string) {
+  async function openPdf(id: string, source = 'arxiv') {
     try {
-      const r = await apiFetch(`/papers/${id}/pdf`)
+      const r = await apiFetch(`/papers/${id}/pdf?source=${source}`)
       if (r.ok) {
         const blob = await r.blob()
         const url  = URL.createObjectURL(blob)
@@ -314,6 +466,24 @@ export const usePapersStore = defineStore('papers', () => {
     } catch { /* ignore */ }
   }
 
+  async function fetchPaperStatistics() {
+    if (!isConfigured.value) return
+    isFetchingPaperStats.value = true
+    paperStatsError.value = ''
+    try {
+      const r = await apiFetch('/statistics')
+      if (r.ok) {
+        paperStatistics.value = await r.json()
+      } else {
+        paperStatsError.value = `获取统计失败 (${r.status})`
+      }
+    } catch {
+      paperStatsError.value = '网络错误'
+    } finally {
+      isFetchingPaperStats.value = false
+    }
+  }
+
   async function fetchScheduler() {
     if (!isConfigured.value) return
     try {
@@ -322,16 +492,27 @@ export const usePapersStore = defineStore('papers', () => {
     } catch { /* ignore */ }
   }
 
+  async function pingBackend(): Promise<boolean> {
+    if (!isConfigured.value) return false
+    try {
+      const r = await apiFetch('/ping')
+      return r.ok
+    } catch { return false }
+  }
+
   return {
     baseUrl, apiKey, isConfigured, persistConn,
-    config, configLoaded, fetchConfig, saveConfig,
-    sources, selectedSource, fetchSources,
+    sources, selectedSource, fetchSources, selectSource,
     pushPapers, pushDate, pushTotal, isFetchingPush, pushError, fetchPushPapers,
+    pushMode, pushDateFrom, pushDateTo,
+    togglePaperGood, markRead, toggleFavorite,
     analyzingIds, analyzePaper, analyzeAll,
     isCrawling, crawlNow, crawlJobs, fetchCrawlJobs,
     downloadPdf, openPdf,
     stats, fetchStats,
-    scheduler, fetchScheduler,
+    paperStatistics, isFetchingPaperStats, paperStatsError, fetchPaperStatistics,
+    scheduler, fetchScheduler, pingBackend,
+    deletedPapers, isFetchingDeleted, deletedError, fetchDeletedPapers, softDeletePaper, restorePaper,
     toast,
   }
 })

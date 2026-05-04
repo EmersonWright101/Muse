@@ -7,6 +7,7 @@
  * API base: {url}/api/todo
  */
 
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { getBackendConfig, setBackendConfig } from './backendConfig'
 import type { TodoTask, TodoProject } from './todoStorage'
 
@@ -39,7 +40,7 @@ async function apiFetch<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const res = await fetch(`${cfg.url}/api/todo${path}`, {
+  const res = await tauriFetch(`${cfg.url}/api/todo${path}`, {
     method,
     headers: buildHeaders(cfg),
     body: body !== undefined ? JSON.stringify(body) : undefined,

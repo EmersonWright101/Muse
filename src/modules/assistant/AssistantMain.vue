@@ -5,6 +5,7 @@ import {
 import {
   Send, Square, MessageSquare, SquarePen, Eraser, X,
   BookOpen, ExternalLink, FileText, Cpu, ChevronDown, ChevronUp, ChevronLeft,
+  ThumbsUp, ThumbsDown, CheckCircle2, Download, Eye, Trash2,
 } from 'lucide-vue-next'
 import { useAssistantStore } from '../../stores/assistant'
 import { usePapersStore } from '../../stores/papers'
@@ -29,6 +30,10 @@ watch(() => assistant.papersViewMode, async (mode) => {
 // Scroll to active paper when sidebar selects one
 watch(() => assistant.activePaperId, (id) => {
   if (!id || assistant.papersViewMode !== 'papers') return
+  const paper = papers.pushPapers.find(p => p.id === id)
+  if (paper && !paper.read) {
+    papers.markRead(paper.id, paper.source ?? 'arxiv')
+  }
   nextTick(() => {
     const el = document.getElementById(`paper-${id}`)
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -127,16 +132,14 @@ function toggleExpand(id: string) {
 
 function scoreColor(score: number | null): string {
   if (score === null) return '#aeaeb2'
-  if (score >= 8) return '#34c759'
-  if (score >= 5) return '#ff9500'
-  return '#ff3b30'
+  if (score >= 5) return '#DD853C'
+  return '#E06B4A'
 }
 
 function scoreBg(score: number | null): string {
   if (score === null) return 'rgba(0,0,0,0.05)'
-  if (score >= 8) return 'rgba(52,199,89,0.10)'
-  if (score >= 5) return 'rgba(255,149,0,0.10)'
-  return 'rgba(255,59,48,0.10)'
+  if (score >= 5) return 'rgba(221,133,60,0.10)'
+  return 'rgba(221,133,60,0.08)'
 }
 
 function formatPaperDate(iso: string): string {
@@ -150,7 +153,13 @@ function authorsDisplay(authors: string[]): string {
 }
 
 async function handleAnalyze(paper: Paper) {
-  await papers.analyzePaper(paper.id)
+  await papers.analyzePaper(paper.id, paper.source ?? 'arxiv')
+}
+
+async function handleDelete(paper: Paper) {
+  if (!confirm('确定要将这篇论文移至回收站吗？')) return
+  await papers.softDeletePaper(paper.id, paper.source ?? 'arxiv')
+  assistant.activePaperId = null
 }
 
 function sourceDisplayName(source: string): string {
@@ -163,39 +172,48 @@ function sourceBadgeStyle(source: string): Record<string, string> {
   if (source === 'huggingface') {
     return { background: 'rgba(255, 188, 0, 0.12)', color: '#7a5700' }
   }
-  return { background: 'rgba(34, 63, 121, 0.09)', color: '#223F79' }
+  return { background: 'rgba(221, 133, 60, 0.09)', color: '#DD853C' }
+}
+
+const TAG_ABBREVS: Record<string, string> = {
+  'Systematic Generalization': 'SysGen',
+  'Compositional Generalization': 'ComGen',
+  'Compositional': 'ComGen',
+}
+
+function tagLabel(tag: string): string {
+  return TAG_ABBREVS[tag] ?? tag
+}
+
+function tagStyle(tag: string): Record<string, string> {
+  const palette = [
+    { bg: 'rgba(221,133,60,0.10)', fg: '#DD853C' },
+    { bg: 'rgba(221,133,60,0.12)', fg: '#b86d2e' },
+    { bg: 'rgba(221,133,60,0.13)', fg: '#DD853C' },
+    { bg: 'rgba(175,82,222,0.11)', fg: '#7e28c0' },
+    { bg: 'rgba(255,59,48,0.10)', fg: '#cc2216' },
+    { bg: 'rgba(0,199,190,0.11)', fg: '#007a76' },
+    { bg: 'rgba(255,149,0,0.11)', fg: '#b86d00' },
+    { bg: 'rgba(90,90,220,0.11)', fg: '#3636aa' },
+    { bg: 'rgba(255,100,180,0.10)', fg: '#b0206a' },
+    { bg: 'rgba(200,100,50,0.11)', fg: '#993a10' },
+    { bg: 'rgba(80,150,200,0.11)', fg: '#2a5a90' },
+  ]
+  let hash = 0
+  for (let i = 0; i < tag.length; i++) hash = tag.charCodeAt(i) + ((hash << 5) - hash)
+  const p = palette[Math.abs(hash) % palette.length]
+  return { background: p.bg, color: p.fg }
 }
 
 async function selectSource(source: string | null) {
-  papers.selectedSource = source
-  await papers.fetchPushPapers()
+  await papers.selectSource(source)
 }
 
 
 </script>
 
 <template>
-  <div class="assistant-main">
-
-    <!-- Floating view toggle -->
-    <div class="floating-toggle">
-      <button
-        class="toggle-btn papers"
-        :class="{ active: assistant.papersViewMode === 'papers' }"
-        @click="assistant.papersViewMode = 'papers'"
-      >
-        <BookOpen :size="14" />
-        论文推送
-      </button>
-      <button
-        class="toggle-btn chat"
-        :class="{ active: assistant.papersViewMode === 'chat' }"
-        @click="assistant.papersViewMode = 'chat'"
-      >
-        <MessageSquare :size="14" />
-        智能回答
-      </button>
-    </div>
+  <div :class="['assistant-main', assistant.papersViewMode === 'papers' ? 'theme-orange' : 'theme-blue']">
 
     <!-- Papers view -->
     <template v-if="assistant.papersViewMode === 'papers'">
@@ -213,37 +231,6 @@ async function selectSource(source: string | null) {
             <ChevronLeft :size="15" />
             论文列表
           </button>
-          <div class="detail-topbar-actions">
-            <button
-              v-if="!activePaper.analyzed"
-              class="paper-btn analyze"
-              :disabled="papers.analyzingIds.has(activePaper.id)"
-              @click="handleAnalyze(activePaper)"
-            >
-              <span v-if="papers.analyzingIds.has(activePaper.id)" class="btn-spin" />
-              <Cpu v-else :size="11" />
-              {{ papers.analyzingIds.has(activePaper.id) ? 'AI 分析中…' : 'AI 分析' }}
-            </button>
-            <span v-else class="paper-analyzed-badge">✓ 已分析</span>
-            <a :href="activePaper.source_url" target="_blank" class="paper-btn link">
-              <ExternalLink :size="11" />
-              原文
-            </a>
-            <a :href="activePaper.pdf_url" target="_blank" class="paper-btn pdf">
-              <FileText :size="11" />
-              PDF
-            </a>
-            <button
-              v-if="!activePaper.pdf_downloaded"
-              class="paper-btn pdf"
-              @click="papers.downloadPdf(activePaper.id)"
-            >下载 PDF</button>
-            <button
-              v-else
-              class="paper-btn pdf active"
-              @click="papers.openPdf(activePaper.id)"
-            >查看 PDF</button>
-          </div>
         </div>
 
         <div class="detail-scroll">
@@ -257,6 +244,12 @@ async function selectSource(source: string | null) {
             <span v-if="activePaper.source" class="paper-source-badge" :style="sourceBadgeStyle(activePaper.source)">
               {{ sourceDisplayName(activePaper.source) }}
             </span>
+            <span
+              v-for="tag in activePaper.matched_tags"
+              :key="tag"
+              class="detail-tag-badge"
+              :style="tagStyle(tag)"
+            >{{ tagLabel(tag) }}</span>
             <span
               v-for="cat in activePaper.categories"
               :key="cat"
@@ -323,6 +316,85 @@ async function selectSource(source: string | null) {
               <span class="detail-meta-val">{{ activePaper.doi }}</span>
             </div>
           </div>
+
+          <!-- Bottom spacer for fixed action bar -->
+          <div class="detail-bottom-spacer" />
+        </div>
+
+        <!-- Fixed bottom action bar -->
+        <div class="detail-action-bar">
+          <div class="detail-action-group">
+            <button
+              class="detail-action-btn"
+              :class="{ active: activePaper.good === true }"
+              title="好文章"
+              @click="papers.togglePaperGood(activePaper.id, true, activePaper.source ?? 'arxiv')"
+            >
+              <ThumbsUp :size="13" />
+              <span>好文</span>
+            </button>
+            <button
+              class="detail-action-btn"
+              :class="{ active: activePaper.good === false }"
+              title="不感兴趣"
+              @click="papers.togglePaperGood(activePaper.id, false, activePaper.source ?? 'arxiv')"
+            >
+              <ThumbsDown :size="13" />
+              <span>不感兴趣</span>
+            </button>
+          </div>
+          <div class="detail-action-divider" />
+          <div class="detail-action-group">
+            <button
+              v-if="!activePaper.analyzed"
+              class="detail-action-btn primary"
+              :disabled="papers.analyzingIds.has(activePaper.id)"
+              @click="handleAnalyze(activePaper)"
+            >
+              <span v-if="papers.analyzingIds.has(activePaper.id)" class="btn-spin" />
+              <Cpu v-else :size="13" />
+              <span>{{ papers.analyzingIds.has(activePaper.id) ? '分析中…' : 'AI 分析' }}</span>
+            </button>
+            <span v-else class="detail-action-analyzed">
+              <CheckCircle2 :size="13" />
+              已分析
+            </span>
+            <a :href="activePaper.source_url" target="_blank" class="detail-action-btn">
+              <ExternalLink :size="13" />
+              <span>原文</span>
+            </a>
+            <a :href="activePaper.pdf_url" target="_blank" class="detail-action-btn">
+              <FileText :size="13" />
+              <span>PDF</span>
+            </a>
+            <button
+              v-if="!activePaper.pdf_downloaded"
+              class="detail-action-btn primary"
+              @click="papers.downloadPdf(activePaper.id, activePaper.source ?? 'arxiv')"
+            >
+              <Download :size="13" />
+              <span>下载</span>
+            </button>
+            <button
+              v-else
+              class="detail-action-btn"
+              @click="papers.openPdf(activePaper.id, activePaper.source ?? 'arxiv')"
+            >
+              <Eye :size="13" />
+              <span>查看</span>
+            </button>
+          </div>
+          <div class="detail-action-divider" />
+          <div class="detail-action-group">
+            <button
+              class="detail-action-btn danger"
+              title="移至回收站"
+              @click="handleDelete(activePaper)"
+            >
+              <Trash2 :size="13" />
+              <span>删除</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -340,39 +412,39 @@ async function selectSource(source: string | null) {
           {{ papers.pushError }}
         </div>
 
+        <!-- Source filter tabs (always visible) -->
+        <div v-if="papers.sources.length > 0" class="papers-source-tabs">
+          <button
+            class="papers-source-tab"
+            :class="{ active: papers.selectedSource === null }"
+            @click="selectSource(null)"
+          >全部</button>
+          <button
+            v-for="s in papers.sources"
+            :key="s.source"
+            class="papers-source-tab"
+            :class="{ active: papers.selectedSource === s.source }"
+            @click="selectSource(s.source)"
+          >
+            {{ sourceDisplayName(s.source) }}
+            <span class="papers-source-count">{{ s.total }}</span>
+          </button>
+        </div>
+
         <!-- Empty -->
-        <div v-else-if="papers.pushPapers.length === 0" class="papers-empty">
+        <div v-if="papers.pushPapers.length === 0 && !papers.isFetchingPush && !papers.pushError" class="papers-empty">
           <BookOpen :size="36" />
-          <p>{{ papers.pushDate }} 暂无论文</p>
+          <p>{{ papers.pushMode === 'today' ? papers.pushDate : '当前时间范围' }}暂无论文</p>
           <p class="papers-empty-hint">可点击右上角「爬取」按钮拉取最新论文</p>
         </div>
 
         <!-- Papers -->
-        <template v-else>
+        <template v-else-if="papers.pushPapers.length > 0">
           <div class="papers-feed-meta">
             共 <strong>{{ papers.pushTotal }}</strong> 篇 &nbsp;·&nbsp;
             <template v-if="papers.stats">
               已分析 <strong>{{ papers.stats.analyzed_papers }}</strong> 篇
             </template>
-          </div>
-
-          <!-- Source filter tabs -->
-          <div v-if="papers.sources.length > 0" class="papers-source-tabs">
-            <button
-              class="papers-source-tab"
-              :class="{ active: papers.selectedSource === null }"
-              @click="selectSource(null)"
-            >全部</button>
-            <button
-              v-for="s in papers.sources"
-              :key="s.source"
-              class="papers-source-tab"
-              :class="{ active: papers.selectedSource === s.source }"
-              @click="selectSource(s.source)"
-            >
-              {{ sourceDisplayName(s.source) }}
-              <span class="papers-source-count">{{ s.total }}</span>
-            </button>
           </div>
 
           <div class="papers-messages">
@@ -596,51 +668,6 @@ async function selectSource(source: string | null) {
   position: relative;
 }
 
-/* ── Floating toggle (like Travel) ──────────────────────────────────────────── */
-
-.floating-toggle {
-  position: fixed;
-  top: 56px;
-  left: calc(50% + 38px);
-  transform: translateX(-50%);
-  z-index: 900;
-  display: flex;
-  gap: 2px;
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(20px) saturate(1.6);
-  -webkit-backdrop-filter: blur(20px) saturate(1.6);
-  border-radius: 8px;
-  padding: 3px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.10), 0 0 0 0.5px rgba(0, 0, 0, 0.06) inset;
-}
-
-.floating-toggle .toggle-btn {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  border: none;
-  background: transparent;
-  color: #8e8e93;
-  font-size: 12px;
-  padding: 5px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.12s;
-  font-weight: 500;
-}
-
-.floating-toggle .toggle-btn.papers.active {
-  background: rgba(228, 152, 61, 0.12);
-  color: #c47a2a;
-  box-shadow: 0 1px 3px rgba(228, 152, 61, 0.15);
-}
-
-.floating-toggle .toggle-btn.chat.active {
-  background: rgba(34, 63, 121, 0.10);
-  color: #223F79;
-  box-shadow: 0 1px 3px rgba(34, 63, 121, 0.12);
-}
-
 /* ── ArXiv chat placeholder ─────────────────────────────────────────────────── */
 
 /* ── Empty state ─────────────────────────────────────────────────────────────── */
@@ -797,7 +824,7 @@ async function selectSource(source: string | null) {
 .papers-feed-meta {
   font-size: 12px;
   color: #8e8e93;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 
 .papers-feed-meta strong { color: #3c3c43; }
@@ -820,7 +847,7 @@ async function selectSource(source: string | null) {
 .papers-bot-avatar {
   width: 28px; height: 28px;
   border-radius: 8px;
-  background: linear-gradient(135deg, #E4983D, #c47a2a);
+  background: linear-gradient(135deg, #E4983D, #DD853C);
   display: flex; align-items: center; justify-content: center;
   color: white;
   font-size: 11px;
@@ -841,17 +868,20 @@ async function selectSource(source: string | null) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
 }
 
 .detail-topbar {
-  height: 48px;
-  padding: 0 20px;
+  height: 52px;
+  padding: 0 24px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   flex-shrink: 0;
   gap: 12px;
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(12px);
 }
 
 .detail-back-btn {
@@ -871,153 +901,251 @@ async function selectSource(source: string | null) {
 }
 .detail-back-btn:hover { background: rgba(0,0,0,0.06); color: #3c3c43; }
 
-.detail-topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
 .detail-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 32px 40px;
-  max-width: 760px;
+  padding: 28px 36px 0;
 }
 
 .detail-scroll::-webkit-scrollbar { width: 4px; }
 .detail-scroll::-webkit-scrollbar-track { background: transparent; }
 .detail-scroll::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.10); border-radius: 2px; }
 
+.detail-bottom-spacer {
+  height: 80px;
+}
+
+.detail-action-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 56px;
+  background: rgba(255,255,255,0.92);
+  backdrop-filter: blur(16px);
+  border-top: 1px solid rgba(0,0,0,0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 20px;
+  z-index: 10;
+}
+
+.detail-action-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.detail-action-divider {
+  width: 1px;
+  height: 20px;
+  background: rgba(0,0,0,0.08);
+  margin: 0 4px;
+}
+
+.detail-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(0,0,0,0.04);
+  color: #5a5a64;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 0.15s;
+}
+
+.detail-action-btn:hover {
+  background: rgba(0,0,0,0.08);
+}
+
+.detail-action-btn.active {
+  background: rgba(34,197,94,0.10);
+  color: #22c55e;
+}
+
+.detail-action-btn.primary {
+  background: rgba(221,133,60,0.10);
+  color: #DD853C;
+}
+
+.detail-action-btn.primary:hover {
+  background: rgba(221,133,60,0.18);
+}
+
+.detail-action-btn.danger {
+  background: rgba(239,68,68,0.08);
+  color: #ef4444;
+}
+
+.detail-action-btn.danger:hover {
+  background: rgba(239,68,68,0.16);
+}
+
+.detail-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.detail-action-analyzed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(34,197,94,0.08);
+  color: #22c55e;
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .detail-badges {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 14px;
+  gap: 8px;
+  margin-bottom: 16px;
 }
 
 .detail-cat-badge {
   font-size: 10.5px;
   font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 5px;
-  background: rgba(0,0,0,0.05);
-  color: #6e6e73;
+  padding: 3px 9px;
+  border-radius: 20px;
+  background: rgba(0,0,0,0.04);
+  color: #5a5a64;
+}
+
+.detail-tag-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 20px;
 }
 
 .detail-title {
-  font-size: 19px;
+  font-size: 22px;
   font-weight: 700;
   color: #1c1c1e;
   line-height: 1.35;
-  margin: 0 0 10px;
+  margin: 0 0 12px;
 }
 
 .detail-authors {
-  font-size: 12.5px;
-  color: #6e6e73;
-  line-height: 1.55;
-  margin-bottom: 6px;
+  font-size: 13px;
+  color: #5a5a64;
+  line-height: 1.6;
+  margin-bottom: 8px;
 }
 
 .detail-dates {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  color: #aeaeb2;
-  margin-bottom: 22px;
+  gap: 8px;
+  font-size: 12px;
+  color: #8e8e93;
+  margin-bottom: 28px;
 }
 
 .detail-date-sep { color: #d1d1d6; }
 
 .detail-section {
-  margin-bottom: 20px;
+  margin-bottom: 28px;
 }
 
 .detail-section-label {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 700;
-  color: #aeaeb2;
+  color: #8e8e93;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-bottom: 7px;
+  letter-spacing: 0.08em;
+  margin-bottom: 10px;
 }
 
 .detail-ai-summary {
-  font-size: 13px;
-  color: #3c3c43;
-  line-height: 1.65;
-  background: rgba(34, 63, 121, 0.04);
-  border-left: 2.5px solid rgba(34, 63, 121, 0.22);
-  padding: 10px 14px;
-  border-radius: 0 8px 8px 0;
+  font-size: 14px;
+  color: #2c2c34;
+  line-height: 1.75;
+  background: rgba(221, 133, 60, 0.04);
+  border-left: 3px solid rgba(221, 133, 60, 0.25);
+  padding: 14px 18px;
+  border-radius: 0 12px 12px 0;
+  text-align: justify;
 }
 
 .detail-text {
-  font-size: 13px;
-  color: #3c3c43;
-  line-height: 1.65;
+  font-size: 14px;
+  color: #2c2c34;
+  line-height: 1.75;
+  text-align: justify;
 }
 
 .detail-abstract {
-  font-size: 13px;
-  color: #3c3c43;
-  line-height: 1.75;
+  font-size: 14px;
+  color: #2c2c34;
+  line-height: 1.85;
   white-space: pre-wrap;
+  text-align: justify;
 }
 
 .detail-contributions {
   margin: 0;
-  padding-left: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.detail-contributions li {
-  font-size: 13px;
-  color: #3c3c43;
-  line-height: 1.6;
-}
-
-.detail-meta-block {
-  background: rgba(0,0,0,0.025);
-  border-radius: 10px;
-  padding: 12px 14px;
+  padding-left: 20px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
+.detail-contributions li {
+  font-size: 14px;
+  color: #2c2c34;
+  line-height: 1.7;
+}
+
+.detail-meta-block {
+  background: #ffffff;
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 12px;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+}
+
 .detail-meta-row {
   display: flex;
-  gap: 12px;
+  gap: 14px;
   align-items: flex-start;
 }
 
 .detail-meta-key {
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
-  color: #aeaeb2;
-  width: 56px;
+  color: #8e8e93;
+  width: 60px;
   flex-shrink: 0;
   padding-top: 1px;
 }
 
 .detail-meta-val {
-  font-size: 12.5px;
-  color: #3c3c43;
-  line-height: 1.55;
+  font-size: 13px;
+  color: #2c2c34;
+  line-height: 1.6;
 }
 
 /* ── Source filter tabs ──────────────────────────────────────────────────────── */
 
 .papers-source-tabs {
   display: flex;
-  gap: 6px;
-  margin-bottom: 14px;
+  gap: 8px;
+  margin-bottom: 16px;
   flex-wrap: wrap;
 }
 
@@ -1039,9 +1167,9 @@ async function selectSource(source: string | null) {
 .papers-source-tab:hover { background: rgba(0, 0, 0, 0.08); color: #3c3c43; }
 
 .papers-source-tab.active {
-  background: rgba(34, 63, 121, 0.10);
-  border-color: rgba(34, 63, 121, 0.20);
-  color: #223F79;
+  background: rgba(221, 133, 60, 0.10);
+  border-color: rgba(221, 133, 60, 0.20);
+  color: #DD853C;
 }
 
 .papers-source-count {
@@ -1052,35 +1180,41 @@ async function selectSource(source: string | null) {
 /* ── Paper card ──────────────────────────────────────────────────────────────── */
 
 .papers-paper-card {
-  background: #f9f9fb;
-  border: 1px solid rgba(0, 0, 0, 0.07);
-  border-radius: 14px;
-  padding: 14px 16px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 16px;
+  padding: 18px 20px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  transition: box-shadow 0.15s;
+  gap: 10px;
+  transition: all 0.2s ease;
   margin-left: 36px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03), 0 4px 8px rgba(0, 0, 0, 0.02);
 }
 
-.papers-paper-card:hover { box-shadow: 0 2px 12px rgba(0, 0, 0, 0.07); }
+.papers-paper-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.04);
+  transform: translateY(-1px);
+}
 .papers-paper-card.active {
-  box-shadow: 0 0 0 2px rgba(228, 152, 61, 0.35);
+  border-left: 3px solid #E4983D;
   background: rgba(228, 152, 61, 0.03);
+  box-shadow: 0 4px 16px rgba(228, 152, 61, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .paper-card-header {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   flex-wrap: wrap;
+  margin-bottom: 2px;
 }
 
 .paper-score {
   font-size: 11px;
   font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 6px;
+  padding: 3px 8px;
+  border-radius: 20px;
   flex-shrink: 0;
   letter-spacing: 0.02em;
 }
@@ -1090,54 +1224,56 @@ async function selectSource(source: string | null) {
 .paper-category {
   font-size: 10.5px;
   font-weight: 600;
-  color: #8e8e93;
-  background: rgba(0, 0, 0, 0.05);
-  padding: 2px 7px;
-  border-radius: 5px;
+  color: #5a5a64;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 3px 8px;
+  border-radius: 20px;
   flex-shrink: 0;
 }
 
 .paper-source-badge {
   font-size: 10px;
   font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 3px 7px;
+  border-radius: 20px;
   flex-shrink: 0;
   letter-spacing: 0.01em;
 }
 
 .paper-date {
-  font-size: 10.5px;
+  font-size: 11px;
   color: #aeaeb2;
   margin-left: auto;
+  font-weight: 500;
 }
 
 .paper-title {
-  font-size: 13.5px;
-  font-weight: 600;
+  font-size: 14.5px;
+  font-weight: 700;
   color: #1c1c1e;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .paper-authors {
-  font-size: 11.5px;
-  color: #8e8e93;
+  font-size: 12px;
+  color: #6e6e73;
+  line-height: 1.5;
 }
 
 .paper-summary {
-  font-size: 12px;
+  font-size: 12.5px;
   color: #3c3c43;
-  line-height: 1.6;
-  background: rgba(34, 63, 121, 0.04);
-  border-left: 2.5px solid rgba(34, 63, 121, 0.2);
-  padding: 7px 10px;
-  border-radius: 0 6px 6px 0;
+  line-height: 1.65;
+  background: rgba(221, 133, 60, 0.04);
+  border-left: 3px solid rgba(221, 133, 60, 0.18);
+  padding: 10px 14px;
+  border-radius: 0 10px 10px 0;
 }
 
 .paper-summary-label {
   font-size: 10px;
   font-weight: 700;
-  color: #223F79;
+  color: #DD853C;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   display: block;
@@ -1145,34 +1281,38 @@ async function selectSource(source: string | null) {
 }
 
 .paper-abstract {
-  font-size: 12px;
-  color: #6e6e73;
-  line-height: 1.6;
+  font-size: 12.5px;
+  color: #5a5a64;
+  line-height: 1.7;
+  text-align: justify;
 }
 
 .paper-reason {
-  font-size: 11.5px;
-  color: #8e8e93;
-  line-height: 1.5;
+  font-size: 12px;
+  color: #6e6e73;
+  line-height: 1.55;
+  background: rgba(0, 0, 0, 0.02);
+  padding: 8px 10px;
+  border-radius: 8px;
 }
 
 .paper-reason-label {
   font-weight: 600;
-  color: #6e6e73;
+  color: #5a5a64;
 }
 
 .paper-contributions {
   margin: 0;
-  padding-left: 16px;
+  padding-left: 18px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .paper-contributions li {
-  font-size: 12px;
+  font-size: 12.5px;
   color: #3c3c43;
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
 .paper-expand-btn {
@@ -1193,34 +1333,55 @@ async function selectSource(source: string | null) {
 .paper-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
-  padding-top: 4px;
+  padding-top: 10px;
+  margin-top: 2px;
   border-top: 1px solid rgba(0, 0, 0, 0.05);
 }
+
+.paper-feedback-btn {
+  width: 26px;
+  height: 26px;
+  border: 1.5px solid transparent;
+  border-radius: 7px;
+  background: rgba(0,0,0,0.04);
+  color: #aeaeb2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.12s;
+  flex-shrink: 0;
+}
+
+.paper-feedback-btn:hover { background: rgba(221,133,60,0.12); color: #DD853C; border-color: rgba(221,133,60,0.2); }
+.paper-feedback-btn.bad:hover { background: rgba(221,133,60,0.10); color: #DD853C; border-color: rgba(221,133,60,0.18); }
+.paper-feedback-btn.active { color: #DD853C; background: rgba(221,133,60,0.10); border-color: rgba(221,133,60,0.2); }
+.paper-feedback-btn.bad.active { color: #DD853C; background: rgba(221,133,60,0.08); border-color: rgba(221,133,60,0.18); }
 
 .paper-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  border-radius: 7px;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 8px;
   border: 1.5px solid transparent;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.12s;
+  transition: all 0.15s ease;
   text-decoration: none;
   color: inherit;
   background: transparent;
 }
 
 .paper-btn.analyze {
-  background: rgba(34, 63, 121, 0.07);
-  border-color: rgba(34, 63, 121, 0.15);
-  color: #223F79;
+  background: rgba(221, 133, 60, 0.07);
+  border-color: rgba(221, 133, 60, 0.15);
+  color: #DD853C;
 }
-.paper-btn.analyze:hover:not(:disabled) { background: rgba(34, 63, 121, 0.13); }
+.paper-btn.analyze:hover:not(:disabled) { background: rgba(221, 133, 60, 0.13); }
 .paper-btn.analyze:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .paper-btn.link {
@@ -1237,23 +1398,23 @@ async function selectSource(source: string | null) {
 }
 .paper-btn.pdf:hover { background: rgba(255, 149, 0, 0.13); }
 .paper-btn.pdf.active {
-  background: rgba(52, 199, 89, 0.08);
-  border-color: rgba(52, 199, 89, 0.2);
-  color: #25a244;
+  background: rgba(221, 133, 60, 0.08);
+  border-color: rgba(221, 133, 60, 0.2);
+  color: #DD853C;
 }
-.paper-btn.pdf.active:hover { background: rgba(52, 199, 89, 0.14); }
+.paper-btn.pdf.active:hover { background: rgba(221, 133, 60, 0.14); }
 
 .paper-analyzed-badge {
   font-size: 11px;
-  color: #34c759;
+  color: #DD853C;
   font-weight: 500;
 }
 
 .btn-spin {
   display: inline-block;
   width: 10px; height: 10px;
-  border: 1.5px solid rgba(34, 63, 121, 0.25);
-  border-top-color: #223F79;
+  border: 1.5px solid rgba(221, 133, 60, 0.25);
+  border-top-color: #DD853C;
   border-radius: 50%;
   animation: papers-rotate 0.7s linear infinite;
   flex-shrink: 0;
@@ -1327,7 +1488,7 @@ async function selectSource(source: string | null) {
   width: 52px;
   height: 52px;
   border-radius: 14px;
-  background: linear-gradient(145deg, #E4983D 0%, #223F79 100%);
+  background: linear-gradient(145deg, #4a7bc8 0%, #264178 100%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1362,7 +1523,7 @@ async function selectSource(source: string | null) {
 }
 
 .input-box:focus-within {
-  border-color: rgba(34, 63, 121, 0.35);
+  border-color: rgba(38, 65, 120, 0.35);
   background: #fafafa;
 }
 
@@ -1411,7 +1572,7 @@ async function selectSource(source: string | null) {
 }
 
 .toolbar-btn:hover { background: rgba(0, 0, 0, 0.06); color: #3c3c43; }
-.toolbar-btn-active { color: #223F79 !important; background: rgba(34, 63, 121, 0.08) !important; }
+.toolbar-btn-active { color: #264178 !important; background: rgba(38, 65, 120, 0.08) !important; }
 
 .send-btn {
   width: 30px;

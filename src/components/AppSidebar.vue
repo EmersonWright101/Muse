@@ -403,8 +403,8 @@ onUnmounted(() => {
 }
 
 .nav-custom-icon {
-  width: 21px;
-  height: 21px;
+  width: 24px;
+  height: 24px;
   object-fit: contain;
   opacity: 0.55;
   transition: opacity 0.12s;

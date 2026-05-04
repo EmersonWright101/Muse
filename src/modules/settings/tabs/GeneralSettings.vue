@@ -9,8 +9,10 @@ import { getDataRoot, setDataRoot, resolveDataRoot, migrateData } from '../../..
 import { getTrashRetentionDays, setTrashRetentionDays } from '../../../utils/travelStorage'
 import { useHomeStore, DEFAULT_PROMPT, FREQUENCY_OPTIONS } from '../../../stores/home'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
+import { useStatisticsStore } from '../../../stores/statistics'
 
 const { locale, t } = useI18n()
+const statsStore = useStatisticsStore()
 
 // ── Poster wall settings ────────────────────────────────────────────────────
 
@@ -164,6 +166,15 @@ function setLocale(code: string) {
   localStorage.setItem('muse-locale', code)
 }
 
+const currencies = [
+  { code: 'usd', label: 'USD', symbol: '$' },
+  { code: 'cny', label: 'CNY', symbol: '¥' },
+]
+
+function setCurrency(code: string) {
+  statsStore.setCurrency(code as 'usd' | 'cny')
+}
+
 // ── ArXiv backend connection ─────────────────────────────────────────────────
 
 const papers = usePapersStore()
@@ -300,6 +311,23 @@ async function confirmDeleteOld() {
           <span class="lang-flag">{{ lang.flag }}</span>
           <span class="lang-label">{{ lang.label }}</span>
           <span v-if="locale === lang.code" class="lang-check">✓</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="section-card">
+      <h2 class="section-title">货币单位 / Currency</h2>
+      <div class="lang-list">
+        <button
+          v-for="curr in currencies"
+          :key="curr.code"
+          class="lang-item"
+          :class="{ active: statsStore.currency === curr.code }"
+          @click="setCurrency(curr.code)"
+        >
+          <span class="lang-flag">{{ curr.symbol }}</span>
+          <span class="lang-label">{{ curr.label }}</span>
+          <span v-if="statsStore.currency === curr.code" class="lang-check">✓</span>
         </button>
       </div>
     </div>

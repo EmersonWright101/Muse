@@ -153,7 +153,8 @@ function base64ToBytes(b64: string): number {
 export const useStatisticsStore = defineStore('statistics', () => {
   const timeRange = ref<TimeRange>('week')
   const sortBy = ref<SortBy>('tokens')
-  const currency = ref<Currency>('cny')
+  const LS_CURRENCY_KEY = 'muse-currency'
+  const currency = ref<Currency>((localStorage.getItem(LS_CURRENCY_KEY) as Currency) || 'cny')
   const isLoading = ref(false)
   const modelStats = ref<ModelStat[]>([])
   const dailyStatsAll = ref<DailyStat[]>([])
@@ -692,6 +693,7 @@ export const useStatisticsStore = defineStore('statistics', () => {
 
   function setCurrency(c: Currency) {
     currency.value = c
+    localStorage.setItem(LS_CURRENCY_KEY, c)
   }
 
   function formatCost(amountUsd: number): string {

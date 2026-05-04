@@ -3,6 +3,7 @@ import { useI18n } from 'vue-i18n'
 import {
   LayoutDashboard,
   Bot,
+  BookOpen,
 } from 'lucide-vue-next'
 import { useUiStore } from '../../stores/uiStore'
 
@@ -10,8 +11,9 @@ const { t } = useI18n()
 const ui = useUiStore()
 
 const sections = [
-  { id: 'overview', icon: LayoutDashboard, labelKey: 'statistics.sections.overview' },
-  { id: 'ai_usage', icon: Bot,             labelKey: 'statistics.sections.aiUsage' },
+  { id: 'overview',   icon: LayoutDashboard, labelKey: 'statistics.sections.overview' },
+  { id: 'ai_usage',   icon: Bot,             labelKey: 'statistics.sections.aiUsage' },
+  { id: 'assistant',  icon: BookOpen,        label: '私人AI助手' },
 ]
 
 function select(id: string) {
@@ -34,7 +36,7 @@ function select(id: string) {
         @click="select(section.id)"
       >
         <component :is="section.icon" :size="15" class="item-icon" />
-        <span class="item-label">{{ t(section.labelKey) }}</span>
+        <span class="item-label">{{ 'label' in section ? section.label : t(section.labelKey) }}</span>
       </div>
     </div>
   </div>

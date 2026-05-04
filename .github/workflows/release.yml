@@ -93,6 +93,10 @@ jobs:
         shell: bash
         run: npm ci
 
+      - name: Install create-dmg (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: brew install create-dmg
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

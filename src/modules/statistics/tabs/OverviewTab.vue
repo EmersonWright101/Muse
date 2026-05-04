@@ -1096,7 +1096,7 @@ const monthColLabels = computed(() => {
 .ai-usage-section {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 24px;
 }
 
 .ai-usage-header {
@@ -1160,8 +1160,9 @@ const monthColLabels = computed(() => {
   display: flex;
   align-items: flex-end;
   gap: 6px;
-  height: 320px;
+  height: 300px;
   padding-bottom: 24px;
+  padding-top: 24px;
 }
 
 .col-item {
@@ -1176,7 +1177,7 @@ const monthColLabels = computed(() => {
 .col-stack {
   position: relative;
   width: 100%;
-  height: 280px;
+  height: 230px;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;

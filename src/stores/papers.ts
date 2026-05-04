@@ -296,6 +296,7 @@ export const usePapersStore = defineStore('papers', () => {
         const idx = pushPapers.value.findIndex(p => p.id === paperId)
         if (idx >= 0) pushPapers.value.splice(idx, 1)
         showToast('已移入回收站', 'info')
+        fetchDeletedPapers()
       } else showToast('删除失败', 'err')
     } catch { showToast('网络错误', 'err') }
   }

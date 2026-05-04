@@ -258,8 +258,9 @@ const sortOptions: { key: SortBy; label: string; icon: typeof Hash }[] = [
   display: flex;
   align-items: stretch;
   gap: 6px;
-  height: 320px;
+  height: 280px;
   padding-bottom: 4px;
+  padding-top: 28px;
 }
 
 .col-item {
@@ -299,7 +300,7 @@ const sortOptions: { key: SortBy; label: string; icon: typeof Hash }[] = [
 .col-value {
   position: absolute;
   left: 50%;
-  transform: translate(-50%, -100%);
+  transform: translateX(-50%);
   font-size: 12px;
   color: #1c1c1e;
   font-weight: 600;

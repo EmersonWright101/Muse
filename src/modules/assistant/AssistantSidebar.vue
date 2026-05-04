@@ -45,6 +45,16 @@ const filteredPapers = computed(() => {
   } else if (analyzedFilter.value === 'un_analyzed') {
     list = list.filter(p => !p.analyzed)
   }
+  if (favoriteFilter.value === 'favorite') {
+    list = list.filter(p => p.favorite)
+  } else if (favoriteFilter.value === 'unfavorite') {
+    list = list.filter(p => !p.favorite)
+  }
+  if (goodFilter.value === 'good') {
+    list = list.filter(p => p.good === true)
+  } else if (goodFilter.value === 'not_good') {
+    list = list.filter(p => p.good === false)
+  }
   return list
 })
 
@@ -301,6 +311,8 @@ function selectSort(mode: SortMode) {
 // ─── Filter menu ──────────────────────────────────────────────────────────────
 
 const analyzedFilter = ref<'all' | 'analyzed' | 'un_analyzed'>('all')
+const favoriteFilter = ref<'all' | 'favorite' | 'unfavorite'>('all')
+const goodFilter = ref<'all' | 'good' | 'not_good'>('all')
 
 function closeFilterMenu(e: MouseEvent) {
   const target = e.target as HTMLElement
@@ -317,10 +329,27 @@ function daysUntilExpiry(deletedAt: string): number {
   return Math.max(1, 30 - Math.floor(elapsed / 86_400_000))
 }
 
-function openPaperMenu(_event: MouseEvent, paper: any) {
-  if (confirm('确定要将这篇论文移至回收站吗？')) {
-    papers.softDeletePaper(paper.id, paper.source ?? 'arxiv')
-  }
+function togglePaperTrash() {
+  paperTrashOpen.value = !paperTrashOpen.value
+  if (paperTrashOpen.value) papers.fetchDeletedPapers()
+}
+
+const paperMenuOpen  = ref(false)
+const paperMenuPaper = ref<any>(null)
+const paperMenuPos   = ref({ x: 0, y: 0 })
+
+function openPaperMenu(e: MouseEvent, paper: any) {
+  paperMenuPaper.value = paper
+  paperMenuPos.value   = { x: e.clientX, y: e.clientY }
+  paperMenuOpen.value  = true
+}
+
+function closePaperMenu() { paperMenuOpen.value = false }
+
+function paperMenuDelete() {
+  if (paperMenuPaper.value)
+    papers.softDeletePaper(paperMenuPaper.value.id, paperMenuPaper.value.source ?? 'arxiv')
+  closePaperMenu()
 }
 
 onMounted(()  => {
@@ -328,12 +357,14 @@ onMounted(()  => {
   document.addEventListener('click', closeModeMenu)
   document.addEventListener('click', closeSortMenu)
   document.addEventListener('click', closeFilterMenu)
+  document.addEventListener('click', closePaperMenu)
 })
 onUnmounted(() => {
   document.removeEventListener('click', closeConvMenu)
   document.removeEventListener('click', closeModeMenu)
   document.removeEventListener('click', closeSortMenu)
   document.removeEventListener('click', closeFilterMenu)
+  document.removeEventListener('click', closePaperMenu)
 })
 </script>
 
@@ -519,6 +550,62 @@ onUnmounted(() => {
                     未分析
                   </button>
                 </div>
+                <div class="filter-menu-divider" />
+                <div class="filter-menu-group">
+                  <div class="filter-menu-label">收藏状态</div>
+                  <button
+                    class="filter-menu-item"
+                    :class="{ active: favoriteFilter === 'all' }"
+                    @click.stop="favoriteFilter = 'all'"
+                  >
+                    <span class="filter-menu-check">{{ favoriteFilter === 'all' ? '✓' : '' }}</span>
+                    全部
+                  </button>
+                  <button
+                    class="filter-menu-item"
+                    :class="{ active: favoriteFilter === 'favorite' }"
+                    @click.stop="favoriteFilter = 'favorite'"
+                  >
+                    <span class="filter-menu-check">{{ favoriteFilter === 'favorite' ? '✓' : '' }}</span>
+                    已收藏
+                  </button>
+                  <button
+                    class="filter-menu-item"
+                    :class="{ active: favoriteFilter === 'unfavorite' }"
+                    @click.stop="favoriteFilter = 'unfavorite'"
+                  >
+                    <span class="filter-menu-check">{{ favoriteFilter === 'unfavorite' ? '✓' : '' }}</span>
+                    未收藏
+                  </button>
+                </div>
+                <div class="filter-menu-divider" />
+                <div class="filter-menu-group">
+                  <div class="filter-menu-label">评价状态</div>
+                  <button
+                    class="filter-menu-item"
+                    :class="{ active: goodFilter === 'all' }"
+                    @click.stop="goodFilter = 'all'"
+                  >
+                    <span class="filter-menu-check">{{ goodFilter === 'all' ? '✓' : '' }}</span>
+                    全部
+                  </button>
+                  <button
+                    class="filter-menu-item"
+                    :class="{ active: goodFilter === 'good' }"
+                    @click.stop="goodFilter = 'good'"
+                  >
+                    <span class="filter-menu-check">{{ goodFilter === 'good' ? '✓' : '' }}</span>
+                    好文章
+                  </button>
+                  <button
+                    class="filter-menu-item"
+                    :class="{ active: goodFilter === 'not_good' }"
+                    @click.stop="goodFilter = 'not_good'"
+                  >
+                    <span class="filter-menu-check">{{ goodFilter === 'not_good' ? '✓' : '' }}</span>
+                    不感兴趣
+                  </button>
+                </div>
               </div>
             </Teleport>
           </div>
@@ -529,14 +616,6 @@ onUnmounted(() => {
             @click="papers.fetchPushPapers()"
           >
             <RotateCcw :size="14" />
-          </button>
-          <button
-            class="icon-btn"
-            :disabled="papers.isCrawling || !papers.isConfigured"
-            title="立即爬取"
-            @click="papers.crawlNow()"
-          >
-            <BookOpen :size="14" />
           </button>
         </div>
       </template>
@@ -650,20 +729,33 @@ onUnmounted(() => {
       </div>
 
       <!-- Trash section for papers -->
-      <div v-if="papers.deletedPapers.length > 0" class="trash-section paper-trash-section">
-        <button class="trash-toggle" @click="paperTrashOpen = !paperTrashOpen">
+      <div class="trash-section paper-trash-section">
+        <button class="trash-toggle" @click="togglePaperTrash">
           <ChevronDown :size="11" class="trash-chevron" :class="{ open: paperTrashOpen }" />
           <Trash2 :size="11" class="trash-toggle-icon" />
           <span class="trash-toggle-label">最近删除</span>
           <span class="trash-count-badge">{{ papers.deletedPapers.length }}</span>
         </button>
         <div v-if="paperTrashOpen" class="trash-list">
+          <div v-if="papers.deletedPapers.length === 0" class="trash-empty">
+            暂无已删除论文
+          </div>
           <div
             v-for="paper in papers.deletedPapers"
             :key="paper.id"
             class="trash-item"
           >
-            <span class="trash-item-title" :title="paper.title">{{ paper.title.length > 20 ? paper.title.slice(0, 20) + '…' : paper.title }}</span>
+            <div class="trash-item-body">
+              <span class="trash-item-title" :title="paper.title">{{ paper.title.length > 24 ? paper.title.slice(0, 24) + '…' : paper.title }}</span>
+              <div v-if="(paper.matched_tags ?? []).length" class="trash-item-tags">
+                <span
+                  v-for="tag in (paper.matched_tags ?? []).slice(0, 2)"
+                  :key="tag"
+                  class="paper-item-tag"
+                  :style="tagStyle(tag)"
+                >{{ tagLabel(tag) }}</span>
+              </div>
+            </div>
             <div class="trash-item-actions">
               <button class="trash-action-btn restore-btn" title="恢复" @click.stop="papers.restorePaper(paper.id, paper.source ?? 'arxiv')">
                 <RotateCcw :size="10" />
@@ -854,6 +946,20 @@ onUnmounted(() => {
       <button class="conv-menu-item danger" @click="convMenuDelete">
         <Trash2 :size="13" />
         <span>删除对话</span>
+      </button>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div
+      v-if="paperMenuOpen"
+      class="conv-context-menu"
+      :style="{ left: paperMenuPos.x + 'px', top: paperMenuPos.y + 'px' }"
+      @click.stop
+    >
+      <button class="conv-menu-item danger" @click="paperMenuDelete">
+        <Trash2 :size="13" />
+        <span>移至回收站</span>
       </button>
     </div>
   </Teleport>
@@ -1849,8 +1955,15 @@ onUnmounted(() => {
 
 .trash-item:hover { background: rgba(0, 0, 0, 0.04); }
 
-.trash-item-title {
+.trash-item-body {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.trash-item-title {
   min-width: 0;
   font-size: 12px;
   font-weight: 500;
@@ -1858,6 +1971,12 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.trash-item-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
 }
 
 .trash-item-days {
@@ -1888,6 +2007,13 @@ onUnmounted(() => {
   justify-content: center;
   cursor: pointer;
   transition: all 0.10s;
+}
+
+.trash-empty {
+  font-size: 11px;
+  color: #aeaeb2;
+  text-align: center;
+  padding: 8px 0;
 }
 
 .restore-btn { color: #264178; }

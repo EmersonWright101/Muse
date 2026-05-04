@@ -5,7 +5,7 @@ import {
 import {
   Send, Square, MessageSquare, SquarePen, Eraser, X,
   BookOpen, ExternalLink, FileText, Cpu, ChevronDown, ChevronUp, ChevronLeft,
-  ThumbsUp, ThumbsDown, CheckCircle2, Download, Eye, Trash2,
+  ThumbsUp, ThumbsDown, CheckCircle2, Download, Eye, Trash2, Star,
 } from 'lucide-vue-next'
 import { useAssistantStore } from '../../stores/assistant'
 import { usePapersStore } from '../../stores/papers'
@@ -326,6 +326,15 @@ async function selectSource(source: string | null) {
           <div class="detail-action-group">
             <button
               class="detail-action-btn"
+              :class="{ active: activePaper.favorite }"
+              title="收藏"
+              @click="papers.toggleFavorite(activePaper.id, activePaper.source ?? 'arxiv')"
+            >
+              <Star :size="13" />
+              <span>收藏</span>
+            </button>
+            <button
+              class="detail-action-btn"
               :class="{ active: activePaper.good === true }"
               title="好文章"
               @click="papers.togglePaperGood(activePaper.id, true, activePaper.source ?? 'arxiv')"
@@ -461,6 +470,7 @@ async function selectSource(source: string | null) {
               :id="'paper-' + paper.id"
               class="papers-paper-card"
               :class="{ expanded: expandedCards.has(paper.id), active: assistant.activePaperId === paper.id }"
+              @click="assistant.activePaperId = paper.id"
             >
               <!-- Card header: score + title + category -->
               <div class="paper-card-header">
@@ -508,7 +518,7 @@ async function selectSource(source: string | null) {
               <button
                 v-if="paper.abstract.length > 160 && !(paper.analyzed && paper.ai_summary)"
                 class="paper-expand-btn"
-                @click="toggleExpand(paper.id)"
+                @click.stop="toggleExpand(paper.id)"
               >
                 <component :is="expandedCards.has(paper.id) ? ChevronUp : ChevronDown" :size="11" />
                 {{ expandedCards.has(paper.id) ? '收起' : '展开摘要' }}
@@ -520,7 +530,7 @@ async function selectSource(source: string | null) {
                   v-if="!paper.analyzed"
                   class="paper-btn analyze"
                   :disabled="papers.analyzingIds.has(paper.id)"
-                  @click="handleAnalyze(paper)"
+                  @click.stop="handleAnalyze(paper)"
                 >
                   <span v-if="papers.analyzingIds.has(paper.id)" class="btn-spin" />
                   <Cpu v-else :size="11" />
@@ -528,7 +538,7 @@ async function selectSource(source: string | null) {
                 </button>
                 <span v-else class="paper-analyzed-badge">✓ 已分析</span>
 
-                <a :href="paper.source_url" target="_blank" class="paper-btn link">
+                <a :href="paper.source_url" target="_blank" class="paper-btn link" @click.stop>
                   <ExternalLink :size="11" />
                   原文
                 </a>
@@ -536,7 +546,7 @@ async function selectSource(source: string | null) {
                 <button
                   v-if="!paper.pdf_downloaded"
                   class="paper-btn pdf"
-                  @click="papers.downloadPdf(paper.id)"
+                  @click.stop="papers.downloadPdf(paper.id)"
                 >
                   <FileText :size="11" />
                   下载 PDF
@@ -544,7 +554,7 @@ async function selectSource(source: string | null) {
                 <button
                   v-else
                   class="paper-btn pdf active"
-                  @click="papers.openPdf(paper.id)"
+                  @click.stop="papers.openPdf(paper.id)"
                 >
                   <FileText :size="11" />
                   查看 PDF

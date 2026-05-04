@@ -26,6 +26,7 @@ import {
   getDeletedConversations,
   applyRemoteDeletedConversations,
   mergeConversation,
+  loadTrashedConversation,
   type ConversationMeta,
   type TrashedConversationMeta,
   type Conversation,
@@ -1647,7 +1648,6 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function openTrashPreview(id: string) {
-    const { loadTrashedConversation } = await import('../utils/storage')
     const conv = await loadTrashedConversation(id)
     if (conv) previewTrashedConv.value = conv
   }

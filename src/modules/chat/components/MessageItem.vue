@@ -68,6 +68,7 @@ import { useI18n } from 'vue-i18n'
 import type { ChatMessage } from '../../../stores/chat'
 import { useChatStore } from '../../../stores/chat'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
+import { useStatisticsStore } from '../../../stores/statistics'
 
 import type { WebSearchResult } from '../../../utils/storage'
 
@@ -76,6 +77,7 @@ const props = defineProps<{ message: ChatMessage; streaming?: boolean; webSearch
 
 const chat = useChatStore()
 const ai   = useAiSettingsStore()
+const stats = useStatisticsStore()
 const { t } = useI18n()
 
 // ─── User avatar (shared with sidebar) ────────────────────────────────────────
@@ -879,7 +881,7 @@ function resultDomain(url: string): string {
           <span v-if="displayedUsage?.durationMs != null" class="msg-duration">
             <Clock :size="9" />{{ (displayedUsage.durationMs / 1000).toFixed(1) }}s
           </span>
-          <span v-if="displayedUsage?.costUsd != null">${{ displayedUsage.costUsd.toFixed(4) }}</span>
+          <span v-if="displayedUsage?.costUsd != null">{{ stats.formatCost(displayedUsage.costUsd) }}</span>
         </div>
       </div>
 
@@ -997,7 +999,7 @@ function resultDomain(url: string): string {
               <span v-if="slotUsage(message, idx)?.durationMs != null" class="msg-duration">
                 <Clock :size="9" />{{ (slotUsage(message, idx)!.durationMs! / 1000).toFixed(1) }}s
               </span>
-              <span v-if="slotUsage(message, idx)?.costUsd != null">${{ slotUsage(message, idx)!.costUsd!.toFixed(4) }}</span>
+              <span v-if="slotUsage(message, idx)?.costUsd != null">{{ stats.formatCost(slotUsage(message, idx)!.costUsd!) }}</span>
             </div>
           </div>
         </div>

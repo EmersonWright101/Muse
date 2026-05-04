@@ -27,8 +27,7 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        { "path": "$APPDATA/**" },
-        { "path": "$APPDIR/**" }
+        { "path": "**" }
       ]
     },
     "http:default",

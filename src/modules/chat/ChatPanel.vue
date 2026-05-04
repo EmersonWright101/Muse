@@ -408,17 +408,7 @@ const pdfNative = computed(() => {
   return p.type === 'anthropic' || p.type === 'google' || p.baseUrl.includes('openrouter.ai')
 })
 
-// ─── Window close ────────────────────────────────────────────────────────────
 
-async function closeWindow() {
-  try {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window')
-    const win = getCurrentWindow()
-    await win.close()
-  } catch {
-    // Not running in Tauri
-  }
-}
 </script>
 
 <template>

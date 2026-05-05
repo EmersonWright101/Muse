@@ -3,8 +3,9 @@ import { ref, computed, watch } from 'vue'
 import { useTodoStore, type Priority, type TodoTask } from '../../../stores/todo'
 import {
   X, Star, Trash2, Calendar, Tag, RotateCcw, Flag,
-  Plus, Check, ChevronRight,
+  Plus, Check, ChevronRight, Bell,
 } from 'lucide-vue-next'
+import TimePickerInput from './TimePickerInput.vue'
 
 const store = useTodoStore()
 
@@ -46,11 +47,27 @@ function setDueDate(e: Event) {
   store.updateTask(task.value.id, { dueDate: v || null })
 }
 
-function setDueTime(e: Event) {
+function setDueTime(v: string | null) {
   if (!task.value) return
-  const v = (e.target as HTMLInputElement).value
   store.updateTask(task.value.id, { dueTime: v || null })
 }
+
+function setReminder(e: Event) {
+  if (!task.value) return
+  const v = (e.target as HTMLSelectElement).value
+  store.updateTask(task.value.id, { reminderMinutes: v ? Number(v) : null })
+}
+
+const REMINDER_OPTIONS = [
+  { value: '',     label: '不提醒' },
+  { value: '5',    label: '5 分钟前' },
+  { value: '10',   label: '10 分钟前' },
+  { value: '15',   label: '15 分钟前' },
+  { value: '30',   label: '30 分钟前' },
+  { value: '60',   label: '1 小时前' },
+  { value: '120',  label: '2 小时前' },
+  { value: '1440', label: '1 天前' },
+]
 
 function setRecurrence(e: Event) {
   if (!task.value) return
@@ -174,13 +191,20 @@ const RECURRENCE_OPTIONS = [
             :value="t$.dueDate ?? ''"
             @change="setDueDate"
           />
-          <input
-            type="time"
-            class="time-input"
-            :value="t$.dueTime ?? ''"
-            @change="setDueTime"
+          <TimePickerInput
+            :modelValue="t$.dueTime"
+            @update:modelValue="setDueTime"
           />
         </div>
+      </div>
+
+      <!-- Reminder -->
+      <div class="field-row">
+        <Bell :size="13" class="field-icon" />
+        <span class="field-label">提醒</span>
+        <select class="select-input" :value="t$.reminderMinutes ?? ''" @change="setReminder">
+          <option v-for="o in REMINDER_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+        </select>
       </div>
 
       <!-- Recurrence -->

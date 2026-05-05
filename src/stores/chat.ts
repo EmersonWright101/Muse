@@ -1079,14 +1079,10 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
 
-    // Messages sent to API: everything after the context cutoff (if set), minus the empty assistant msg
+    // Messages sent to API: everything after the nearest context cutoff point (if any)
     let msgsForApi = conv.messages.slice(0, -1)
-    if (conv.contextCutoffMsgId) {
-      const cutoffIdx = msgsForApi.findIndex(m => m.id === conv.contextCutoffMsgId)
-      if (cutoffIdx >= 0) msgsForApi = msgsForApi.slice(cutoffIdx + 1)
-      // Clear after applying so future messages use full context
-      conv.contextCutoffMsgId = undefined
-    }
+    const ctxStart = _getContextStartIdx(msgsForApi, msgsForApi.length, conv)
+    if (ctxStart > 0) msgsForApi = msgsForApi.slice(ctxStart)
 
     // For providers that don't support multimodal input, OCR images into text before sending
     const modelInfo0 = provider.models.find(m => m.id === mid)
@@ -1534,8 +1530,10 @@ export const useChatStore = defineStore('chat', () => {
     const provider = aiStore.providers.find(p => p.id === providerId)
     if (!provider || (!provider.apiKey && provider.type !== 'ollama')) return
 
-    // Context = everything before this assistant message
+    // Context = everything after the nearest cutoff point, up to this assistant message
     let msgsForApi = conv.messages.slice(0, msgIdx)
+    const regenCtxStart = _getContextStartIdx(msgsForApi, msgsForApi.length, conv)
+    if (regenCtxStart > 0) msgsForApi = msgsForApi.slice(regenCtxStart)
 
     // OCR images for non-multimodal providers
     const modelInfo1 = provider.models.find(m => m.id === modelId)
@@ -1813,6 +1811,23 @@ export const useChatStore = defineStore('chat', () => {
 
   // ─── Context cutoff ─────────────────────────────────────────────────────
 
+  function _getContextStartIdx(
+    msgs: ChatMessage[],
+    beforeIdx: number,
+    conv: { contextCutoffPoints?: string[]; contextCutoffMsgId?: string },
+  ): number {
+    const points = [
+      ...(conv.contextCutoffPoints ?? []),
+      ...(conv.contextCutoffMsgId ? [conv.contextCutoffMsgId] : []),
+    ]
+    let startIdx = 0
+    for (const cid of points) {
+      const cidIdx = msgs.findIndex(m => m.id === cid)
+      if (cidIdx >= 0 && cidIdx < beforeIdx) startIdx = Math.max(startIdx, cidIdx + 1)
+    }
+    return startIdx
+  }
+
   function clearContext(cid?: string) {
     const targetId = cid ?? activeConvId.value
     if (!targetId) return
@@ -1826,12 +1841,18 @@ export const useChatStore = defineStore('chat', () => {
     if (!conv) return
     const lastMsg = conv.messages.at(-1)
     if (!lastMsg) return
-    conv.contextCutoffMsgId = lastMsg.id
-    conv.updatedAt          = new Date().toISOString()
+    if (!conv.contextCutoffPoints) {
+      conv.contextCutoffPoints = conv.contextCutoffMsgId ? [conv.contextCutoffMsgId] : []
+      conv.contextCutoffMsgId = undefined
+    }
+    if (!conv.contextCutoffPoints.includes(lastMsg.id)) {
+      conv.contextCutoffPoints.push(lastMsg.id)
+    }
+    conv.updatedAt = new Date().toISOString()
     saveConversation(conv)
   }
 
-  function removeContextCutoff(cid?: string) {
+  function removeContextCutoff(msgId: string, cid?: string) {
     const targetId = cid ?? activeConvId.value
     if (!targetId) return
     const conv = targetId === activeConvId.value
@@ -1840,8 +1861,11 @@ export const useChatStore = defineStore('chat', () => {
         ? secondaryActiveConv.value
         : _windowConvs.get(targetId) ?? null
     if (!conv) return
-    conv.contextCutoffMsgId = undefined
-    conv.updatedAt          = new Date().toISOString()
+    if (conv.contextCutoffPoints) {
+      conv.contextCutoffPoints = conv.contextCutoffPoints.filter(id => id !== msgId)
+    }
+    if (conv.contextCutoffMsgId === msgId) conv.contextCutoffMsgId = undefined
+    conv.updatedAt = new Date().toISOString()
     saveConversation(conv)
   }
 

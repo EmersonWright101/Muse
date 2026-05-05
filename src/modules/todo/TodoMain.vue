@@ -9,10 +9,11 @@ import QuadrantView from './components/QuadrantView.vue'
 import {
   Plus, Search, LayoutList, Calendar, Columns3, Grid2x2,
   ArrowUpDown, SortAsc, Clock, AlignLeft, Star,
-  CheckSquare2, Eye, EyeOff,
+  CheckSquare2, Eye, EyeOff, Bell,
 } from 'lucide-vue-next'
 import type { TodoTask } from '../../stores/todo'
 import { useTodoNotifications } from './composables/useTodoNotifications'
+import TimePickerInput from './components/TimePickerInput.vue'
 
 const store = useTodoStore()
 useTodoNotifications()
@@ -23,11 +24,31 @@ onMounted(() => store.load())
 
 const newTaskTitle = ref('')
 const newTaskInputRef = ref<HTMLInputElement>()
+const showTaskOptions = ref(false)
+const newTaskDate = ref('')
+const newTaskTime = ref<string | null>(null)
+const newTaskReminder = ref<number | null>(null)
+
+const REMINDER_OPTIONS = [
+  { value: null,  label: '不提醒' },
+  { value: 5,     label: '5 分钟前' },
+  { value: 10,    label: '10 分钟前' },
+  { value: 15,    label: '15 分钟前' },
+  { value: 30,    label: '30 分钟前' },
+  { value: 60,    label: '1 小时前' },
+  { value: 120,   label: '2 小时前' },
+  { value: 1440,  label: '1 天前' },
+]
 
 async function createTask() {
   const title = newTaskTitle.value.trim()
   if (!title) return
-  const task = store.addTask({ title })
+  const task = store.addTask({
+    title,
+    dueDate: newTaskDate.value || undefined,
+    dueTime: newTaskTime.value ?? undefined,
+    reminderMinutes: newTaskReminder.value,
+  })
   newTaskTitle.value = ''
   await nextTick()
   store.activeTaskId = task.id
@@ -254,6 +275,36 @@ watch(() => store.apiError, (msg) => {
                 placeholder="添加新任务…"
                 @keydown="onNewTaskKeydown"
               />
+              <button
+                class="add-options-btn"
+                :class="{ active: showTaskOptions }"
+                title="设置日期和提醒"
+                @click="showTaskOptions = !showTaskOptions"
+              >
+                <Calendar :size="13" />
+              </button>
+            </div>
+
+            <!-- Expandable date / time / reminder options -->
+            <div v-if="showTaskOptions && store.activeFilter !== 'completed'" class="add-task-options">
+              <div class="opt-row" title="截止日期">
+                <Calendar :size="12" class="opt-icon" />
+                <input type="date" v-model="newTaskDate" class="opt-date-input" />
+              </div>
+              <div class="opt-row" title="截止时间">
+                <Clock :size="12" class="opt-icon" />
+                <TimePickerInput v-model="newTaskTime" />
+              </div>
+              <div class="opt-row" title="提前提醒">
+                <Bell :size="12" class="opt-icon" />
+                <select
+                  class="opt-select"
+                  :value="newTaskReminder ?? ''"
+                  @change="e => newTaskReminder = (e.target as HTMLSelectElement).value ? Number((e.target as HTMLSelectElement).value) : null"
+                >
+                  <option v-for="o in REMINDER_OPTIONS" :key="String(o.value)" :value="o.value ?? ''">{{ o.label }}</option>
+                </select>
+              </div>
             </div>
 
             <!-- Empty state -->
@@ -662,6 +713,82 @@ watch(() => store.apiError, (msg) => {
 
 .add-task-input::placeholder {
   color: #c7c7cc;
+}
+
+.add-options-btn {
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: #8e8e93;
+  cursor: pointer;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+}
+
+.add-options-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #1c1c1e;
+}
+
+.add-options-btn.active {
+  background: rgba(34, 63, 121, 0.10);
+  color: #223F79;
+}
+
+.add-task-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px 12px;
+  background: rgba(0, 0, 0, 0.02);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 10px;
+  margin-bottom: 4px;
+  flex-shrink: 0;
+}
+
+.opt-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.opt-icon {
+  color: #8e8e93;
+  flex-shrink: 0;
+}
+
+.opt-date-input {
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  color: #1c1c1e;
+  background: rgba(0, 0, 0, 0.02);
+  outline: none;
+  cursor: pointer;
+  max-width: 120px;
+}
+
+.opt-date-input:focus {
+  border-color: #223F79;
+}
+
+.opt-select {
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  color: #1c1c1e;
+  background: rgba(0, 0, 0, 0.02);
+  outline: none;
+  cursor: pointer;
 }
 
 /* Task groups */

@@ -12,7 +12,7 @@
  */
 
 import { appLocalDataDir } from '@tauri-apps/api/path'
-import { readDir, mkdir, copyFile, remove, exists } from '@tauri-apps/plugin-fs'
+import { readDir, mkdir, copyFile, remove, exists, stat } from '@tauri-apps/plugin-fs'
 
 const LS_DATA_PATH_KEY = 'muse-data-path'
 
@@ -69,6 +69,31 @@ export async function travelNotesDir(): Promise<string> {
 
 export async function homePostersDir(): Promise<string> {
   return `${await resolveDataRoot()}/home_posters`
+}
+
+export async function tmpDir(): Promise<string> {
+  return `${await resolveDataRoot()}/tmp`
+}
+
+export async function cleanupTmpDir(maxAgeDays = 7): Promise<void> {
+  const dir = await tmpDir()
+  if (!(await exists(dir))) return
+
+  const now = Date.now()
+  const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000
+
+  const entries = await readDir(dir)
+  for (const entry of entries) {
+    if (!entry.isFile) continue
+    const filePath = `${dir}/${entry.name}`
+    try {
+      const meta = await stat(filePath)
+      const mtime = meta.mtime instanceof Date ? meta.mtime.getTime() : Number(meta.mtime)
+      if (mtime && now - mtime > maxAgeMs) {
+        await remove(filePath)
+      }
+    } catch { /* ignore individual file errors */ }
+  }
 }
 
 // ─── Safety helpers ──────────────────────────────────────────────────────────

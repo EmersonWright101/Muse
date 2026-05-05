@@ -236,6 +236,15 @@ async function chooseFolder() {
   }
 }
 
+async function openDataFolder() {
+  try {
+    const { revealItemInDir } = await import('@tauri-apps/plugin-opener')
+    await revealItemInDir(currentPath.value)
+  } catch (e) {
+    console.error('openDataFolder failed:', e)
+  }
+}
+
 async function confirmMigrate() {
   showMigrateConfirm.value = false
   const oldRoot = await resolveDataRoot()
@@ -293,6 +302,10 @@ async function confirmDeleteOld() {
           <button class="path-btn" @click="chooseFolder">
             <FolderOpen :size="14" />
             {{ t('settings.dataPath.choose') }}
+          </button>
+          <button class="path-btn secondary" @click="openDataFolder">
+            <FolderOpen :size="14" />
+            打开文件夹
           </button>
         </div>
         <div v-if="migrateError" class="migrate-error">{{ migrateError }}</div>

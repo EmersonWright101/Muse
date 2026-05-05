@@ -299,7 +299,7 @@ export const useTodoStore = defineStore('todo', () => {
       ? activeFilter.value
       : partial.projectId ?? null
 
-    const dueDate = activeFilter.value === 'today' ? todayStr.value : partial.dueDate ?? null
+    const dueDate = partial.dueDate ?? (activeFilter.value === 'today' ? todayStr.value : null)
 
     const task = newTask({ ...partial, projectId, dueDate, order: Date.now() })
     tasks.value.unshift(task)

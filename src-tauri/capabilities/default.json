@@ -8,6 +8,8 @@
     "core:window:allow-create",
     "core:webview:allow-create-webview-window",
     "opener:default",
+    "opener:allow-open-path",
+    "opener:allow-reveal-item-in-dir",
     "core:window:allow-start-dragging",
     "core:window:allow-show",
     "core:window:allow-minimize",

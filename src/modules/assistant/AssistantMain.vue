@@ -4,16 +4,19 @@ import {
 } from 'vue'
 import {
   Send, Square, MessageSquare, SquarePen, Eraser, X,
-  BookOpen, ExternalLink, FileText, Cpu, ChevronDown, ChevronUp, ChevronLeft,
-  ThumbsUp, ThumbsDown, CheckCircle2, Download, Eye, Trash2, Star,
+  BookOpen, ExternalLink, FileText, ChevronDown, ChevronUp, ChevronLeft,
+  ThumbsUp, ThumbsDown, Download, Eye, Trash2, Star, Bot,
 } from 'lucide-vue-next'
 import { useAssistantStore } from '../../stores/assistant'
 import { usePapersStore } from '../../stores/papers'
 import type { Paper } from '../../stores/papers'
 import MessageItem from '../chat/components/MessageItem.vue'
+import PaperCopilot from './components/PaperCopilot.vue'
+import { usePaperCopilotStore } from '../../stores/paperCopilot'
 
 const assistant = useAssistantStore()
 const papers    = usePapersStore()
+const copilot   = usePaperCopilotStore()
 
 // Load papers when papers view is shown
 watch(() => assistant.papersViewMode, async (mode) => {
@@ -152,10 +155,6 @@ function authorsDisplay(authors: string[]): string {
   return authors.slice(0, 2).join(', ') + ` 等 ${authors.length} 人`
 }
 
-async function handleAnalyze(paper: Paper) {
-  await papers.analyzePaper(paper.id, paper.source ?? 'arxiv')
-}
-
 async function handleDelete(paper: Paper) {
   if (!confirm('确定要将这篇论文移至回收站吗？')) return
   await papers.softDeletePaper(paper.id, paper.source ?? 'arxiv')
@@ -209,6 +208,23 @@ async function selectSource(source: string | null) {
   await papers.selectSource(source)
 }
 
+function openCopilot(paper: Paper, e: MouseEvent) {
+  e.stopPropagation()
+  copilot.openForPaper(paper.id, paper.source ?? 'arxiv')
+}
+
+const activePaperForCopilot = computed(() =>
+  copilot.activePaperId
+    ? papers.pushPapers.find(p => p.id === copilot.activePaperId) ?? null
+    : null,
+)
+
+// Auto-switch copilot when navigating to a different paper detail
+watch(activePaper, (paper) => {
+  if (paper && copilot.isOpen) {
+    copilot.openForPaper(paper.id, paper.source ?? 'arxiv')
+  }
+})
 
 </script>
 
@@ -217,6 +233,8 @@ async function selectSource(source: string | null) {
 
     <!-- Papers view -->
     <template v-if="assistant.papersViewMode === 'papers'">
+    <div class="papers-split-wrapper">
+    <div class="papers-main-col">
       <!-- Not configured -->
       <div v-if="!papers.isConfigured" class="papers-not-configured">
         <div class="papers-nc-icon"><BookOpen :size="32" /></div>
@@ -230,6 +248,14 @@ async function selectSource(source: string | null) {
           <button class="detail-back-btn" @click="assistant.activePaperId = null">
             <ChevronLeft :size="15" />
             论文列表
+          </button>
+          <button
+            class="detail-copilot-btn"
+            :class="{ active: copilot.activePaperId === activePaper.id && copilot.isOpen }"
+            @click="openCopilot(activePaper, $event)"
+          >
+            <Bot :size="13" />
+            AI Copilot
           </button>
         </div>
 
@@ -354,20 +380,6 @@ async function selectSource(source: string | null) {
           </div>
           <div class="detail-action-divider" />
           <div class="detail-action-group">
-            <button
-              v-if="!activePaper.analyzed"
-              class="detail-action-btn primary"
-              :disabled="papers.analyzingIds.has(activePaper.id)"
-              @click="handleAnalyze(activePaper)"
-            >
-              <span v-if="papers.analyzingIds.has(activePaper.id)" class="btn-spin" />
-              <Cpu v-else :size="13" />
-              <span>{{ papers.analyzingIds.has(activePaper.id) ? '分析中…' : 'AI 分析' }}</span>
-            </button>
-            <span v-else class="detail-action-analyzed">
-              <CheckCircle2 :size="13" />
-              已分析
-            </span>
             <a :href="activePaper.source_url" target="_blank" class="detail-action-btn">
               <ExternalLink :size="13" />
               <span>原文</span>
@@ -376,25 +388,64 @@ async function selectSource(source: string | null) {
               <FileText :size="13" />
               <span>PDF</span>
             </a>
+          </div>
+          <div class="detail-action-divider" />
+          <div class="detail-action-group">
             <button
               v-if="!activePaper.pdf_downloaded"
               class="detail-action-btn primary"
+              :class="{ downloading: papers.downloadProgress.has(activePaper.id) }"
+              :style="(papers.downloadProgress.get(activePaper.id)?.total ?? 0) > 0
+                ? { background: `linear-gradient(to right, rgba(221,133,60,0.28) ${papers.downloadProgress.get(activePaper.id)!.percent}%, rgba(221,133,60,0.10) ${papers.downloadProgress.get(activePaper.id)!.percent}%)` }
+                : {}"
+              :disabled="papers.downloadProgress.has(activePaper.id)"
               @click="papers.downloadPdf(activePaper.id, activePaper.source ?? 'arxiv')"
             >
-              <Download :size="13" />
-              <span>下载</span>
+              <template v-if="papers.downloadProgress.has(activePaper.id)">
+                <span class="btn-spin" />
+                <span v-if="(papers.downloadProgress.get(activePaper.id)?.total ?? 0) > 0">
+                  {{ papers.downloadProgress.get(activePaper.id)?.percent }}%
+                </span>
+                <span v-else>下载中</span>
+              </template>
+              <template v-else>
+                <Download :size="13" />
+                <span>下载</span>
+              </template>
             </button>
             <button
               v-else
               class="detail-action-btn"
+              :class="{ fetching: papers.pdfFetchProgress.has(activePaper.id) }"
+              :style="(papers.pdfFetchProgress.get(activePaper.id)?.total ?? 0) > 0
+                ? { background: `linear-gradient(to right, rgba(74,123,200,0.28) ${papers.pdfFetchProgress.get(activePaper.id)!.percent}%, rgba(74,123,200,0.10) ${papers.pdfFetchProgress.get(activePaper.id)!.percent}%)` }
+                : {}"
+              :disabled="papers.pdfFetchProgress.has(activePaper.id)"
               @click="papers.openPdf(activePaper.id, activePaper.source ?? 'arxiv')"
             >
-              <Eye :size="13" />
-              <span>查看</span>
+              <template v-if="papers.pdfFetchProgress.has(activePaper.id)">
+                <span class="btn-spin" />
+                <span v-if="(papers.pdfFetchProgress.get(activePaper.id)?.total ?? 0) > 0">
+                  {{ papers.pdfFetchProgress.get(activePaper.id)?.percent }}%
+                </span>
+                <span v-else>获取中</span>
+              </template>
+              <template v-else>
+                <Eye :size="13" />
+                <span>查看</span>
+              </template>
+            </button>
+            <button
+              v-if="activePaper.pdf_downloaded"
+              class="detail-action-btn"
+              title="删除服务器上的 PDF"
+              @click="papers.deletePdf(activePaper.id, activePaper.source ?? 'arxiv')"
+            >
+              <Trash2 :size="13" />
+              <span>删除 PDF</span>
             </button>
           </div>
-          <div class="detail-action-divider" />
-          <div class="detail-action-group">
+          <div class="detail-action-group right">
             <button
               class="detail-action-btn danger"
               title="移至回收站"
@@ -526,18 +577,6 @@ async function selectSource(source: string | null) {
 
               <!-- Actions -->
               <div class="paper-actions">
-                <button
-                  v-if="!paper.analyzed"
-                  class="paper-btn analyze"
-                  :disabled="papers.analyzingIds.has(paper.id)"
-                  @click.stop="handleAnalyze(paper)"
-                >
-                  <span v-if="papers.analyzingIds.has(paper.id)" class="btn-spin" />
-                  <Cpu v-else :size="11" />
-                  {{ papers.analyzingIds.has(paper.id) ? 'AI 分析中…' : 'AI 分析' }}
-                </button>
-                <span v-else class="paper-analyzed-badge">✓ 已分析</span>
-
                 <a :href="paper.source_url" target="_blank" class="paper-btn link" @click.stop>
                   <ExternalLink :size="11" />
                   原文
@@ -546,24 +585,75 @@ async function selectSource(source: string | null) {
                 <button
                   v-if="!paper.pdf_downloaded"
                   class="paper-btn pdf"
+                  :class="{
+                    downloading: papers.downloadProgress.has(paper.id),
+                    'dl-indeterminate': papers.downloadProgress.has(paper.id) && !(papers.downloadProgress.get(paper.id)?.total ?? 0),
+                  }"
+                  :style="(papers.downloadProgress.get(paper.id)?.total ?? 0) > 0
+                    ? { background: `linear-gradient(to right, rgba(255,149,0,0.22) ${papers.downloadProgress.get(paper.id)!.percent}%, rgba(255,149,0,0.07) ${papers.downloadProgress.get(paper.id)!.percent}%)` }
+                    : {}"
+                  :disabled="papers.downloadProgress.has(paper.id)"
                   @click.stop="papers.downloadPdf(paper.id)"
                 >
-                  <FileText :size="11" />
-                  下载 PDF
+                  <template v-if="papers.downloadProgress.has(paper.id)">
+                    <span class="btn-spin" />
+                    <span v-if="(papers.downloadProgress.get(paper.id)?.total ?? 0) > 0">
+                      {{ papers.downloadProgress.get(paper.id)?.percent }}%
+                    </span>
+                    <span v-else>下载中</span>
+                  </template>
+                  <template v-else>
+                    <FileText :size="11" />
+                    下载 PDF
+                  </template>
                 </button>
                 <button
                   v-else
                   class="paper-btn pdf active"
+                  :class="{ fetching: papers.pdfFetchProgress.has(paper.id) }"
+                  :style="(papers.pdfFetchProgress.get(paper.id)?.total ?? 0) > 0
+                    ? { background: `linear-gradient(to right, rgba(255,149,0,0.22) ${papers.pdfFetchProgress.get(paper.id)!.percent}%, rgba(255,149,0,0.07) ${papers.pdfFetchProgress.get(paper.id)!.percent}%)` }
+                    : {}"
+                  :disabled="papers.pdfFetchProgress.has(paper.id)"
                   @click.stop="papers.openPdf(paper.id)"
                 >
-                  <FileText :size="11" />
-                  查看 PDF
+                  <template v-if="papers.pdfFetchProgress.has(paper.id)">
+                    <span class="btn-spin" />
+                    <span v-if="(papers.pdfFetchProgress.get(paper.id)?.total ?? 0) > 0">
+                      {{ papers.pdfFetchProgress.get(paper.id)?.percent }}%
+                    </span>
+                    <span v-else>获取中</span>
+                  </template>
+                  <template v-else>
+                    <FileText :size="11" />
+                    查看 PDF
+                  </template>
+                </button>
+                <button
+                  v-if="paper.pdf_downloaded"
+                  class="paper-btn pdf-delete"
+                  title="删除服务器上的 PDF"
+                  @click.stop="papers.deletePdf(paper.id, paper.source ?? 'arxiv')"
+                >
+                  <Trash2 :size="11" />
+                </button>
+                <button
+                  class="paper-btn copilot"
+                  :class="{ active: copilot.activePaperId === paper.id && copilot.isOpen }"
+                  @click.stop="openCopilot(paper, $event)"
+                >
+                  <Bot :size="11" />
+                  AI Copilot
                 </button>
               </div>
             </div>
           </div>
         </template>
       </div>
+    </div><!-- /papers-main-col -->
+    <!-- AI Copilot panel -->
+    <PaperCopilot v-if="copilot.isOpen && activePaperForCopilot" :paper="activePaperForCopilot" />
+    </div><!-- /papers-split-wrapper -->
     </template>
 
     <!-- Chat view -->
@@ -595,10 +685,10 @@ async function selectSource(source: string | null) {
                 :message="({ ...msg, timestamp: msg.createdAt } as any)"
                 :streaming="assistant.isStreaming && i === messages.length - 1 && msg.role === 'assistant'"
               />
-              <div v-if="msg.id === assistant.activeConv?.contextCutoffMsgId" class="context-divider">
+              <div v-if="assistant.activeConv?.contextCutoffPoints?.includes(msg.id)" class="context-divider">
                 <div class="context-divider-line" />
                 <span class="context-divider-label">以下为发送给 AI 的上下文</span>
-                <button class="context-divider-remove" title="取消清除" @click="assistant.removeContextCutoff()">
+                <button class="context-divider-remove" title="取消此清除" @click="assistant.removeContextCutoff(msg.id)">
                   <X :size="11" />
                 </button>
                 <div class="context-divider-line" />
@@ -626,7 +716,7 @@ async function selectSource(source: string | null) {
               </button>
               <button
                 class="toolbar-btn"
-                :class="{ 'toolbar-btn-active': !!assistant.activeConv?.contextCutoffMsgId }"
+                :class="{ 'toolbar-btn-active': !!(assistant.activeConv?.contextCutoffPoints?.length) }"
                 title="清除上下文（不删除记录，仅减少发送给 AI 的历史）"
                 @click="assistant.clearContext()"
               >
@@ -663,6 +753,16 @@ async function selectSource(source: string | null) {
         {{ papers.toast.msg }}
       </div>
     </Transition>
+
+    <!-- PDF inline preview -->
+    <Teleport to="body">
+      <div v-if="papers.pdfPreviewUrl" class="pdf-overlay" @click.self="papers.closePdfPreview()">
+        <div class="pdf-modal">
+          <button class="pdf-close-btn" @click="papers.closePdfPreview()">✕</button>
+          <iframe :src="papers.pdfPreviewUrl" class="pdf-frame" />
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -911,6 +1011,23 @@ async function selectSource(source: string | null) {
 }
 .detail-back-btn:hover { background: rgba(0,0,0,0.06); color: #3c3c43; }
 
+.detail-copilot-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(74, 123, 200, 0.3);
+  background: rgba(74, 123, 200, 0.07);
+  color: #4a7bc8;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 5px 11px;
+  border-radius: 7px;
+  transition: background 0.12s, border-color 0.12s;
+}
+.detail-copilot-btn:hover { background: rgba(74, 123, 200, 0.14); border-color: rgba(74, 123, 200, 0.5); }
+.detail-copilot-btn.active { background: rgba(74, 123, 200, 0.18); border-color: #4a7bc8; color: #2d5fa8; }
+
 .detail-scroll {
   flex: 1;
   overflow-y: auto;
@@ -946,6 +1063,9 @@ async function selectSource(source: string | null) {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+.detail-action-group.right {
+  margin-left: auto;
 }
 
 .detail-action-divider {
@@ -1003,17 +1123,29 @@ async function selectSource(source: string | null) {
   cursor: not-allowed;
 }
 
-.detail-action-analyzed {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: rgba(34,197,94,0.08);
-  color: #22c55e;
-  font-size: 12px;
-  font-weight: 500;
+.detail-action-btn.downloading {
+  cursor: not-allowed;
+  pointer-events: none;
+  animation: detail-dl-pulse 1.2s ease-in-out infinite;
 }
+.detail-action-btn.downloading[style] { animation: none; }
+@keyframes detail-dl-pulse {
+  0%, 100% { background: rgba(221, 133, 60, 0.10); }
+  50% { background: rgba(221, 133, 60, 0.22); }
+}
+
+.detail-action-btn.fetching {
+  cursor: not-allowed;
+  pointer-events: none;
+  animation: detail-fetch-pulse 1.2s ease-in-out infinite;
+}
+.detail-action-btn.fetching[style] { animation: none; }
+@keyframes detail-fetch-pulse {
+  0%, 100% { background: rgba(74, 123, 200, 0.10); }
+  50% { background: rgba(74, 123, 200, 0.22); }
+}
+
+
 
 .detail-badges {
   display: flex;
@@ -1414,11 +1546,40 @@ async function selectSource(source: string | null) {
 }
 .paper-btn.pdf.active:hover { background: rgba(221, 133, 60, 0.14); }
 
-.paper-analyzed-badge {
-  font-size: 11px;
-  color: #DD853C;
-  font-weight: 500;
+.paper-btn.pdf.downloading {
+  border-color: rgba(255, 149, 0, 0.30);
+  color: #c47a00;
+  cursor: not-allowed;
+  pointer-events: none;
 }
+.paper-btn.pdf.dl-indeterminate {
+  animation: pdf-dl-pulse 1.2s ease-in-out infinite;
+}
+@keyframes pdf-dl-pulse {
+  0%, 100% { background: rgba(255, 149, 0, 0.07); }
+  50% { background: rgba(255, 149, 0, 0.20); }
+}
+
+.paper-btn.pdf.fetching {
+  border-color: rgba(221, 133, 60, 0.30);
+  color: #c47a00;
+  cursor: not-allowed;
+  pointer-events: none;
+  animation: pdf-fetch-pulse 1.2s ease-in-out infinite;
+}
+.paper-btn.pdf.fetching[style] { animation: none; }
+@keyframes pdf-fetch-pulse {
+  0%, 100% { background: rgba(221, 133, 60, 0.08); }
+  50% { background: rgba(221, 133, 60, 0.20); }
+}
+
+.paper-btn.pdf-delete {
+  padding: 5px 8px;
+  background: rgba(239, 68, 68, 0.07);
+  border-color: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+.paper-btn.pdf-delete:hover { background: rgba(239, 68, 68, 0.14); border-color: rgba(239, 68, 68, 0.25); }
 
 .btn-spin {
   display: inline-block;
@@ -1649,7 +1810,7 @@ async function selectSource(source: string | null) {
 
 .papers-toast {
   position: absolute;
-  bottom: 24px;
+  bottom: 80px;
   left: 50%;
   transform: translateX(-50%);
   padding: 8px 18px;
@@ -1671,4 +1832,80 @@ async function selectSource(source: string | null) {
 /* ── Spinner ─────────────────────────────────────────────────────────────────── */
 
 .spin { animation: papers-rotate 0.8s linear infinite; }
+
+/* ── Papers split layout ──────────────────────────────────────────────────── */
+
+.papers-split-wrapper {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.papers-main-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* ── PDF inline preview ───────────────────────────────────────────────────── */
+
+.pdf-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pdf-modal {
+  position: relative;
+  width: 82vw;
+  height: 88vh;
+  background: #fff;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.35);
+}
+.pdf-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+.pdf-close-btn {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  z-index: 1;
+  background: rgba(0,0,0,0.12);
+  border: none;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #333;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pdf-close-btn:hover { background: rgba(0,0,0,0.22); }
+
+/* ── AI Copilot button on paper card ─────────────────────────────────────── */
+
+.paper-btn.copilot {
+  background: rgba(74, 123, 200, 0.07);
+  border-color: rgba(74, 123, 200, 0.15);
+  color: #4a7bc8;
+  margin-left: auto;
+}
+.paper-btn.copilot:hover { background: rgba(74, 123, 200, 0.13); }
+.paper-btn.copilot.active {
+  background: rgba(74, 123, 200, 0.14);
+  border-color: rgba(74, 123, 200, 0.26);
+  color: #264178;
+}
 </style>

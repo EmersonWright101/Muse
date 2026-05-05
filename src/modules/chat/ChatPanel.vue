@@ -177,6 +177,8 @@ function scrollToBottom(force = false) {
 watch(() => messages.value.length, () => scrollToBottom(true))
 watch(() => chat.getStreamingText(convId.value ?? ''), () => scrollToBottom())
 watch(() => chat.getStreamingReasoning(convId.value ?? ''), () => scrollToBottom())
+// Scroll to bottom when a context cutoff divider is added
+watch(() => conv.value?.contextCutoffPoints?.length, (n, o) => { if ((n ?? 0) > (o ?? 0)) scrollToBottom(true) })
 
 onMounted(() => scrollToBottom(true))
 
@@ -667,11 +669,11 @@ const pdfNative = computed(() => {
               :streaming="isPanelStreaming && i === messages.length - 1 && msg.role === 'assistant'"
               :web-search-results="msg.role === 'assistant' && i > 0 && messages[i - 1].role === 'user' ? messages[i - 1].webSearchResults : undefined"
             />
-            <!-- Context cutoff divider appears after the cutoff message -->
-            <div v-if="msg.id === conv?.contextCutoffMsgId" class="context-divider">
+            <!-- Persistent context cutoff divider — one per cutoff point -->
+            <div v-if="conv?.contextCutoffPoints?.includes(msg.id)" class="context-divider">
               <div class="context-divider-line" />
               <span class="context-divider-label">以下为发送给 AI 的上下文</span>
-              <button class="context-divider-remove" title="取消清除" @click="chat.removeContextCutoff(convId ?? undefined)">
+              <button class="context-divider-remove" title="取消此清除" @click="chat.removeContextCutoff(msg.id, convId ?? undefined)">
                 <X :size="11" />
               </button>
               <div class="context-divider-line" />
@@ -798,7 +800,7 @@ const pdfNative = computed(() => {
             </div>
             <button
               class="toolbar-btn"
-              :class="{ 'toolbar-btn-active': !!conv?.contextCutoffMsgId }"
+              :class="{ 'toolbar-btn-active': !!(conv?.contextCutoffPoints?.length) }"
               title="清除上下文（不删除记录，仅减少发送给 AI 的历史）"
               @click="chat.clearContext(convId ?? undefined)"
             >

@@ -2,7 +2,7 @@
 import { computed, onMounted } from 'vue'
 import { usePapersStore } from '../../../stores/papers'
 import { useStatisticsStore } from '../../../stores/statistics'
-import { RefreshCw, Type, Cpu, DollarSign, BookOpen, Star, Database, Server } from 'lucide-vue-next'
+import { RefreshCw, Type, Cpu, DollarSign, BookOpen, Star, Database, Server, BarChart3 } from 'lucide-vue-next'
 
 const papers = usePapersStore()
 const stats = useStatisticsStore()
@@ -30,6 +30,14 @@ function formatCost(usd: number): string {
 
 function refresh() {
   papers.fetchPaperStatistics()
+}
+
+async function openStatsPage() {
+  if (!papers.baseUrl) return
+  try {
+    const { openUrl } = await import('@tauri-apps/plugin-opener')
+    await openUrl(`${papers.baseUrl}/stats`)
+  } catch { /* ignore */ }
 }
 
 onMounted(() => {
@@ -65,10 +73,16 @@ onMounted(() => {
     <template v-else>
       <div class="tab-header">
         <h2 class="tab-title">私人 AI 助手</h2>
-        <button class="refresh-btn" :disabled="papers.isFetchingPaperStats" @click="refresh">
-          <RefreshCw :size="13" />
-          刷新
-        </button>
+        <div class="tab-actions">
+          <button class="refresh-btn" @click="openStatsPage">
+            <BarChart3 :size="13" />
+            后台查看
+          </button>
+          <button class="refresh-btn" :disabled="papers.isFetchingPaperStats" @click="refresh">
+            <RefreshCw :size="13" />
+            刷新
+          </button>
+        </div>
       </div>
 
       <!-- KPI Cards -->
@@ -243,6 +257,12 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 4px;
+}
+
+.tab-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .tab-title {

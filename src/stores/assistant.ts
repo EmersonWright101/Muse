@@ -17,6 +17,7 @@ export interface AssistantConversation {
   updatedAt: string
   pinned: boolean
   contextCutoffMsgId?: string
+  contextCutoffPoints?: string[]
 }
 
 interface TrashedConv extends AssistantConversation {
@@ -170,11 +171,22 @@ export const useAssistantStore = defineStore('assistant', () => {
   function clearContext() {
     const conv = activeConv.value
     const last = conv?.messages.at(-1)
-    if (conv && last) { conv.contextCutoffMsgId = last.id; persist() }
+    if (!conv || !last) return
+    if (!conv.contextCutoffPoints) conv.contextCutoffPoints = []
+    if (conv.contextCutoffMsgId && !conv.contextCutoffPoints.includes(conv.contextCutoffMsgId)) {
+      conv.contextCutoffPoints.push(conv.contextCutoffMsgId)
+      conv.contextCutoffMsgId = undefined
+    }
+    if (!conv.contextCutoffPoints.includes(last.id)) conv.contextCutoffPoints.push(last.id)
+    persist()
   }
-  function removeContextCutoff() {
+  function removeContextCutoff(msgId: string) {
     const conv = activeConv.value
-    if (conv) { conv.contextCutoffMsgId = undefined; persist() }
+    if (!conv) return
+    if (conv.contextCutoffPoints) {
+      conv.contextCutoffPoints = conv.contextCutoffPoints.filter(id => id !== msgId)
+    }
+    persist()
   }
   function restoreFromTrash(id: string) {
     const item = trashedConversations.value.find(c => c.id === id)

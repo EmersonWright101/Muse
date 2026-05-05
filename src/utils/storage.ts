@@ -100,6 +100,7 @@ export interface Conversation {
   pinned?:             boolean;
   assistantId?:        string;
   contextCutoffMsgId?: string;
+  contextCutoffPoints?: string[];
   titleGenerated?:     boolean;
   defaultProviderId?:  string;
   defaultModelId?:     string;

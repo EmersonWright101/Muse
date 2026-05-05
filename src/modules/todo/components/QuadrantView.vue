@@ -59,6 +59,9 @@ const PRIORITY_COLOR: Record<string, string> = {
 // ─── Drag state ───────────────────────────────────────────────────────────────
 
 const draggingId = ref<string | null>(null)
+// Separate visual ref — applied via rAF to avoid WebKit premature-dragend bug
+// when transform/opacity is applied synchronously inside dragstart.
+const draggingVisual = ref<string | null>(null)
 const dragOverZone = ref<Quadrant | 'unassigned' | null>(null)
 
 function onDragStart(e: DragEvent, taskId: string) {
@@ -67,10 +70,12 @@ function onDragStart(e: DragEvent, taskId: string) {
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/plain', taskId)
   }
+  requestAnimationFrame(() => { draggingVisual.value = taskId })
 }
 
 function onDragEnd() {
   draggingId.value = null
+  draggingVisual.value = null
   dragOverZone.value = null
 }
 
@@ -87,10 +92,14 @@ function onDragLeave(e: DragEvent, zone: Quadrant | 'unassigned') {
   if (dragOverZone.value === zone) dragOverZone.value = null
 }
 
-function onDrop(zone: Quadrant | 'unassigned') {
-  if (!draggingId.value) return
-  store.setTaskQuadrant(draggingId.value, zone === 'unassigned' ? null : zone)
+function onDrop(e: DragEvent, zone: Quadrant | 'unassigned') {
+  e.preventDefault()
+  // Use dataTransfer as fallback in case draggingId was cleared by premature dragend
+  const id = draggingId.value ?? e.dataTransfer?.getData('text/plain') ?? null
+  if (!id) return
+  store.setTaskQuadrant(id, zone === 'unassigned' ? null : zone)
   draggingId.value = null
+  draggingVisual.value = null
   dragOverZone.value = null
 }
 
@@ -184,7 +193,7 @@ function getQuadrantTasks(q: Quadrant) {
           }"
           @dragover="onDragOver($event, q.key)"
           @dragleave="onDragLeave($event, q.key)"
-          @drop="onDrop(q.key)"
+          @drop="onDrop($event, q.key)"
         >
           <!-- Cell header -->
           <div class="cell-header" :style="{ borderBottomColor: q.borderColor }">
@@ -222,7 +231,7 @@ function getQuadrantTasks(q: Quadrant) {
               class="quadrant-card"
               :class="{
                 active: store.activeTaskId === task.id,
-                dragging: draggingId === task.id,
+                dragging: draggingVisual === task.id,
                 overdue: isOverdue(task),
               }"
               draggable="true"
@@ -294,7 +303,7 @@ function getQuadrantTasks(q: Quadrant) {
         :class="{ 'drag-over': dragOverZone === 'unassigned' }"
         @dragover="onDragOver($event, 'unassigned')"
         @dragleave="onDragLeave($event, 'unassigned')"
-        @drop="onDrop('unassigned')"
+        @drop="onDrop($event, 'unassigned')"
       >
         <button class="unassigned-header" @click="unassignedOpen = !unassignedOpen">
           <component :is="unassignedOpen ? ChevronDown : ChevronUp" :size="13" />
@@ -310,7 +319,7 @@ function getQuadrantTasks(q: Quadrant) {
             class="unassigned-card"
             :class="{
               active: store.activeTaskId === task.id,
-              dragging: draggingId === task.id,
+              dragging: draggingVisual === task.id,
             }"
             draggable="true"
             @dragstart="onDragStart($event, task.id)"

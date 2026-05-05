@@ -24,10 +24,13 @@ export function useTodoNotifications() {
   }
 
   function checkAndNotify() {
+    const now   = new Date()
     const today = store.todayStr
     const tasks  = store.tasks
 
+    // Overdue tasks
     const overdueNew  = tasks.filter(t => !t.completed && t.dueDate && t.dueDate < today  && !notifiedIds.has(`ov-${t.id}`))
+    // Due today (date-only reminder)
     const dueTodayNew = tasks.filter(t => !t.completed && t.dueDate === today              && !notifiedIds.has(`td-${t.id}`))
 
     if (overdueNew.length > 0) {
@@ -46,6 +49,30 @@ export function useTodoNotifications() {
         dueTodayNew.slice(0, 3).map(t => t.title).join('、') + (dueTodayNew.length > 3 ? ' 等' : ''),
         'todo-today',
       )
+    }
+
+    // Time-based advance reminders
+    for (const task of tasks) {
+      if (task.completed || !task.dueDate || !task.dueTime || task.reminderMinutes === null) continue
+      const key = `rm-${task.id}`
+      if (notifiedIds.has(key)) continue
+
+      const dueDateTime = new Date(`${task.dueDate}T${task.dueTime}`)
+      const remindAt    = new Date(dueDateTime.getTime() - task.reminderMinutes * 60 * 1000)
+      const elapsedMs   = now.getTime() - remindAt.getTime()
+
+      // Fire if we just passed the reminder time (within the last check interval)
+      if (elapsedMs >= 0 && elapsedMs < NOTIFY_INTERVAL_MS) {
+        notifiedIds.add(key)
+        const minLabel = task.reminderMinutes >= 60
+          ? `${task.reminderMinutes / 60} 小时`
+          : `${task.reminderMinutes} 分钟`
+        fireNotification(
+          `⏰ 任务提醒`,
+          `「${task.title}」将在 ${minLabel}后截止`,
+          key,
+        )
+      }
     }
   }
 

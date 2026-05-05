@@ -9,6 +9,7 @@ import './stores/assistants'     // ensure assistants sync module is registered 
 import './stores/webSearch'      // ensure web search sync module is registered at startup
 import TitleBar from './components/TitleBar.vue'
 import AppSidebar from './components/AppSidebar.vue'
+import { cleanupTmpDir } from './utils/path'
 
 const showPanel = ref(true)
 const route = useRoute()
@@ -33,7 +34,10 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-onMounted(() => document.addEventListener('keydown', onKeydown))
+onMounted(() => {
+  document.addEventListener('keydown', onKeydown)
+  cleanupTmpDir().catch(() => {})
+})
 onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 
 const panelFloats = computed(() => route.path === '/travel' && travel.viewMode !== 'editor')

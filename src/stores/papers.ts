@@ -1,7 +1,10 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+import { writeFile, mkdir, exists, remove } from '@tauri-apps/plugin-fs'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { getBackendConfig, setBackendConfig } from '../utils/backendConfig'
+import { tmpDir } from '../utils/path'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -168,6 +171,24 @@ export const usePapersStore = defineStore('papers', () => {
 
   // Per-paper analyzing state
   const analyzingIds = ref<Set<string>>(new Set())
+
+  // Per-paper download progress (server-side download)
+  interface DownloadProgress {
+    status: string
+    downloaded: number
+    total: number
+    percent: number
+  }
+  const downloadProgress = ref<Map<string, DownloadProgress>>(new Map())
+
+  // Per-paper fetch progress (client-side fetch from server)
+  interface PdfFetchProgress {
+    status: 'fetching' | 'done' | 'error'
+    downloaded: number
+    total: number
+    percent: number
+  }
+  const pdfFetchProgress = ref<Map<string, PdfFetchProgress>>(new Map())
 
   // Crawl state
   const isCrawling  = ref(false)
@@ -441,26 +462,155 @@ export const usePapersStore = defineStore('papers', () => {
 
   async function downloadPdf(id: string, source = 'arxiv') {
     if (!isConfigured.value) return
+
+    const setProgress = (data: DownloadProgress) => {
+      const m = new Map(downloadProgress.value); m.set(id, data); downloadProgress.value = m
+    }
+    const clearProgress = () => {
+      const m = new Map(downloadProgress.value); m.delete(id); downloadProgress.value = m
+    }
+
+    setProgress({ status: 'downloading', downloaded: 0, total: 0, percent: 0 })
     try {
-      const r = await apiFetch(`/papers/${id}/pdf?source=${source}`, { method: 'POST' })
-      if (r.ok) {
+      const sseRes = await tauriFetch(
+        `${baseUrl.value}/api/papers/papers/${id}/pdf/progress?source=${source}`,
+        { headers: makeHeaders() },
+      )
+
+      if (!sseRes.ok || !sseRes.body) {
+        const r = await apiFetch(`/papers/${id}/pdf?source=${source}`, { method: 'POST' })
+        clearProgress()
+        if (r.ok) {
+          const idx = pushPapers.value.findIndex(p => p.id === id)
+          if (idx >= 0) pushPapers.value[idx] = { ...pushPapers.value[idx], pdf_downloaded: true }
+          showToast('PDF 已下载到服务器', 'ok')
+        } else showToast('PDF 下载失败', 'err')
+        return
+      }
+
+      // Fire download POST — no await, backend handles it
+      apiFetch(`/papers/${id}/pdf?source=${source}`, { method: 'POST' }).catch(() => {})
+
+      const reader = (sseRes.body as ReadableStream<Uint8Array>).getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const data: DownloadProgress = JSON.parse(line.slice(6))
+            setProgress(data)
+            if (data.status === 'done') {
+              clearProgress()
+              const idx = pushPapers.value.findIndex(p => p.id === id)
+              if (idx >= 0) pushPapers.value[idx] = { ...pushPapers.value[idx], pdf_downloaded: true }
+              showToast('PDF 已下载', 'ok')
+              return
+            }
+            if (data.status === 'error') {
+              clearProgress()
+              showToast('PDF 下载失败', 'err')
+              return
+            }
+          } catch { /* ignore malformed events */ }
+        }
+      }
+      clearProgress()
+    } catch { clearProgress(); showToast('网络错误', 'err') }
+  }
+
+  const pdfPreviewUrl = ref<string | null>(null)
+
+  async function openPdf(id: string, source = 'arxiv') {
+    const setProgress = (data: PdfFetchProgress) => {
+      const m = new Map(pdfFetchProgress.value); m.set(id, data); pdfFetchProgress.value = m
+    }
+    const clearProgress = () => {
+      const m = new Map(pdfFetchProgress.value); m.delete(id); pdfFetchProgress.value = m
+    }
+
+    try {
+      const dir = await tmpDir()
+      if (!(await exists(dir))) await mkdir(dir, { recursive: true })
+      // Register directory in asset protocol scope
+      try { await invoke('allow_asset_directory', { path: dir }) } catch { /* ignore */ }
+
+      const filePath = `${dir}/${id}_${source}.pdf`
+      // If already cached locally, reuse it
+      if (await exists(filePath)) {
+        pdfPreviewUrl.value = convertFileSrc(filePath)
+        return
+      }
+
+      setProgress({ status: 'fetching', downloaded: 0, total: 0, percent: 0 })
+
+      const r = await tauriFetch(
+        `${baseUrl.value}/api/papers/papers/${id}/pdf?source=${source}`,
+        { headers: makeHeaders() },
+      )
+      if (!r.ok) { clearProgress(); showToast('PDF 暂不可用', 'err'); return }
+
+      const contentLength = +(r.headers.get('content-length') ?? 0)
+      const reader = (r.body as ReadableStream<Uint8Array> | null)?.getReader()
+      if (!reader) { clearProgress(); showToast('无法读取 PDF', 'err'); return }
+
+      const chunks: Uint8Array[] = []
+      let received = 0
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value) {
+          chunks.push(value)
+          received += value.length
+          const percent = contentLength > 0 ? Math.round((received / contentLength) * 100) : 0
+          setProgress({ status: 'fetching', downloaded: received, total: contentLength, percent })
+        }
+      }
+
+      // Merge chunks
+      const totalLength = chunks.reduce((sum, c) => sum + c.length, 0)
+      const allBytes = new Uint8Array(totalLength)
+      let offset = 0
+      for (const chunk of chunks) {
+        allBytes.set(chunk, offset)
+        offset += chunk.length
+      }
+
+      await writeFile(filePath, allBytes)
+      clearProgress()
+      pdfPreviewUrl.value = convertFileSrc(filePath)
+    } catch { clearProgress(); showToast('网络错误', 'err') }
+  }
+
+  async function deletePdf(id: string, source = 'arxiv') {
+    if (!isConfigured.value) return
+    try {
+      const r = await apiFetch(`/papers/${id}/pdf?source=${source}`, { method: 'DELETE' })
+      if (r.ok || r.status === 404) {
+        // Also remove local cached PDF
+        try {
+          const dir = await tmpDir()
+          const filePath = `${dir}/${id}_${source}.pdf`
+          if (await exists(filePath)) await remove(filePath)
+        } catch { /* ignore local cleanup errors */ }
         const idx = pushPapers.value.findIndex(p => p.id === id)
-        if (idx >= 0) pushPapers.value[idx] = { ...pushPapers.value[idx], pdf_downloaded: true }
-        showToast('PDF 已下载到服务器', 'ok')
-      } else showToast('PDF 下载失败', 'err')
+        if (idx >= 0) pushPapers.value[idx] = { ...pushPapers.value[idx], pdf_downloaded: false }
+        showToast('PDF 已删除', 'ok')
+      } else {
+        showToast('删除 PDF 失败', 'err')
+      }
     } catch { showToast('网络错误', 'err') }
   }
 
-  async function openPdf(id: string, source = 'arxiv') {
-    try {
-      const r = await apiFetch(`/papers/${id}/pdf?source=${source}`)
-      if (r.ok) {
-        const blob = await r.blob()
-        const url  = URL.createObjectURL(blob)
-        window.open(url, '_blank')
-        setTimeout(() => URL.revokeObjectURL(url), 60_000)
-      } else showToast('PDF 暂不可用', 'err')
-    } catch { showToast('网络错误', 'err') }
+  function closePdfPreview() {
+    pdfPreviewUrl.value = null
   }
 
   // ─── Stats & Scheduler ───────────────────────────────────────────────────────
@@ -515,7 +665,7 @@ export const usePapersStore = defineStore('papers', () => {
     togglePaperGood, markRead, toggleFavorite,
     analyzingIds, analyzePaper, analyzeAll,
     isCrawling, crawlNow, crawlJobs, fetchCrawlJobs,
-    downloadPdf, openPdf,
+    downloadPdf, downloadProgress, openPdf, pdfFetchProgress, pdfPreviewUrl, closePdfPreview, deletePdf,
     stats, fetchStats,
     paperStatistics, isFetchingPaperStats, paperStatsError, fetchPaperStatistics,
     scheduler, fetchScheduler, pingBackend,

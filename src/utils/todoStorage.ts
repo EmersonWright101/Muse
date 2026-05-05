@@ -28,6 +28,7 @@ export interface TodoTask {
   priority: Priority
   dueDate: string | null
   dueTime: string | null
+  reminderMinutes: number | null
   tags: string[]
   completed: boolean
   completedAt: string | null
@@ -74,7 +75,9 @@ export async function loadTodos(): Promise<TodoData> {
     const p = await dataPath()
     if (!(await exists(p))) return { ...EMPTY_DATA }
     const raw = await readTextFile(p)
-    return JSON.parse(raw) as TodoData
+    const data = JSON.parse(raw) as TodoData
+    data.tasks = data.tasks.map(t => ({ ...t, reminderMinutes: (t as any).reminderMinutes ?? null }))
+    return data
   } catch {
     return { ...EMPTY_DATA }
   }
@@ -99,6 +102,7 @@ export function newTask(partial: Partial<TodoTask> = {}): TodoTask {
     priority: 'none',
     dueDate: null,
     dueTime: null,
+    reminderMinutes: null,
     tags: [],
     completed: false,
     completedAt: null,

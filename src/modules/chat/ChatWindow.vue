@@ -14,9 +14,6 @@ const convId = computed(() => {
 
 const isMac = navigator.userAgent.toLowerCase().includes('macintosh')
 
-// Update window title when the conversation's title changes.
-// Watch the conversations list (updated after every save / AI title-gen)
-// rather than activeConv, which is global state shared with the main window.
 const convTitle = computed(() =>
   chat.conversations.find(c => c.id === convId.value)?.title
 )

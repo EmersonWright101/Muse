@@ -1,4 +1,5 @@
-const LS_KEY = 'muse-backend-config'
+const LS_KEY            = 'muse-backend-config'
+const LS_MODIFIED_AT_KEY = 'muse-backend-config-modified-at'
 
 export interface BackendConfig {
   url: string
@@ -53,4 +54,62 @@ export function setBackendConfig(cfg: BackendConfig | null): void {
   } else {
     localStorage.removeItem(LS_KEY)
   }
+  localStorage.setItem(LS_MODIFIED_AT_KEY, new Date().toISOString())
 }
+
+// ─── Sync module ─────────────────────────────────────────────────────────────
+
+import { syncService } from '../services/sync'
+import type { SyncModule } from '../services/sync/types'
+
+interface RemoteBackendConfig {
+  url:      string
+  apiKey:   string
+  __syncTs: string
+}
+
+const backendConfigSyncModule: SyncModule = {
+  id:         'backendConfig',
+  remoteDirs: ['settings'],
+  getLocalTimestamp() {
+    return localStorage.getItem(LS_MODIFIED_AT_KEY) ?? new Date(0).toISOString()
+  },
+  async sync(ctx, localChanged) {
+    ctx.setProgress('同步后端连接配置…')
+    const path      = ctx.rp('settings/backend_config.enc')
+    const local     = getBackendConfig()
+    const remoteData = await ctx.getEncrypted<RemoteBackendConfig | null>(path, null)
+
+    if (!remoteData) {
+      if (localChanged && local) {
+        await ctx.putEncrypted(path, { ...local, __syncTs: new Date().toISOString() })
+      }
+      return
+    }
+
+    const localTs  = await this.getLocalTimestamp()
+    const remoteTs = remoteData.__syncTs ?? new Date(0).toISOString()
+
+    if (remoteTs > localTs) {
+      const { __syncTs: _, ...data } = remoteData
+      // Write directly — bypasses setBackendConfig() so the modified-at timestamp is NOT bumped
+      if (data.url?.trim()) {
+        localStorage.setItem(LS_KEY, JSON.stringify({
+          url:    data.url.trim().replace(/\/+$/, ''),
+          apiKey: data.apiKey?.trim() ?? '',
+        }))
+      } else {
+        localStorage.removeItem(LS_KEY)
+      }
+    }
+
+    if (!localChanged) return
+    await ctx.putEncrypted(path, { ...(local ?? { url: '', apiKey: '' }), __syncTs: new Date().toISOString() })
+  },
+  async onSynced() {
+    const { usePapersStore } = await import('../stores/papers')
+    usePapersStore().reloadConn()
+  },
+}
+
+syncService.register(backendConfigSyncModule)

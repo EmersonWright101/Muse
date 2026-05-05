@@ -200,6 +200,12 @@ export const usePapersStore = defineStore('papers', () => {
     setBackendConfig({ url: baseUrl.value, apiKey: apiKey.value })
   }
 
+  function reloadConn() {
+    const c = loadConn()
+    baseUrl.value = c.baseUrl
+    apiKey.value  = c.apiKey
+  }
+
   // ─── HTTP ────────────────────────────────────────────────────────────────────
 
   function makeHeaders(): Record<string, string> {
@@ -502,7 +508,7 @@ export const usePapersStore = defineStore('papers', () => {
   }
 
   return {
-    baseUrl, apiKey, isConfigured, persistConn,
+    baseUrl, apiKey, isConfigured, persistConn, reloadConn,
     sources, selectedSource, fetchSources, selectSource,
     pushPapers, pushDate, pushTotal, isFetchingPush, pushError, fetchPushPapers,
     pushMode, pushDateFrom, pushDateTo,

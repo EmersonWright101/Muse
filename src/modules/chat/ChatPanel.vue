@@ -29,9 +29,11 @@ const isWindow = computed(() => props.panelKey === 'window')
 
 // Independent conversation state for popup-window mode (isolated from global activeConv)
 const localWindowConv = ref<Conversation | null>(null)
+// Mutable convId for window mode — can differ from the initial prop (e.g. after new chat)
+const currentWindowConvId = ref<string | null>(props.windowConvId ?? null)
 
 const convId = computed(() => {
-  if (isWindow.value) return props.windowConvId ?? null
+  if (isWindow.value) return currentWindowConvId.value
   return isLeft.value ? chat.activeConvId : chat.secondaryActiveConvId
 })
 const conv = computed(() => {
@@ -70,15 +72,34 @@ function isIMEActive() {
 
 // ─── Title editing ───────────────────────────────────────────────────────────
 
-const titleEditing  = ref(false)
-const titleDraft    = ref('')
-const titleInputEl  = ref<HTMLInputElement>()
+const titleEditing    = ref(false)
+const titleDraft      = ref('')
+const titleInputEl    = ref<HTMLInputElement>()
+const titleInputWidth = ref('auto')
+
+function measureTitleWidth(text: string): number {
+  const sizer = document.createElement('span')
+  sizer.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font-size:14px;font-weight:600;letter-spacing:normal;'
+  sizer.textContent = text
+  document.body.appendChild(sizer)
+  const w = sizer.getBoundingClientRect().width
+  document.body.removeChild(sizer)
+  return w
+}
+
+function updateTitleInputWidth() {
+  // Add ~5 extra characters worth of space beyond the text
+  const extraPx = measureTitleWidth('我我我我我')
+  const textPx  = measureTitleWidth(titleDraft.value)
+  titleInputWidth.value = `${Math.min(textPx + extraPx + 14, 600)}px`
+}
 
 function startTitleEdit() {
   if (!conv.value) return
   titleDraft.value   = conv.value.title
   titleEditing.value = true
   nextTick(() => {
+    updateTitleInputWidth()
     titleInputEl.value?.select()
   })
 }
@@ -112,21 +133,34 @@ const isPanelStreaming = computed(() => {
 })
 
 // For window mode: load conversation into local isolated state (not global activeConv)
+async function loadWindowConv(id: string) {
+  const c = await chat.fetchConversation(id)
+  if (c) {
+    localWindowConv.value = c
+    chat.registerWindowConv(c)
+    currentWindowConvId.value = id
+  }
+}
+
 onMounted(async () => {
   if (isWindow.value && props.windowConvId) {
-    const c = await chat.fetchConversation(props.windowConvId)
-    if (c) {
-      localWindowConv.value = c
-      chat.registerWindowConv(c)
-    }
+    await loadWindowConv(props.windowConvId)
   }
 })
 
 onUnmounted(() => {
-  if (isWindow.value && props.windowConvId) {
-    chat.unregisterWindowConv(props.windowConvId)
+  if (isWindow.value && currentWindowConvId.value) {
+    chat.unregisterWindowConv(currentWindowConvId.value)
   }
 })
+
+// ─── Focus tracking ───────────────────────────────────────────────────────────
+
+function onPanelMousedown() {
+  if (!isWindow.value) {
+    chat.setFocusedPanel(props.panelKey as 'left' | 'right')
+  }
+}
 
 // ─── Auto-scroll ─────────────────────────────────────────────────────────────
 
@@ -342,7 +376,19 @@ function startNewChat() {
       modelId = a.defaultModelId
     }
   }
-  chat.newConversation(providerId, modelId, assistantId)
+  if (isWindow.value) {
+    // Create without touching the main window's active conv
+    const newConv = chat.newConversationSilent(providerId, modelId, assistantId)
+    if (currentWindowConvId.value) chat.unregisterWindowConv(currentWindowConvId.value)
+    localWindowConv.value = newConv
+    currentWindowConvId.value = newConv.id
+    chat.registerWindowConv(newConv)
+  } else if (!isLeft.value) {
+    // Right panel: create and open in right without touching left panel
+    chat.newConversationForSecondary(providerId, modelId, assistantId)
+  } else {
+    chat.newConversation(providerId, modelId, assistantId)
+  }
   nextTick(() => textareaEl.value?.focus())
 }
 
@@ -400,6 +446,26 @@ function handleSecondModelOutside(e: MouseEvent) {
 onMounted(()  => document.addEventListener('mousedown', handleSecondModelOutside))
 onUnmounted(() => document.removeEventListener('mousedown', handleSecondModelOutside))
 
+// ─── Assistant selector dropdown ──────────────────────────────────────────────
+
+const assistantDropOpen  = ref(false)
+const assistantDropRoot  = ref<HTMLElement>()
+
+function handleAssistantOutside(e: MouseEvent) {
+  if (assistantDropRoot.value && !assistantDropRoot.value.contains(e.target as Node)) {
+    assistantDropOpen.value = false
+  }
+}
+
+onMounted(()  => document.addEventListener('mousedown', handleAssistantOutside))
+onUnmounted(() => document.removeEventListener('mousedown', handleAssistantOutside))
+
+async function selectAssistant(id: string | undefined) {
+  assistantDropOpen.value = false
+  if (!convId.value) return
+  await chat.setConversationAssistant(convId.value, id)
+}
+
 // ─── PDF provider routing ────────────────────────────────────────────────────
 
 const pdfNative = computed(() => {
@@ -412,7 +478,17 @@ const pdfNative = computed(() => {
 </script>
 
 <template>
-  <div class="chat-panel" :class="{ 'right-panel': !isLeft }">
+  <div
+    class="chat-panel"
+    :class="{
+      'right-panel': !isLeft,
+      'is-focused': !isWindow && (
+        (isLeft && chat.focusedPanel === 'left') ||
+        (!isLeft && chat.focusedPanel === 'right')
+      ) && chat.splitView,
+    }"
+    @mousedown="onPanelMousedown"
+  >
     <!-- Empty state: no active conversation -->
     <div v-if="!hasConv" class="empty-state">
       <div class="empty-icon">
@@ -431,29 +507,68 @@ const pdfNative = computed(() => {
     <template v-else>
       <!-- Conv title bar -->
       <div class="conv-header" :data-tauri-drag-region="isWindow ? '' : undefined">
-        <input
-          v-if="titleEditing"
-          ref="titleInputEl"
-          v-model="titleDraft"
-          class="conv-title-input"
-          @blur="commitTitleEdit"
-          @keydown="onTitleKeydown"
-        />
-        <span
-          v-else
-          class="conv-title"
-          title="双击编辑标题"
-          @dblclick="startTitleEdit"
-        >{{ conv?.title }}</span>
-        <div class="conv-meta">
+        <!-- Title wrapper fills remaining space; inner element is content-sized -->
+        <div class="title-wrap">
+          <input
+            v-if="titleEditing"
+            ref="titleInputEl"
+            v-model="titleDraft"
+            class="conv-title-input"
+            :style="{ width: titleInputWidth }"
+            @blur="commitTitleEdit"
+            @keydown="onTitleKeydown"
+            @input="updateTitleInputWidth"
+          />
           <span
-            v-if="activeAssistant"
-            class="conv-assistant-badge"
-            :style="{ background: activeAssistant.color + '22', color: activeAssistant.color, borderColor: activeAssistant.color + '44' }"
-          >
-            <span class="badge-dot" :style="{ background: activeAssistant.color }" />
-            {{ activeAssistant.name }}
-          </span>
+            v-else
+            class="conv-title"
+            title="双击编辑标题"
+            @dblclick="startTitleEdit"
+          >{{ conv?.title }}</span>
+        </div>
+        <div class="conv-meta">
+          <!-- Assistant selector dropdown -->
+          <div ref="assistantDropRoot" class="assistant-sel">
+            <button
+              class="assistant-sel-btn"
+              :class="{ 'has-assistant': !!activeAssistant }"
+              :style="activeAssistant ? {
+                background: activeAssistant.color + '18',
+                color: activeAssistant.color,
+                borderColor: activeAssistant.color + '55',
+              } : {}"
+              @click="assistantDropOpen = !assistantDropOpen"
+            >
+              <span v-if="activeAssistant" class="badge-dot" :style="{ background: activeAssistant.color }" />
+              <span class="assistant-sel-label">{{ activeAssistant ? activeAssistant.name : '普通对话' }}</span>
+              <svg class="assistant-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <path d="M2.5 3.5L5 6.5L7.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <Transition name="ast-drop">
+              <div v-if="assistantDropOpen" class="assistant-dropdown">
+                <button
+                  class="ast-option"
+                  :class="{ active: !conv?.assistantId }"
+                  @click="selectAssistant(undefined)"
+                >
+                  <span class="ast-none-dot" />
+                  普通对话
+                </button>
+                <div v-if="assistants.assistants.length" class="ast-divider" />
+                <button
+                  v-for="a in assistants.assistants"
+                  :key="a.id"
+                  class="ast-option"
+                  :class="{ active: conv?.assistantId === a.id }"
+                  @click="selectAssistant(a.id)"
+                >
+                  <span class="ast-dot" :style="{ background: a.color }" />
+                  {{ a.name }}
+                </button>
+              </div>
+            </Transition>
+          </div>
 
           <!-- Second model selector -->
           <div ref="secondModelRoot" class="second-model-sel">
@@ -754,10 +869,26 @@ const pdfNative = computed(() => {
   background: #ffffff;
   min-width: 0;
   overflow: hidden;
+  position: relative;
 }
 
 .right-panel {
-  border-left: 1px solid rgba(0, 0, 0, 0.06);
+  /* border supplied by the draggable split-divider in ChatMain */
+}
+
+/* Focused-panel indicator: a slim gradient bar at the very top */
+.chat-panel.is-focused::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #c85c10 0%, #f07830 50%, #c85c10 100%);
+  opacity: 0.75;
+  pointer-events: none;
+  z-index: 10;
+  border-radius: 0 0 1px 1px;
 }
 
 /* ─── Empty state ──────────────────────────────────────────────────────────── */
@@ -815,6 +946,15 @@ const pdfNative = computed(() => {
   flex-shrink: 0;
 }
 
+/* Flex-fill container so meta buttons stay right-aligned */
+.title-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
 .conv-title {
   font-size: 14px;
   font-weight: 600;
@@ -822,7 +962,7 @@ const pdfNative = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
+  max-width: 100%;
   cursor: text;
   border-radius: 4px;
   padding: 2px 4px;
@@ -835,7 +975,7 @@ const pdfNative = computed(() => {
 }
 
 .conv-title-input {
-  flex: 1;
+  flex-shrink: 0;
   font-size: 14px;
   font-weight: 600;
   color: #1c1c1e;
@@ -844,7 +984,8 @@ const pdfNative = computed(() => {
   padding: 1px 6px;
   outline: none;
   background: #fff;
-  min-width: 0;
+  max-width: 600px;
+  box-sizing: border-box;
 }
 
 .conv-meta {
@@ -855,23 +996,111 @@ const pdfNative = computed(() => {
   margin-left: 12px;
 }
 
-.conv-assistant-badge {
+/* ─── Assistant selector ──────────────────────────────────────────── */
+.assistant-sel {
+  position: relative;
+}
+
+.assistant-sel-btn {
   display: flex;
   align-items: center;
   gap: 5px;
-  height: 20px;
+  height: 22px;
   padding: 0 8px;
-  border-radius: 5px;
-  border: 1px solid;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(0, 0, 0, 0.04);
   font-size: 11px;
   font-weight: 500;
+  color: #666;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+  white-space: nowrap;
 }
 
-.badge-dot {
+.assistant-sel-btn:hover {
+  background: rgba(0, 0, 0, 0.07);
+}
+
+.badge-dot,
+.ast-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
+}
+
+.ast-none-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1.5px solid #aaa;
+  flex-shrink: 0;
+}
+
+.assistant-sel-label {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.assistant-chevron {
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.assistant-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 140px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  padding: 4px;
+  z-index: 200;
+}
+
+.ast-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  font-size: 12px;
+  color: #1c1c1e;
+  cursor: pointer;
+  border-radius: 5px;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.ast-option:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.ast-option.active {
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.ast-divider {
+  height: 1px;
+  background: rgba(0, 0, 0, 0.07);
+  margin: 4px 6px;
+}
+
+.ast-drop-enter-active,
+.ast-drop-leave-active {
+  transition: opacity 0.12s, transform 0.12s;
+}
+.ast-drop-enter-from,
+.ast-drop-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 

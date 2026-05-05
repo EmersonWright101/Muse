@@ -789,6 +789,13 @@ export const useChatStore = defineStore('chat', () => {
   const secondaryActiveConvId = ref<string | null>(null)
   const secondaryActiveConv = ref<Conversation | null>(null)
 
+  // Focus tracking: which panel receives the next sidebar click
+  const focusedPanel = ref<'left' | 'right'>('left')
+
+  function setFocusedPanel(panel: 'left' | 'right') {
+    focusedPanel.value = panel
+  }
+
   // Independent popup-window conversations (keyed by conv ID)
   const _windowConvs = reactive(new Map<string, Conversation>())
 
@@ -898,6 +905,39 @@ export const useChatStore = defineStore('chat', () => {
     streamingText.value      = ''
     streamingReasoning.value = ''
     // Persist immediately so the conversation appears in the list (and in filtered views)
+    saveConversation(conv).then(() => loadList())
+    return conv
+  }
+
+  function _buildNewConv(providerId?: string, modelId?: string, assistantId?: string): Conversation {
+    const aiStore = useAiSettingsStore()
+    let pid = providerId ?? aiStore.activeProviderId
+    let mid = modelId    ?? aiStore.activeModelId()
+    return {
+      id:          newId(),
+      title:       '新对话',
+      createdAt:   new Date().toISOString(),
+      updatedAt:   new Date().toISOString(),
+      providerId:  pid,
+      model:       mid,
+      messages:    [],
+      assistantId: assistantId || undefined,
+    }
+  }
+
+  // Creates and saves a new conversation without affecting any panel's active state
+  function newConversationSilent(providerId?: string, modelId?: string, assistantId?: string): Conversation {
+    const conv = _buildNewConv(providerId, modelId, assistantId)
+    saveConversation(conv).then(() => loadList())
+    return conv
+  }
+
+  // Creates a new conversation and opens it in the right (secondary) panel
+  function newConversationForSecondary(providerId?: string, modelId?: string, assistantId?: string): Conversation {
+    const conv = _buildNewConv(providerId, modelId, assistantId)
+    secondaryActiveConv.value   = conv
+    secondaryActiveConvId.value = conv.id
+    splitView.value = true
     saveConversation(conv).then(() => loadList())
     return conv
   }
@@ -1044,6 +1084,8 @@ export const useChatStore = defineStore('chat', () => {
     if (conv.contextCutoffMsgId) {
       const cutoffIdx = msgsForApi.findIndex(m => m.id === conv.contextCutoffMsgId)
       if (cutoffIdx >= 0) msgsForApi = msgsForApi.slice(cutoffIdx + 1)
+      // Clear after applying so future messages use full context
+      conv.contextCutoffMsgId = undefined
     }
 
     // For providers that don't support multimodal input, OCR images into text before sending
@@ -1301,6 +1343,25 @@ export const useChatStore = defineStore('chat', () => {
     secondaryActiveConv.value   = null
     secondaryActiveConvId.value = null
     splitView.value             = false
+  }
+
+  function swapPanels() {
+    if (!splitView.value) return
+    const leftId   = activeConvId.value
+    const leftConv = activeConv.value
+    activeConvId.value = secondaryActiveConvId.value
+    activeConv.value   = secondaryActiveConv.value
+    secondaryActiveConvId.value = leftId
+    secondaryActiveConv.value   = leftConv
+    if (focusedPanel.value === 'left') focusedPanel.value = 'right'
+    else if (focusedPanel.value === 'right') focusedPanel.value = 'left'
+  }
+
+  async function openInFocusedPanel(id: string) {
+    if (focusedPanel.value === 'right' && splitView.value) {
+      return openSecondaryConversation(id)
+    }
+    return openConversation(id)
   }
 
   function toggleSplitView() {
@@ -1918,6 +1979,22 @@ export const useChatStore = defineStore('chat', () => {
     await loadList()
   }
 
+  async function setConversationAssistant(id: string, assistantId: string | undefined) {
+    // Find the live in-memory object and mutate it so the UI updates instantly
+    let target: Conversation | null = null
+    if (id === activeConvId.value) target = activeConv.value
+    else if (id === secondaryActiveConvId.value) target = secondaryActiveConv.value
+    else target = _windowConvs.get(id) ?? null
+    if (!target) {
+      target = await loadConversation(id)
+    }
+    if (!target) return
+    target.assistantId = assistantId
+    target.updatedAt   = new Date().toISOString()
+    await saveConversation(target)
+    await loadList()
+  }
+
   // ─── Reasoning ──────────────────────────────────────────────────────────
 
   function setReasoning(v: boolean) { useReasoning.value = v }
@@ -1954,13 +2031,14 @@ export const useChatStore = defineStore('chat', () => {
   loadList()
   purgeExpiredTrash(30).then(() => loadTrashList()).catch(() => loadTrashList())
 
+
   return {
     conversations, activeConvId, activeConv, isStreaming, isLoading,
     error, selectedConvIds, batchMode, streamingConvIds,
-    loadList, openConversation, newConversation, sendMessage, stopStreaming,
+    loadList, openConversation, newConversation, newConversationSilent, newConversationForSecondary, sendMessage, stopStreaming,
     editAndResend, editMessage, regenerate, deleteMessage,
     deleteOne, deleteBatch, toggleBatchMode, toggleSelect, selectAll, clearSelection,
-    togglePin, renameConversation, streamingText, streamingReasoning, streamingMsgId,
+    togglePin, renameConversation, setConversationAssistant, streamingText, streamingReasoning, streamingMsgId,
     clearContext, removeContextCutoff,
     useReasoning, reasoningLevel, setReasoning, setReasoningLevel,
     webSearchEnabled,
@@ -1973,6 +2051,8 @@ export const useChatStore = defineStore('chat', () => {
     // Split view
     splitView, secondaryActiveConvId, secondaryActiveConv,
     openSecondaryConversation, closeSecondaryConversation, closeLeftPanel, toggleSplitView,
+    swapPanels, openInFocusedPanel,
+    focusedPanel, setFocusedPanel,
     sendMessageTo,
     openConversationWindow,
     registerWindowConv, unregisterWindowConv, fetchConversation,

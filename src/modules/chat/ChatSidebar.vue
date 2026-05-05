@@ -205,7 +205,7 @@ function clickItem(id: string) {
   if (chat.batchMode) {
     chat.toggleSelect(id)
   } else {
-    chat.openConversation(id)
+    chat.openInFocusedPanel(id)
   }
 }
 

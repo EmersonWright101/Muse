@@ -28,7 +28,7 @@ export default {
     pastPosters:        'Past Posters',
     deleteConfirmTitle: 'Delete this poster?',
     deleteConfirmDesc:  'This action cannot be undone. The image will be permanently deleted.',
-    settingsHint:       'Configure in Settings → General',
+    settingsHint:       'Configure the animal pool below',
   },
   chat: {
     title:       'Chat',
@@ -61,6 +61,9 @@ export default {
     categoryL2:      'Sub-Category',
     categoryPlaceholder: 'Enter category…',
     rating:          'Rating',
+    status:          'Status',
+    visited:         'Visited',
+    upcoming:        'Upcoming',
     attachmentScan: {
       title:         'Unused Attachments Found',
       desc:          'The following files are not referenced in any note. Delete them?',

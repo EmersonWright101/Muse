@@ -714,6 +714,7 @@ watch(() => note.value.categoryL2, triggerAutoSave)
 watch(() => note.value.rating, triggerAutoSave)
 watch(() => note.value.date, triggerAutoSave)
 watch(() => note.value.cover, triggerAutoSave)
+watch(() => note.value.status, triggerAutoSave)
 
 // Save shortcut
 function onKeydown(e: KeyboardEvent) {
@@ -1040,6 +1041,23 @@ function closePicker() {
             >
               <Star :size="14" />
             </button>
+          </div>
+        </div>
+
+        <!-- Status -->
+        <div class="meta-field status-field">
+          <span class="meta-label">{{ t('travel.status') }}</span>
+          <div class="status-toggle">
+            <button
+              class="status-btn"
+              :class="{ active: note.status === 'visited' }"
+              @click="store.setStatus('visited')"
+            >{{ t('travel.visited') }}</button>
+            <button
+              class="status-btn"
+              :class="{ active: note.status === 'upcoming' }"
+              @click="store.setStatus('upcoming')"
+            >{{ t('travel.upcoming') }}</button>
           </div>
         </div>
       </div>
@@ -1586,6 +1604,40 @@ function closePicker() {
 
 .star-btn.filled :deep(svg) {
   fill: #ff9500;
+}
+
+.status-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-toggle {
+  display: flex;
+  gap: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.status-btn {
+  padding: 3px 10px;
+  border: none;
+  background: white;
+  font-size: 11px;
+  font-weight: 500;
+  color: #8e8e93;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.status-btn:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.status-btn.active {
+  background: #223F79;
+  color: white;
 }
 
 /* Toolbar */

@@ -2,8 +2,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { useHomeStore, type AnimalPoster } from '../../stores/home'
 import { useI18n } from 'vue-i18n'
-import { Sparkles, Settings, Trash2, X, ZoomIn, RefreshCw, Copy, Download, Check } from 'lucide-vue-next'
+import { Sparkles, Settings, Trash2, X, ZoomIn, RefreshCw, Copy, Download, Check, ChevronDown, AlertTriangle } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
+import AnimalListPanel from './AnimalListPanel.vue'
 
 const { t } = useI18n()
 const home = useHomeStore()
@@ -13,6 +14,7 @@ const lightboxPoster  = ref<AnimalPoster | null>(null)
 const deleteConfirmId = ref<string | null>(null)
 const copiedPosterId  = ref<string | null>(null)
 const saveToast = ref('')
+const showAnimalPanel = ref(false)
 let _saveToastTimer: ReturnType<typeof setTimeout> | null = null
 
 const posters = computed(() => home.posters)
@@ -96,6 +98,9 @@ function formatDate(dateStr: string): string {
 }
 
 onMounted(async () => {
+  // Reload posters to ensure latest data, then remove animals already used
+  await home.loadPosters()
+  home.deduplicateAnimals()
   // Start the 11:00 daily scheduler (idempotent — safe to call multiple times)
   home.startDailyScheduler()
   // Catch-up: generate today's poster if it was missed (e.g. app was closed at 11 AM)
@@ -124,11 +129,27 @@ onMounted(async () => {
           <Sparkles v-else :size="14" />
           <span>{{ home.isGenerating ? t('home.generating') : t('home.generateNow') }}</span>
         </button>
+        <button
+          class="animal-pool-btn"
+          :class="{ 'low-stock': home.animals.length < 5 }"
+          @click="showAnimalPanel = !showAnimalPanel"
+        >
+          <span>候选 {{ home.animals.length }} 种</span>
+          <AlertTriangle v-if="home.animals.length < 5" :size="14" class="stock-warning" />
+          <ChevronDown :size="14" :class="['chevron', { rotated: showAnimalPanel }]" />
+        </button>
         <button class="icon-btn" :title="t('nav.settings')" @click="goSettings">
           <Settings :size="17" />
         </button>
       </div>
     </div>
+
+    <!-- Animal list dropdown -->
+    <Transition name="fade">
+      <div v-if="showAnimalPanel" class="animal-dropdown">
+        <AnimalListPanel />
+      </div>
+    </Transition>
 
     <!-- Generating placeholder -->
     <Transition name="fade">
@@ -264,6 +285,7 @@ onMounted(async () => {
           </div>
         </div>
       </div>
+
     </div>
 
     <!-- Lightbox -->
@@ -384,6 +406,54 @@ onMounted(async () => {
 .icon-btn:hover {
   background: rgba(0, 0, 0, 0.06);
   color: #1c1c1e;
+}
+
+.animal-pool-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  background: rgba(255, 255, 255, 0.8);
+  color: #3c3c43;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.animal-pool-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.18);
+}
+
+.animal-pool-btn.low-stock {
+  border-color: rgba(255, 59, 48, 0.35);
+  background: rgba(255, 59, 48, 0.06);
+}
+
+.animal-pool-btn.low-stock:hover {
+  border-color: rgba(255, 59, 48, 0.50);
+  background: rgba(255, 59, 48, 0.10);
+}
+
+.stock-warning {
+  color: #ff3b30;
+}
+
+.chevron {
+  color: #8e8e93;
+  transition: transform 0.18s;
+}
+
+.chevron.rotated {
+  transform: rotate(180deg);
+}
+
+.animal-dropdown {
+  margin: 0 28px;
+  flex-shrink: 0;
 }
 
 .generate-header-btn {

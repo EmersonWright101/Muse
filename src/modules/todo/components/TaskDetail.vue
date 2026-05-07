@@ -132,6 +132,9 @@ const RECURRENCE_OPTIONS = [
       >
         <Check :size="14" />
       </button>
+      <div class="header-title" :class="{ completed: t$.completed }" :title="localTitle">
+        {{ localTitle }}
+      </div>
       <div class="header-actions">
         <button
           class="icon-btn"
@@ -365,11 +368,33 @@ const RECURRENCE_OPTIONS = [
   color: white;
 }
 
+.header-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1c1c1e;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-title:empty::before {
+  content: '未命名任务';
+  color: #c7c7cc;
+  font-weight: 500;
+}
+
+.header-title.completed {
+  text-decoration: line-through;
+  color: #8e8e93;
+}
+
 .header-actions {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin-left: auto;
 }
 
 .icon-btn {

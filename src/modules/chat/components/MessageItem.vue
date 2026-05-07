@@ -252,11 +252,6 @@ function lookupLogoUrl(model: string, providerId: string): string | null {
 }
 
 
-const modelLogoUrl = computed<string | null>(() =>
-  lookupLogoUrl(props.message.model ?? '', props.message.providerId ?? '')
-)
-
-
 const providerDisplayName = computed(() =>
   ai.providers.find(p => p.id === displayedProviderId.value)?.name ?? ''
 )
@@ -317,6 +312,10 @@ const displayedReasoning  = computed(() => {
 })
 const displayedError      = computed(() => activeVariantData.value?.error      ?? props.message.error)
 const displayedFeedback   = computed(() => activeVariantData.value?.feedback   ?? props.message.feedback   ?? null)
+
+const modelLogoUrl = computed<string | null>(() =>
+  lookupLogoUrl(displayedModel.value, displayedProviderId.value)
+)
 
 // Short display name: strip provider prefix
 const modelDisplayName = computed(() => {

@@ -28,7 +28,7 @@ export default {
     pastPosters:        '往期海报',
     deleteConfirmTitle: '删除这张海报？',
     deleteConfirmDesc:  '此操作不可撤销，图片将被永久删除。',
-    settingsHint:       '在「设置 → 通用」中配置',
+    settingsHint:       '在下方「动物候选池」中配置动物列表',
   },
   chat: {
     title:       '对话',
@@ -61,6 +61,9 @@ export default {
     categoryL2:      '二级分类',
     categoryPlaceholder: '输入分类…',
     rating:          '评分',
+    status:          '状态',
+    visited:         '已去过',
+    upcoming:        '待出发',
     attachmentScan: {
       title:         '发现未使用的附件',
       desc:          '以下文件未在任何日记中引用，是否删除？',

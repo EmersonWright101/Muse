@@ -45,6 +45,8 @@ async function apiFetch<T>(
     headers: buildHeaders(cfg),
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
+  // DELETE on a missing resource is idempotent — treat 404 as success.
+  if (method === 'DELETE' && res.status === 404) return ({} as T)
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`[${method} ${path}] HTTP ${res.status}: ${text.slice(0, 200)}`)
@@ -91,12 +93,25 @@ export async function apiDeleteProject(cfg: TodoApiConfig, id: string): Promise<
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────
 
+// Normalize empty-string nullable fields to null — some backends validate
+// patterns on non-null strings, so "" would fail regex like ^\d{2}:\d{2}$.
+function normalizeTask(t: TodoTask): TodoTask {
+  return {
+    ...t,
+    projectId:   t.projectId   === '' as any ? null : t.projectId,
+    dueDate:     t.dueDate     === ''        ? null : t.dueDate,
+    dueTime:     t.dueTime     === ''        ? null : t.dueTime,
+    completedAt: t.completedAt === ''        ? null : t.completedAt,
+    quadrant:    t.quadrant    === '' as any ? null : t.quadrant,
+  }
+}
+
 export async function apiCreateTask(cfg: TodoApiConfig, t: TodoTask): Promise<TodoTask> {
-  return apiFetch<TodoTask>(cfg, 'POST', '/tasks', t)
+  return apiFetch<TodoTask>(cfg, 'POST', '/tasks', normalizeTask(t))
 }
 
 export async function apiUpdateTask(cfg: TodoApiConfig, t: TodoTask): Promise<void> {
-  return apiFetch(cfg, 'PUT', `/tasks/${t.id}`, t)
+  return apiFetch(cfg, 'PUT', `/tasks/${t.id}`, normalizeTask(t))
 }
 
 export async function apiDeleteTask(cfg: TodoApiConfig, id: string): Promise<void> {

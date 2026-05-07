@@ -281,6 +281,26 @@ function keepAllAttachments() {
           </div>
         </Transition>
       </div>
+
+    </div>
+
+    <!-- Status filter bar -->
+    <div class="status-filter-bar">
+      <button
+        class="status-filter-btn"
+        :class="{ active: !store.selectedStatus }"
+        @click="store.selectedStatus = ''"
+      >{{ t('travel.filterAll') }}</button>
+      <button
+        class="status-filter-btn"
+        :class="{ active: store.selectedStatus === 'visited' }"
+        @click="store.selectedStatus = 'visited'"
+      >{{ t('travel.visited') }}</button>
+      <button
+        class="status-filter-btn"
+        :class="{ active: store.selectedStatus === 'upcoming' }"
+        @click="store.selectedStatus = 'upcoming'"
+      >{{ t('travel.upcoming') }}</button>
     </div>
 
     <!-- Search -->
@@ -512,6 +532,36 @@ function keepAllAttachments() {
   font-size: 11px;
   color: #c7c7cc;
   flex-shrink: 0;
+}
+
+.status-filter-bar {
+  display: flex;
+  gap: 2px;
+  padding: 4px 10px 2px;
+  flex-shrink: 0;
+}
+
+.status-filter-btn {
+  padding: 2px 7px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 500;
+  color: #8e8e93;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+
+.status-filter-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: #3c3c43;
+}
+
+.status-filter-btn.active {
+  background: rgba(34, 63, 121, 0.10);
+  color: #223F79;
 }
 
 .filter-picker {

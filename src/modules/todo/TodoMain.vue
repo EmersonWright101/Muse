@@ -7,7 +7,7 @@ import CalendarView from './components/CalendarView.vue'
 import KanbanView from './components/KanbanView.vue'
 import QuadrantView from './components/QuadrantView.vue'
 import {
-  Plus, Search, LayoutList, Calendar, Columns3, Grid2x2,
+  Plus, LayoutList, Calendar, Columns3, Grid2x2,
   ArrowUpDown, SortAsc, Clock, AlignLeft, Star,
   CheckSquare2, Eye, EyeOff, Bell,
 } from 'lucide-vue-next'
@@ -45,8 +45,8 @@ async function createTask() {
   if (!title) return
   const task = store.addTask({
     title,
-    dueDate: newTaskDate.value || undefined,
-    dueTime: newTaskTime.value ?? undefined,
+    dueDate: newTaskDate.value || null,
+    dueTime: newTaskTime.value || null,
     reminderMinutes: newTaskReminder.value,
   })
   newTaskTitle.value = ''
@@ -132,6 +132,47 @@ const showCompletedSection = ref(false)
 
 const showRightPanel = computed(() => store.viewMode === 'list')
 
+// ─── Resizable left panel ────────────────────────────────────────────────────
+
+const LEFT_MIN = 280
+const LEFT_MAX = 600
+const LS_TODO_WIDTH = 'muse-todo-left-width'
+
+function loadSavedWidth(): number {
+  try {
+    const raw = localStorage.getItem(LS_TODO_WIDTH)
+    if (raw) {
+      const v = parseInt(raw, 10)
+      if (!isNaN(v) && v >= LEFT_MIN && v <= LEFT_MAX) return v
+    }
+  } catch { /* ignore */ }
+  return 360
+}
+
+const leftWidth = ref(loadSavedWidth())
+const isResizing = ref(false)
+
+function startResize(e: MouseEvent) {
+  isResizing.value = true
+  const startX = e.clientX
+  const startWidth = leftWidth.value
+
+  function onMove(ev: MouseEvent) {
+    const delta = ev.clientX - startX
+    leftWidth.value = Math.min(LEFT_MAX, Math.max(LEFT_MIN, startWidth + delta))
+  }
+
+  function onUp() {
+    isResizing.value = false
+    localStorage.setItem(LS_TODO_WIDTH, String(leftWidth.value))
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+  }
+
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
 const todayDoneTasks = computed(() =>
   store.tasks.filter(t => t.completedAt?.startsWith(store.todayStr))
 )
@@ -186,22 +227,12 @@ watch(() => store.apiError, (msg) => {
 <template>
   <div class="todo-main">
     <!-- List / Calendar / Kanban / Quadrant panel -->
-    <div class="main-panel" :class="{ narrow: showRightPanel }">
+    <div class="main-panel" :class="{ narrow: showRightPanel }" :style="showRightPanel ? { flex: `0 0 ${leftWidth}px` } : {}">
       <!-- Toolbar -->
       <div class="toolbar">
         <h1 class="view-title">{{ filterLabel }}</h1>
 
         <div class="toolbar-right">
-          <!-- Search -->
-          <div class="search-wrap">
-            <Search :size="13" class="search-icon" />
-            <input
-              v-model="store.searchQuery"
-              class="search-input"
-              placeholder="搜索…"
-            />
-          </div>
-
           <!-- View mode toggle -->
           <div class="view-toggle">
             <button
@@ -358,6 +389,14 @@ watch(() => store.apiError, (msg) => {
       </div>
     </div>
 
+    <!-- Resizer -->
+    <div
+      v-if="showRightPanel"
+      class="panel-resizer"
+      :class="{ resizing: isResizing }"
+      @mousedown="startResize"
+    />
+
     <!-- Right panel: task detail OR overview -->
     <div v-if="showRightPanel" class="right-panel">
       <!-- Task detail -->
@@ -493,9 +532,22 @@ watch(() => store.apiError, (msg) => {
 }
 
 .main-panel.narrow {
-  flex: 0 0 360px;
   min-width: 0;
   border-right: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.panel-resizer {
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.panel-resizer:hover,
+.panel-resizer.resizing {
+  background: rgba(34, 63, 121, 0.25);
 }
 
 /* Toolbar */

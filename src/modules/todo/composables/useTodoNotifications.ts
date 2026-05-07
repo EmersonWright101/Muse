@@ -1,7 +1,12 @@
 import { onMounted, onUnmounted } from 'vue'
 import { useTodoStore } from '../../../stores/todo'
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from '@tauri-apps/plugin-notification'
 
-const NOTIFY_INTERVAL_MS = 5 * 60 * 1000   // 5 minutes
+const NOTIFY_INTERVAL_MS = 30 * 1000        // 30 seconds
 const POLL_INTERVAL_MS   = 30 * 1000        // 30 seconds
 const notifiedIds = new Set<string>()        // dedup within session
 
@@ -10,7 +15,20 @@ export function useTodoNotifications() {
   let notifyTimer: ReturnType<typeof setInterval> | null = null
   let pollTimer:   ReturnType<typeof setInterval> | null = null
 
-  async function requestPermission(): Promise<boolean> {
+  async function ensurePermission(): Promise<boolean> {
+    // Try Tauri native notification first
+    try {
+      let granted = await isPermissionGranted()
+      if (!granted) {
+        const permission = await requestPermission()
+        granted = permission === 'granted'
+      }
+      if (granted) return true
+    } catch {
+      // Tauri plugin not available, fall through to Web Notification
+    }
+
+    // Fallback to browser Notification API
     if (!('Notification' in window)) return false
     if (Notification.permission === 'granted') return true
     if (Notification.permission === 'denied') return false
@@ -18,12 +36,20 @@ export function useTodoNotifications() {
     return result === 'granted'
   }
 
-  function fireNotification(title: string, body: string, tag: string) {
-    if (Notification.permission !== 'granted') return
-    new Notification(title, { body, tag, silent: false })
+  async function fireNotification(title: string, body: string, _tag: string) {
+    try {
+      await sendNotification({ title, body })
+      return
+    } catch {
+      // Fallback to browser Notification
+    }
+
+    if (Notification.permission === 'granted') {
+      new Notification(title, { body, tag: _tag, silent: false })
+    }
   }
 
-  function checkAndNotify() {
+  async function checkAndNotify() {
     const now   = new Date()
     const today = store.todayStr
     const tasks  = store.tasks
@@ -35,7 +61,7 @@ export function useTodoNotifications() {
 
     if (overdueNew.length > 0) {
       overdueNew.forEach(t => notifiedIds.add(`ov-${t.id}`))
-      fireNotification(
+      await fireNotification(
         `⚠️ 逾期任务 (${overdueNew.length})`,
         overdueNew.slice(0, 3).map(t => t.title).join('、') + (overdueNew.length > 3 ? ' 等' : ''),
         'todo-overdue',
@@ -44,7 +70,7 @@ export function useTodoNotifications() {
 
     if (dueTodayNew.length > 0) {
       dueTodayNew.forEach(t => notifiedIds.add(`td-${t.id}`))
-      fireNotification(
+      await fireNotification(
         `📋 今日任务 (${dueTodayNew.length})`,
         dueTodayNew.slice(0, 3).map(t => t.title).join('、') + (dueTodayNew.length > 3 ? ' 等' : ''),
         'todo-today',
@@ -67,7 +93,7 @@ export function useTodoNotifications() {
         const minLabel = task.reminderMinutes >= 60
           ? `${task.reminderMinutes / 60} 小时`
           : `${task.reminderMinutes} 分钟`
-        fireNotification(
+        await fireNotification(
           `⏰ 任务提醒`,
           `「${task.title}」将在 ${minLabel}后截止`,
           key,
@@ -77,7 +103,7 @@ export function useTodoNotifications() {
   }
 
   onMounted(async () => {
-    await requestPermission()
+    await ensurePermission()
     // slight delay so store has loaded first
     setTimeout(checkAndNotify, 2000)
     notifyTimer = setInterval(checkAndNotify, NOTIFY_INTERVAL_MS)

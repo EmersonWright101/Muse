@@ -45,6 +45,7 @@ function getName(f: any, g: Granularity): string {
 const chinaBounds = { minLat: 18, maxLat: 54, minLng: 73, maxLng: 135 }
 function getValidNotes(): TravelNoteMeta[] {
   return props.notes.filter((n) => {
+    if (n.status === 'upcoming') return false
     if (n.lat === 0 && n.lng === 0) return false
     return (
       n.lat >= chinaBounds.minLat &&

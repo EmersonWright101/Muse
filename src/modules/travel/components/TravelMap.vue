@@ -124,13 +124,29 @@ function buildClusterTooltip(notes: TravelNoteMeta[]): string {
   return `<div class="tt-cluster">${items}</div>`
 }
 
-function makeIcon(active: boolean, count: number = 1): L.DivIcon {
+function makeIcon(active: boolean, count: number = 1, visitedRatio = 1): L.DivIcon {
   const clustered = count > 1
   const badge = clustered ? `<span class="marker-count">${count}</span>` : ''
-  const pinClass = `marker-pin${active ? ' active' : ''}${clustered ? ' clustered' : ''}`
+  const isPureVisited = visitedRatio >= 1
+  const upcomingClass = isPureVisited ? '' : ' upcoming'
+  const pinClass = `marker-pin${active ? ' active' : ''}${clustered ? ' clustered' : ''}${upcomingClass}`
+  const markerClass = `travel-marker${active ? ' active' : ''}${upcomingClass ? ' upcoming' : ''}`
+
+  let bgStyle: string
+  if (visitedRatio >= 1) {
+    bgStyle = active ? 'background:#1d4ed8' : 'background:#2563eb'
+  } else if (visitedRatio <= 0) {
+    bgStyle = active ? 'background:#16a34a' : 'background:#22c55e'
+  } else {
+    const pct = Math.round(visitedRatio * 100)
+    const blue = active ? '#1d4ed8' : '#2563eb'
+    const green = active ? '#16a34a' : '#22c55e'
+    bgStyle = `background:linear-gradient(135deg,${blue} ${pct}%,${green} ${pct}%)`
+  }
+
   return L.divIcon({
-    className: active ? 'travel-marker active' : 'travel-marker',
-    html: `<div class="${pinClass}">${badge}</div>`,
+    className: markerClass,
+    html: `<div class="${pinClass}" style="${bgStyle}">${badge}</div>`,
     iconSize: active ? [32, 42] : [28, 38],
     iconAnchor: active ? [16, 40] : [14, 36],
     popupAnchor: [0, -36],
@@ -169,7 +185,9 @@ function rebuildMarkers() {
 
   for (const { key, notes, lat, lng } of lastClusters) {
     const isActive = notes.some(n => n.id === props.activeNoteId)
-    const icon = makeIcon(isActive, notes.length)
+    const visitedCount = notes.filter(n => n.status === 'visited').length
+    const visitedRatio = notes.length > 0 ? visitedCount / notes.length : 1
+    const icon = makeIcon(isActive, notes.length, visitedRatio)
     const tooltip = buildClusterTooltip(notes)
     const firstId = notes[0].id
 
@@ -301,6 +319,15 @@ onUnmounted(() => {
   width: 12px;
   height: 12px;
   margin: 10px 0 0 10px;
+}
+
+/* Upcoming (green) pin */
+.travel-marker.upcoming .marker-pin {
+  background: #22c55e;
+}
+
+.travel-marker.upcoming.active .marker-pin {
+  background: #16a34a;
 }
 
 .marker-pin.clustered::after {

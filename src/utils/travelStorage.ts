@@ -13,6 +13,7 @@
  *   rating     : number (1-5)
  *   date       : string (ISO date)
  *   cover      : string (emoji or empty)
+ *   status     : 'visited' | 'upcoming' (default 'visited')
  *
  * Example:
  *   ---
@@ -54,6 +55,7 @@ export interface TravelNoteMeta {
   rating: number
   date: string
   cover: string
+  status: 'visited' | 'upcoming'
   preview: string   // first line of body
   updatedAt: string // file mtime approx (we use date for sort)
 }
@@ -69,6 +71,7 @@ export interface TravelNote {
   rating: number
   date: string
   cover: string
+  status: 'visited' | 'upcoming'
   content: string // raw markdown including frontmatter
   updatedAt?: string
   deletedAt?: string // only set for trash items
@@ -106,6 +109,7 @@ function parseFrontmatter(raw: string): { meta: Partial<TravelNote>; body: strin
       case 'rating':     meta.rating = parseFloat(val); break
       case 'date':       meta.date = val; break
       case 'cover':      meta.cover = val; break
+      case 'status':     meta.status = val as 'visited' | 'upcoming'; break
       case 'updatedAt':  meta.updatedAt = val; break
       case 'deletedAt':  meta.deletedAt = val; break
     }
@@ -131,6 +135,7 @@ function stringifyFrontmatter(note: TravelNote): string {
     `rating: ${note.rating}`,
     `date: ${note.date}`,
     `cover: ${note.cover || ''}`,
+    `status: ${note.status || 'visited'}`,
   ]
   if (note.updatedAt) lines.push(`updatedAt: ${note.updatedAt}`)
   if (note.deletedAt) lines.push(`deletedAt: ${note.deletedAt}`)
@@ -212,6 +217,7 @@ export async function listTravelNotes(): Promise<TravelNoteMeta[]> {
         rating: meta.rating ?? 0,
         date: meta.date ?? new Date().toISOString().slice(0, 10),
         cover,
+        status: meta.status ?? 'visited',
         preview: buildPreview(body),
         updatedAt: meta.updatedAt ?? meta.date ?? new Date().toISOString(),
       })
@@ -241,6 +247,7 @@ export async function loadTravelNote(id: string): Promise<TravelNote | null> {
       rating: meta.rating ?? 0,
       date: meta.date ?? new Date().toISOString().slice(0, 10),
       cover,
+      status: meta.status ?? 'visited',
       content: raw,
       updatedAt: meta.updatedAt ?? meta.date ?? new Date().toISOString(),
     }
@@ -343,6 +350,7 @@ export async function listTrashItems(): Promise<TravelTrashMeta[]> {
         rating: meta.rating ?? 0,
         date: meta.date ?? '',
         cover,
+        status: meta.status ?? 'visited',
         preview: buildPreview(body),
         updatedAt: meta.updatedAt ?? '',
         deletedAt: meta.deletedAt ?? new Date().toISOString(),
@@ -373,6 +381,7 @@ export async function restoreNoteFromTrash(id: string): Promise<void> {
     rating: meta.rating ?? 0,
     date: meta.date ?? new Date().toISOString().slice(0, 10),
     cover: meta.cover ?? '',
+    status: meta.status ?? 'visited',
     content: raw,
     updatedAt: meta.updatedAt,
     // deletedAt intentionally omitted — restored note has no deletedAt
@@ -503,6 +512,7 @@ export function createEmptyNote(): TravelNote {
     rating: 0,
     date,
     cover: randomTravelEmoji(),
+    status: 'visited',
     content: '',
   }
 }

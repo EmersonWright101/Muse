@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { Star, ChevronRight, Calendar, Tag, RotateCcw, AlertCircle } from 'lucide-vue-next'
+import { Star, ChevronRight, Calendar, Tag, RotateCcw, AlertCircle, Clock, Bell } from 'lucide-vue-next'
 import { useTodoStore, type TodoTask } from '../../../stores/todo'
 import TaskContextMenu from './TaskContextMenu.vue'
 
@@ -37,12 +37,18 @@ const subtaskTotal = computed(() => props.task.subtasks.length)
 
 function formatDate(d: string): string {
   const today = store.todayStr
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  const tomorrowStr = tomorrow.toISOString().slice(0, 10)
+  const tom = new Date()
+  tom.setDate(tom.getDate() + 1)
+  const tomorrowStr = `${tom.getFullYear()}-${String(tom.getMonth() + 1).padStart(2, '0')}-${String(tom.getDate()).padStart(2, '0')}`
   if (d === today) return '今天'
   if (d === tomorrowStr) return '明天'
   return d.slice(5).replace('-', '/')
+}
+
+function formatReminder(minutes: number): string {
+  if (minutes >= 1440) return `${minutes / 1440} 天前`
+  if (minutes >= 60)   return `${minutes / 60} 小时前`
+  return `${minutes} 分钟前`
 }
 </script>
 
@@ -83,6 +89,14 @@ function formatDate(d: string): string {
         <span v-if="task.dueDate" class="meta-chip" :class="{ overdue: isOverdue }">
           <Calendar :size="10" />
           {{ formatDate(task.dueDate) }}
+        </span>
+        <span v-if="task.dueTime" class="meta-chip" :class="{ overdue: isOverdue }">
+          <Clock :size="10" />
+          {{ task.dueTime }}
+        </span>
+        <span v-if="task.reminderMinutes !== null && task.reminderMinutes !== undefined" class="meta-chip reminder-chip">
+          <Bell :size="10" />
+          {{ formatReminder(task.reminderMinutes) }}
         </span>
         <span v-if="task.recurrence !== 'none'" class="meta-chip">
           <RotateCcw :size="10" />
@@ -239,5 +253,9 @@ function formatDate(d: string): string {
 .overdue-badge {
   color: #ff3b30;
   font-weight: 600;
+}
+
+.reminder-chip {
+  color: #ff9500;
 }
 </style>

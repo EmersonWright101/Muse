@@ -282,6 +282,15 @@ export const useHomeStore = defineStore('home', () => {
     saveSettings()
   }
 
+  function deduplicateAnimals() {
+    const usedNames = new Set(posters.value.map(p => p.animalName))
+    const beforeCount = animals.value.length
+    animals.value = animals.value.filter(a => !usedNames.has(a.zh))
+    if (animals.value.length !== beforeCount) {
+      saveSettings()
+    }
+  }
+
   // ─── Posters ───────────────────────────────────────────────────────────────
 
   async function loadPosters() {
@@ -489,6 +498,7 @@ export const useHomeStore = defineStore('home', () => {
     updateAnimal,
     deleteAnimal,
     resetAnimals,
+    deduplicateAnimals,
     loadPosters,
     generatePoster,
     maybeAutoGenerate,

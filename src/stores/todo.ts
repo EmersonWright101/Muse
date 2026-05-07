@@ -205,7 +205,10 @@ export const useTodoStore = defineStore('todo', () => {
 
   // ─── Computed ────────────────────────────────────────────────────────────────
 
-  const todayStr = computed(() => new Date().toISOString().slice(0, 10))
+  const todayStr = computed(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  })
 
   const allTags = computed(() => {
     const s = new Set<string>()
@@ -219,7 +222,7 @@ export const useTodoStore = defineStore('todo', () => {
     if (filter === 'inbox') {
       list = list.filter(t => t.projectId === null)
     } else if (filter === 'today') {
-      list = list.filter(t => t.dueDate === todayStr.value || t.starred)
+      list = list.filter(t => (t.dueDate && t.dueDate <= todayStr.value) || t.starred)
     } else if (filter === 'upcoming') {
       list = list.filter(t => t.dueDate && t.dueDate > todayStr.value)
     } else if (filter === 'starred') {
@@ -413,15 +416,40 @@ export const useTodoStore = defineStore('todo', () => {
     }
   }
 
-  function deleteProject(id: string) {
+  function deleteProject(id: string, deleteTasks: boolean = true) {
     projects.value = projects.value.filter(p => p.id !== id)
-    tasks.value = tasks.value.filter(t => t.projectId !== id)
+    const c = cfg()
+
+    if (deleteTasks) {
+      const orphanIds = tasks.value.filter(t => t.projectId === id).map(t => t.id)
+      tasks.value = tasks.value.filter(t => t.projectId !== id)
+      if (c) {
+        // Cascade deletes are background cleanup — log failures but don't toast
+        // (the user's primary action succeeded locally; many backends also auto-cascade)
+        for (const tid of orphanIds) {
+          apiDeleteTask(c, tid).catch(e => {
+            console.warn(`[todo-api] cascade deleteTask ${tid}:`, e instanceof Error ? e.message : e)
+            _enqueuePending({ type: 'deleteTask', id: tid })
+          })
+        }
+      }
+    } else {
+      const now = new Date().toISOString()
+      tasks.value = tasks.value.map(t =>
+        t.projectId === id ? { ...t, projectId: null, updatedAt: now } : t
+      )
+      if (c) {
+        for (const t of tasks.value) {
+          if (t.projectId === null && t.updatedAt === now) _scheduleApiUpdate(t.id)
+        }
+      }
+    }
+
     if (activeFilter.value === id) activeFilter.value = 'inbox'
 
-    const c = cfg()
     if (c) {
       apiDeleteProject(c, id).catch(e => {
-        _onApiError(e, `deleteProject ${id}`)
+        console.warn(`[todo-api] deleteProject ${id}:`, e instanceof Error ? e.message : e)
         _enqueuePending({ type: 'deleteProject', id })
       })
     }
@@ -444,12 +472,13 @@ export const useTodoStore = defineStore('todo', () => {
   // ─── Utils ───────────────────────────────────────────────────────────────────
 
   function nextRecurrenceDate(from: string, recurrence: string): string {
-    const d = new Date(from)
+    const [y, m, day] = from.split('-').map(Number)
+    const d = new Date(y, m - 1, day)
     if (recurrence === 'daily') d.setDate(d.getDate() + 1)
     else if (recurrence === 'weekly') d.setDate(d.getDate() + 7)
     else if (recurrence === 'monthly') d.setMonth(d.getMonth() + 1)
     else if (recurrence === 'yearly') d.setFullYear(d.getFullYear() + 1)
-    return d.toISOString().slice(0, 10)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   }
 
   return {

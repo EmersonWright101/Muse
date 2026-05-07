@@ -38,6 +38,7 @@ export const useTravelStore = defineStore('travel', () => {
   const selectedCategoryL1 = ref<string>('')
   const selectedCategoryL2 = ref<string>('')
   const selectedTag = ref<string>('')
+  const selectedStatus = ref<'visited' | 'upcoming' | ''>('')
   const isLoading = ref(false)
   const viewMode = ref<'map' | 'editor' | 'powerMap'>('map')
   const orphanedAttachments = ref<string[]>([])
@@ -76,6 +77,9 @@ export const useTravelStore = defineStore('travel', () => {
     }
     if (selectedTag.value) {
       list = list.filter(n => (n.tags ?? []).includes(selectedTag.value))
+    }
+    if (selectedStatus.value) {
+      list = list.filter(n => n.status === selectedStatus.value)
     }
     if (searchQuery.value.trim()) {
       const q = searchQuery.value.toLowerCase()
@@ -244,6 +248,10 @@ export const useTravelStore = defineStore('travel', () => {
     if (activeNote.value) activeNote.value.cover = cover
   }
 
+  function setStatus(status: 'visited' | 'upcoming') {
+    if (activeNote.value) activeNote.value.status = status
+  }
+
   function setBody(body: string) {
     if (activeNote.value) {
       const note = activeNote.value
@@ -264,6 +272,7 @@ export const useTravelStore = defineStore('travel', () => {
     selectedCategoryL1,
     selectedCategoryL2,
     selectedTag,
+    selectedStatus,
     isLoading,
     viewMode,
     categoriesL1,
@@ -292,6 +301,7 @@ export const useTravelStore = defineStore('travel', () => {
     setRating,
     setDate,
     setCover,
+    setStatus,
     setBody,
   }
 })

@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import { useTodoStore } from '../../stores/todo'
 import {
   Inbox, Star, Calendar, CalendarDays, CheckSquare, LayoutList,
-  Plus, Trash2, Pencil, Check, X,
+  Plus, Trash2, Pencil, Check, X, Search,
 } from 'lucide-vue-next'
 
 const store = useTodoStore()
@@ -55,11 +55,38 @@ function cancelNewProject() {
 const sortedProjects = computed(() =>
   [...store.projects].sort((a, b) => a.order - b.order)
 )
+
+// ─── Delete confirmation ──────────────────────────────────────────────────────
+const deleteTarget = ref<{ id: string; name: string } | null>(null)
+
+function askDeleteProject(id: string, name: string) {
+  deleteTarget.value = { id, name }
+}
+
+function confirmDelete(deleteTasks: boolean) {
+  if (!deleteTarget.value) return
+  store.deleteProject(deleteTarget.value.id, deleteTasks)
+  deleteTarget.value = null
+}
+
+function cancelDelete() {
+  deleteTarget.value = null
+}
 </script>
 
 <template>
   <aside class="todo-sidebar">
     <div class="sidebar-title">待办</div>
+
+    <!-- Search -->
+    <div class="search-wrap">
+      <Search :size="13" class="search-icon" />
+      <input
+        v-model="store.searchQuery"
+        class="search-input"
+        placeholder="搜索…"
+      />
+    </div>
 
     <!-- Smart filters -->
     <div class="section-group">
@@ -113,7 +140,7 @@ const sortedProjects = computed(() =>
             <button class="proj-action-btn" title="重命名" @click="startEditProject(p.id, p.name)">
               <Pencil :size="11" />
             </button>
-            <button class="proj-action-btn danger" title="删除" @click="store.deleteProject(p.id)">
+            <button class="proj-action-btn danger" title="删除" @click="askDeleteProject(p.id, p.name)">
               <Trash2 :size="11" />
             </button>
           </div>
@@ -133,6 +160,19 @@ const sortedProjects = computed(() =>
         />
         <button class="proj-action-btn confirm" @click="confirmNewProject"><Check :size="11" /></button>
         <button class="proj-action-btn" @click="cancelNewProject"><X :size="11" /></button>
+      </div>
+    </div>
+
+    <!-- Delete confirmation dialog -->
+    <div v-if="deleteTarget" class="delete-modal-mask" @click.self="cancelDelete">
+      <div class="delete-modal">
+        <div class="delete-modal-title">删除清单「{{ deleteTarget.name }}」</div>
+        <div class="delete-modal-msg">该清单下的任务要怎么处理？</div>
+        <div class="delete-modal-actions">
+          <button class="modal-btn" @click="confirmDelete(false)">仅删除清单<span class="modal-btn-sub">任务移到收件箱</span></button>
+          <button class="modal-btn danger" @click="confirmDelete(true)">连同任务一起删除</button>
+          <button class="modal-btn ghost" @click="cancelDelete">取消</button>
+        </div>
       </div>
     </div>
   </aside>
@@ -162,6 +202,36 @@ const sortedProjects = computed(() =>
   font-weight: 700;
   color: #1c1c1e;
   padding: 0 8px 10px;
+}
+
+.search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+  padding: 5px 10px;
+  margin: 0 4px 8px;
+}
+
+.search-icon {
+  color: #8e8e93;
+  flex-shrink: 0;
+}
+
+.search-input {
+  border: none;
+  outline: none;
+  font-size: 12px;
+  color: #1c1c1e;
+  background: transparent;
+  flex: 1;
+  min-width: 0;
+}
+
+.search-input::placeholder {
+  color: #c7c7cc;
 }
 
 .section-group {
@@ -333,5 +403,91 @@ const sortedProjects = computed(() =>
 
 .new-project-row {
   background: rgba(34, 63, 121, 0.06);
+}
+
+/* Delete confirmation modal */
+.delete-modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.delete-modal {
+  background: white;
+  border-radius: 14px;
+  padding: 20px;
+  width: 320px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.delete-modal-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1c1c1e;
+}
+
+.delete-modal-msg {
+  font-size: 13px;
+  color: #3c3c43;
+}
+
+.delete-modal-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.modal-btn {
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  background: rgba(0, 0, 0, 0.03);
+  font-size: 13px;
+  color: #1c1c1e;
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background 0.1s;
+}
+
+.modal-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.modal-btn-sub {
+  font-size: 11px;
+  color: #8e8e93;
+}
+
+.modal-btn.danger {
+  color: #ff3b30;
+  border-color: rgba(255, 59, 48, 0.20);
+}
+
+.modal-btn.danger:hover {
+  background: rgba(255, 59, 48, 0.08);
+}
+
+.modal-btn.ghost {
+  border: none;
+  background: transparent;
+  color: #8e8e93;
+  text-align: center;
+  align-items: center;
+}
+
+.modal-btn.ghost:hover {
+  background: rgba(0, 0, 0, 0.05);
 }
 </style>

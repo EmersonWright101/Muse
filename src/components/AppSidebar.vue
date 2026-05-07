@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings } from 'lucide-vue-next'
 import assistantIcon from '../assets/icons/AIAssistant@2x.svg'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { useTodoStore } from '../stores/todo'
 
 const route = useRoute()
 const { t } = useI18n()
@@ -15,9 +16,12 @@ const isWindows = navigator.userAgent.includes('Windows')
 const navItems = computed(() => [
   { path: '/chat',      icon: MessageSquare, labelKey: 'nav.chat',      avatar: false },
   { path: '/assistant', icon: null,          labelKey: 'nav.assistant', customIcon: assistantIcon },
-  { path: '/travel',    icon: MapPin,        labelKey: 'nav.travel',    avatar: false },
   { path: '/todo',      icon: CheckSquare,   labelKey: 'nav.todo',      avatar: false, iconSize: 18 },
+  { path: '/travel',    icon: MapPin,        labelKey: 'nav.travel',    avatar: false },
 ])
+
+const todoStore = useTodoStore()
+const todoBadgeCount = computed(() => todoStore.countByFilter('today'))
 
 const isActive = (path: string) => route.path.startsWith(path)
 const isHome = computed(() => route.path.startsWith('/home'))
@@ -146,17 +150,25 @@ onUnmounted(() => {
 
     <!-- Main navigation -->
     <nav class="sidebar-nav">
-      <router-link
+      <div
         v-for="item in navItems"
         :key="item.path"
-        :to="item.path"
-        class="nav-item"
-        :class="{ active: isActive(item.path) }"
-        :title="t(item.labelKey)"
+        class="nav-item-wrap"
       >
-        <img v-if="item.customIcon" :src="item.customIcon" class="nav-custom-icon" />
-        <component v-else-if="item.icon" :is="item.icon" :size="item.iconSize || 21" />
-      </router-link>
+        <router-link
+          :to="item.path"
+          class="nav-item"
+          :class="{ active: isActive(item.path) }"
+          :title="t(item.labelKey)"
+        >
+          <img v-if="item.customIcon" :src="item.customIcon" class="nav-custom-icon" />
+          <component v-else-if="item.icon" :is="item.icon" :size="item.iconSize || 21" />
+        </router-link>
+        <span
+          v-if="item.path === '/todo' && todoBadgeCount > 0"
+          class="nav-badge"
+        >{{ todoBadgeCount > 99 ? '99+' : todoBadgeCount }}</span>
+      </div>
     </nav>
 
     <!-- Bottom: statistics + settings -->
@@ -368,6 +380,31 @@ onUnmounted(() => {
   align-items: center;
   padding-top: 10px;
   gap: 2px;
+}
+
+.nav-item-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #ff3b30;
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+  box-sizing: border-box;
 }
 
 .sidebar-bottom {

@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useTravelStore } from './stores/travel'
 import { useSyncStore } from './stores/sync'
+import { useTodoNotifications } from './modules/todo/composables/useTodoNotifications'
 import './stores/travelCopilot'  // ensure copilot sync module is registered at startup
 import './stores/chat'           // ensure conversations sync module is registered at startup
 import './stores/assistants'     // ensure assistants sync module is registered at startup
@@ -16,6 +17,7 @@ const route = useRoute()
 const travel = useTravelStore()
 
 useSyncStore()
+useTodoNotifications()
 
 // Prevent global Cmd+A / Ctrl+A from selecting the entire UI, but keep it inside editors.
 function onKeydown(e: KeyboardEvent) {

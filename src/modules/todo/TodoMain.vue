@@ -12,11 +12,9 @@ import {
   CheckSquare2, Eye, EyeOff, Bell,
 } from 'lucide-vue-next'
 import type { TodoTask } from '../../stores/todo'
-import { useTodoNotifications } from './composables/useTodoNotifications'
 import TimePickerInput from './components/TimePickerInput.vue'
 
 const store = useTodoStore()
-useTodoNotifications()
 
 onMounted(() => store.load())
 

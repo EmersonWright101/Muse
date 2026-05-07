@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { ChevronDown } from 'lucide-vue-next'
 
 const props = defineProps<{ modelValue: string | null }>()
@@ -8,6 +8,14 @@ const emit = defineEmits<{ 'update:modelValue': [v: string | null] }>()
 const showDropdown = ref(false)
 const listRef = ref<HTMLElement | null>(null)
 const wrapRef = ref<HTMLElement | null>(null)
+const inputRef = ref<HTMLInputElement | null>(null)
+
+// Local display value — may hold partial input while typing
+const localValue = ref(props.modelValue ?? '')
+
+watch(() => props.modelValue, v => {
+  localValue.value = v ?? ''
+})
 
 const TIME_OPTIONS: string[] = []
 for (let h = 0; h < 24; h++) {
@@ -16,9 +24,57 @@ for (let h = 0; h < 24; h++) {
   }
 }
 
+// Only allow digits, colon, and navigation keys.
+function handleKeydown(e: KeyboardEvent) {
+  const nav = ['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter', 'Escape']
+  if (nav.includes(e.key) || /^\d$/.test(e.key) || e.key === ':') return
+  e.preventDefault()
+}
+
 function handleInput(e: Event) {
-  const v = (e.target as HTMLInputElement).value
-  emit('update:modelValue', v || null)
+  const input = e.target as HTMLInputElement
+  let v = input.value.replace(/[^\d:]/g, '')
+
+  // Auto-insert colon after two digits
+  if (v.length === 2 && !v.includes(':')) {
+    v = v + ':'
+  } else if (v.length > 2 && !v.includes(':')) {
+    v = v.slice(0, 2) + ':' + v.slice(2)
+  }
+
+  // Cap at HH:MM (5 chars)
+  v = v.slice(0, 5)
+  localValue.value = v
+
+  // Sync cursor after colon insertion
+  nextTick(() => {
+    if (inputRef.value && v.endsWith(':')) {
+      inputRef.value.setSelectionRange(v.length, v.length)
+    }
+  })
+
+  // Commit to store only when we have a fully valid time
+  if (isValidTime(v)) {
+    emit('update:modelValue', v)
+  } else if (v === '') {
+    emit('update:modelValue', null)
+  }
+}
+
+function handleBlur() {
+  if (isValidTime(localValue.value)) {
+    emit('update:modelValue', localValue.value)
+  } else {
+    // Revert to last known good value
+    localValue.value = props.modelValue ?? ''
+    if (!props.modelValue) emit('update:modelValue', null)
+  }
+}
+
+function isValidTime(v: string): boolean {
+  if (!/^\d{2}:\d{2}$/.test(v)) return false
+  const [h, m] = v.split(':').map(Number)
+  return h >= 0 && h <= 23 && m >= 0 && m <= 59
 }
 
 async function toggleDropdown() {
@@ -67,11 +123,15 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
 <template>
   <div class="tpi-wrap" ref="wrapRef">
     <input
+      ref="inputRef"
       type="text"
       class="tpi-input"
-      :value="modelValue ?? ''"
+      :value="localValue"
       placeholder="--:--"
+      inputmode="numeric"
+      @keydown="handleKeydown"
       @input="handleInput"
+      @blur="handleBlur"
     />
     <button class="tpi-chevron" type="button" @click="toggleDropdown">
       <ChevronDown :size="11" />

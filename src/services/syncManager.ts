@@ -14,9 +14,11 @@
  */
 
 import { apiGet, isBackendConfigured } from './api'
+import { setSyncState } from '../stores/syncStatus'
 import {
   fetchConvListFromServer,
   migrateConvsToServer,
+  pushConvToServer,
 } from './chatSync'
 import {
   readTextFile, writeTextFile, exists, mkdir,
@@ -97,15 +99,21 @@ async function syncChatList() {
   }
   if (changed) await atomicWrite(indexPath, JSON.stringify(localIndex, null, 2))
 
-  // Migrate if remote is empty but local has data
-  if (remote.length === 0 && localIndex.length > 0) {
+  // Push local conversations not on remote (covers first-time migration + failed-upload retry)
+  const remoteIds = new Set(remote.map(r => r.id))
+  const localOnly = localIndex.filter(m => !remoteIds.has(m.id))
+  if (localOnly.length > 0) {
     const localConvs: Conversation[] = []
-    for (const meta of localIndex) {
+    for (const meta of localOnly) {
       const convPath = `${dir}/${meta.id}.json`
       const conv = await readJsonFile<Conversation>(convPath)
       if (conv) localConvs.push(conv)
     }
-    migrateConvsToServer(localConvs).catch(() => {})
+    if (remote.length === 0) {
+      migrateConvsToServer(localConvs).catch(() => {})
+    } else {
+      for (const conv of localConvs) pushConvToServer(conv).catch(() => {})
+    }
   }
 }
 
@@ -128,7 +136,7 @@ async function syncTravelList() {
       if (local.length > 0) {
         const { apiPost } = await import('./api')
         for (const meta of local) {
-          const note = await loadTravelNote(meta.id)  // eslint-disable-line @typescript-eslint/no-unused-vars
+          const note = await loadTravelNote(meta.id)
           if (!note) continue
           await apiPost('/api/travel/notes', {
             id:          note.id,
@@ -150,14 +158,15 @@ async function syncTravelList() {
       return
     }
 
-    // For each remote note missing locally, fetch full content and save
-    const { saveTravelNote } = await import('../utils/travelStorage')
+    const { saveTravelNote, listTravelNotes, loadTravelNote } = await import('../utils/travelStorage')
+    const { apiPost } = await import('./api')
     const dir = await travelNotesDir()
+
+    // Remote → local: fetch notes missing locally
     for (const rm of remote) {
       if (rm.deletedAt) continue
       const localPath = `${dir}/${rm.id}.md`
       if (!(await exists(localPath))) {
-        // Fetch full note from server
         const full = await apiGet<RemoteTravelMeta & { content: string }>(
           `/api/travel/notes/${rm.id}`
         )
@@ -179,6 +188,30 @@ async function syncTravelList() {
           })
         }
       }
+    }
+
+    // Local → remote: push notes missing on remote (handles failed uploads)
+    const remoteIds = new Set(remote.map(r => r.id))
+    const localMetas = await listTravelNotes()
+    for (const meta of localMetas) {
+      if (remoteIds.has(meta.id)) continue
+      const note = await loadTravelNote(meta.id)
+      if (!note) continue
+      apiPost('/api/travel/notes', {
+        id:          note.id,
+        title:       note.title,
+        content:     note.content,
+        date:        note.date,
+        lat:         note.lat,
+        lng:         note.lng,
+        category_l1: note.categoryL1,
+        category_l2: note.categoryL2,
+        tags:        note.tags ?? [],
+        rating:      note.rating,
+        cover:       note.cover,
+        status:      note.status ?? 'visited',
+        updated_at:  note.updatedAt,
+      }).catch(() => {})
     }
   } catch { /* ignore */ }
 }
@@ -215,7 +248,11 @@ export function buildGeneralSettings(): GeneralSettings {
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
 export async function syncAllFromServer(): Promise<void> {
-  if (!isBackendConfigured()) return
+  if (!isBackendConfigured()) {
+    setSyncState('not_configured')
+    return
+  }
+  setSyncState('syncing')
 
   try {
     // 1. Pull all settings in one request
@@ -251,11 +288,13 @@ export async function syncAllFromServer(): Promise<void> {
     await assistantsStore.syncFromServer()
   } catch { /* ignore */ }
 
-  // 3. Sync chat list (merge remote into local, migrate if needed)
-  syncChatList().catch(() => {})
+  // 3+4. Chat list + travel notes (parallel; errors swallowed individually)
+  await Promise.allSettled([
+    syncChatList(),
+    syncTravelList(),
+  ])
 
-  // 4. Travel notes list
-  syncTravelList().catch(() => {})
+  setSyncState('done')
 }
 
 /**

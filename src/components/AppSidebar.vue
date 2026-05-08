@@ -2,7 +2,8 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings } from 'lucide-vue-next'
+import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings, Cloud, Loader2, Check } from 'lucide-vue-next'
+import { syncStatus } from '../stores/syncStatus'
 import assistantIcon from '../assets/icons/AIAssistant@2x.svg'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useTodoStore } from '../stores/todo'
@@ -22,6 +23,15 @@ const navItems = computed(() => [
 
 const todoStore = useTodoStore()
 const todoBadgeCount = computed(() => todoStore.countByFilter('today'))
+
+const syncIconTitle = computed(() => {
+  switch (syncStatus.state) {
+    case 'syncing':        return '正在同步…'
+    case 'done':           return '同步完成'
+    case 'not_configured': return '未配置后端'
+    default:               return '后端已连接'
+  }
+})
 
 const isActive = (path: string) => route.path.startsWith(path)
 const isHome = computed(() => route.path.startsWith('/home'))
@@ -171,8 +181,20 @@ onUnmounted(() => {
       </div>
     </nav>
 
-    <!-- Bottom: statistics + settings -->
+    <!-- Bottom: sync status + statistics + settings -->
     <div class="sidebar-bottom">
+      <div
+        class="sync-indicator"
+        :class="syncStatus.state"
+        :title="syncIconTitle"
+      >
+        <div class="sync-stack">
+          <Cloud :size="23" />
+          <Loader2 v-if="syncStatus.state === 'syncing'"        :size="12" :stroke-width="3" class="inner-spin" />
+          <Check  v-else-if="syncStatus.state === 'done'"       :size="13" :stroke-width="3.5" class="inner-check" />
+          <span   v-else-if="syncStatus.state === 'not_configured'"        class="inner-exclaim">!</span>
+        </div>
+      </div>
       <router-link
         to="/statistics"
         class="nav-item"
@@ -448,4 +470,46 @@ onUnmounted(() => {
 }
 .nav-item:hover .nav-custom-icon { opacity: 0.75; }
 .nav-item.active .nav-custom-icon { opacity: 1; }
+
+.sync-indicator {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8e8e93;
+  transition: color 0.3s;
+}
+
+.sync-indicator.syncing        { color: #223F79; }
+.sync-indicator.done           { color: #34c759; }
+.sync-indicator.not_configured { color: #ff3b30; }
+
+.sync-stack {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.inner-spin {
+  position: absolute;
+  animation: inner-rotate 0.8s linear infinite;
+}
+
+.inner-check {
+  position: absolute;
+}
+
+.inner-exclaim {
+  position: absolute;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+@keyframes inner-rotate {
+  to { transform: rotate(360deg); }
+}
 </style>

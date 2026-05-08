@@ -171,6 +171,28 @@ export const useAssistantsStore = defineStore('assistants', () => {
 
       for (const a of active) await saveAssistant(a)
       assistants.value = active
+
+      // Push local assistants not on remote at all (handles failed uploads)
+      const remoteIds = new Set(remote.map(a => a.id))
+      const localAll = await listAssistants()
+      const newlyPushed: Assistant[] = []
+      for (const a of localAll) {
+        if (remoteIds.has(a.id)) continue
+        apiPost('/api/assistants', {
+          id:                  a.id,
+          name:                a.name,
+          system_prompt:       a.systemPrompt,
+          color:               a.color,
+          default_provider_id: a.defaultProviderId,
+          default_model_id:    a.defaultModelId,
+          created_at:          a.createdAt,
+          updated_at:          a.updatedAt,
+        }).catch(() => {})
+        newlyPushed.push(a)
+      }
+      if (newlyPushed.length > 0) {
+        assistants.value = [...assistants.value, ...newlyPushed]
+      }
     } catch { /* ignore */ }
   }
 

@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Bot,
   BookOpen,
+  HardDrive,
 } from 'lucide-vue-next'
 import { useUiStore } from '../../stores/uiStore'
 
@@ -11,9 +12,10 @@ const { t } = useI18n()
 const ui = useUiStore()
 
 const sections = [
-  { id: 'overview',   icon: LayoutDashboard, labelKey: 'statistics.sections.overview' },
-  { id: 'ai_usage',   icon: Bot,             labelKey: 'statistics.sections.aiUsage' },
-  { id: 'assistant',  icon: BookOpen,        label: '私人AI助手' },
+  { id: 'overview',        icon: LayoutDashboard, labelKey: 'statistics.sections.overview' },
+  { id: 'ai_usage',        icon: Bot,             labelKey: 'statistics.sections.aiUsage' },
+  { id: 'assistant',       icon: BookOpen,        label: '私人AI助手' },
+  { id: 'server_storage',  icon: HardDrive,       label: '服务器存储' },
 ]
 
 function select(id: string) {

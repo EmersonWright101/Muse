@@ -8,6 +8,7 @@ import TrafficTab from './tabs/TrafficTab.vue'
 import CostTab from './tabs/CostTab.vue'
 import RankingTab from './tabs/RankingTab.vue'
 import PaperAiTab from './tabs/PaperAiTab.vue'
+import ServerStorageTab from './tabs/ServerStorageTab.vue'
 
 const ui = useUiStore()
 const stats = useStatisticsStore()
@@ -38,6 +39,7 @@ onMounted(() => {
     <div class="statistics-scroll">
       <OverviewTab v-if="ui.statsSection === 'overview'" />
       <PaperAiTab v-else-if="ui.statsSection === 'assistant'" />
+      <ServerStorageTab v-else-if="ui.statsSection === 'server_storage'" />
       <template v-else>
         <div class="ai-usage-tabs">
           <div

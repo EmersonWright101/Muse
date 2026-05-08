@@ -197,7 +197,6 @@ onMounted(async () => {
             :src="`data:image/png;base64,${posters[0].imageBase64}`"
             :alt="posters[0].animalName"
             class="poster-image"
-            loading="lazy"
           />
           <div v-else class="poster-placeholder">
             <Sparkles :size="28" />
@@ -250,7 +249,6 @@ onMounted(async () => {
               :src="`data:image/png;base64,${poster.imageBase64}`"
               :alt="poster.animalName"
               class="poster-image"
-              loading="lazy"
             />
             <div v-else class="poster-placeholder">
               <Sparkles :size="18" />
@@ -620,6 +618,7 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 24px;
+  will-change: transform;
 }
 
 .poster-wall::-webkit-scrollbar { width: 4px; }

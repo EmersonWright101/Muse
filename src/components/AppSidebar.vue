@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings, Cloud, Loader2, Check } from 'lucide-vue-next'
 import { syncStatus } from '../stores/syncStatus'
+import { syncAllFromServer } from '../services/syncManager'
 import assistantIcon from '../assets/icons/AIAssistant@2x.svg'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useTodoStore } from '../stores/todo'
@@ -187,6 +188,7 @@ onUnmounted(() => {
         class="sync-indicator"
         :class="syncStatus.state"
         :title="syncIconTitle"
+        @click="syncAllFromServer().catch(() => {})"
       >
         <div class="sync-stack">
           <Cloud :size="23" />
@@ -479,7 +481,12 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   color: #8e8e93;
-  transition: color 0.3s;
+  transition: color 0.3s, background 0.12s;
+  cursor: pointer;
+}
+
+.sync-indicator:hover {
+  background: rgba(0, 0, 0, 0.06);
 }
 
 .sync-indicator.syncing        { color: #223F79; }

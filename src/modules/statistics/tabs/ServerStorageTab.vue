@@ -1,144 +1,338 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { RefreshCw, HardDrive, CloudOff } from 'lucide-vue-next'
+import { RefreshCw, CloudOff, Type, Cpu, DollarSign, BookOpen, Star, Database, Server, BarChart3 } from 'lucide-vue-next'
 import { apiGet, isBackendConfigured } from '../../../services/api'
+import { usePapersStore } from '../../../stores/papers'
+import { useStatisticsStore } from '../../../stores/statistics'
 
 interface ServerStats {
-  settings: number
-  chat:     number
-  home:     number
-  travel:   number
-  papers:   number
-  todo:     number
-  total:    number
+  settings: number; chat: number; home: number
+  travel: number; papers: number; todo: number; total: number
 }
 
-const stats   = ref<ServerStats | null>(null)
-const loading = ref(false)
-const error   = ref(false)
+const stats      = ref<ServerStats | null>(null)
+const loading    = ref(false)
+const error      = ref(false)
+const hoveredKey = ref<string | null>(null)
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
+const R    = 72
+const SW   = 24
+const CIRC = 2 * Math.PI * R
+
+function formatBytes(n: number): string {
+  if (n === 0) return '0 B'
+  if (n < 1024) return `${n} B`
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1073741824) return `${(n / 1048576).toFixed(1)} MB`
+  return `${(n / 1073741824).toFixed(2)} GB`
 }
 
 async function load() {
   if (!isBackendConfigured()) return
   loading.value = true
   error.value = false
-  try {
-    stats.value = await apiGet<ServerStats>('/api/statistics')
-  } catch {
-    error.value = true
-  } finally {
-    loading.value = false
-  }
+  try { stats.value = await apiGet<ServerStats>('/api/statistics') }
+  catch { error.value = true }
+  finally { loading.value = false }
 }
+
+const DEFS = [
+  { key: 'chat',     label: '对话',     color: '#3B5BA5' },
+  { key: 'home',     label: '海报',     color: '#52BA6F' },
+  { key: 'papers',   label: '论文',     color: '#E4983D' },
+  { key: 'travel',   label: '旅行笔记', color: '#9B6CF0' },
+  { key: 'settings', label: '设置',     color: '#20BDB8' },
+  { key: 'todo',     label: 'Todo',     color: '#F0A830' },
+]
 
 const modules = computed(() => {
   if (!stats.value) return []
   const total = stats.value.total || 1
-  return [
-    { key: 'chat',     label: '对话',     bytes: stats.value.chat,     color: '#223F79' },
-    { key: 'papers',   label: '论文',     bytes: stats.value.papers,   color: '#E4983D' },
-    { key: 'home',     label: '海报',     bytes: stats.value.home,     color: '#52BA6F' },
-    { key: 'travel',   label: '旅行笔记', bytes: stats.value.travel,   color: '#9B6CF0' },
-    { key: 'settings', label: '设置',     bytes: stats.value.settings, color: '#20BDB8' },
-    { key: 'todo',     label: 'Todo',     bytes: stats.value.todo,     color: '#F0A830' },
-  ].map(m => ({ ...m, pct: (m.bytes / total) * 100 }))
+  return DEFS
+    .map(d => ({
+      ...d,
+      bytes: stats.value![d.key as keyof ServerStats] as number,
+      pct:   ((stats.value![d.key as keyof ServerStats] as number) / total) * 100,
+    }))
     .sort((a, b) => b.bytes - a.bytes)
 })
 
+const segments = computed(() => {
+  if (!stats.value) return []
+  const total = stats.value.total || 1
+  let cum = 0
+  return modules.value.map(m => {
+    const len = (m.bytes / total) * CIRC
+    const s = { ...m, len, dasharray: `${len} ${CIRC}`, dashoffset: -cum }
+    cum += len
+    return s
+  })
+})
+
+const active = computed(() =>
+  hoveredKey.value ? modules.value.find(m => m.key === hoveredKey.value) ?? null : null
+)
+
+// ─── Paper AI section ─────────────────────────────────────────────────────────
+
+const papers    = usePapersStore()
+const statsStore = useStatisticsStore()
+
+const d       = computed(() => papers.paperStatistics?.dashboard)
+const provider = computed(() => papers.paperStatistics?.analysis_provider)
+const sources  = computed(() => papers.paperStatistics?.sources ?? [])
+
+function formatNumber(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`
+  return String(n)
+}
+
+function formatCost(usd: number): string {
+  return statsStore.formatCost(usd)
+}
+
+async function openStatsPage() {
+  if (!papers.baseUrl) return
+  try {
+    const { openUrl } = await import('@tauri-apps/plugin-opener')
+    await openUrl(`${papers.baseUrl}/stats`)
+  } catch { /* ignore */ }
+}
+
+async function refreshAll() {
+  load()
+  if (papers.isConfigured) papers.fetchPaperStatistics()
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+
 const configured = isBackendConfigured()
 
-onMounted(load)
+onMounted(() => {
+  load()
+  if (papers.isConfigured && !papers.paperStatistics) {
+    papers.fetchPaperStatistics()
+  }
+})
 </script>
 
 <template>
   <div class="server-storage">
+
+    <!-- ── Header ───────────────────────────────────────────────────────────── -->
     <div class="page-header">
-      <h2 class="page-title">服务器存储</h2>
-      <button v-if="configured" class="refresh-btn" :class="{ spinning: loading }" :disabled="loading" @click="load">
-        <RefreshCw :size="13" />
-      </button>
+      <h2 class="page-title">服务器存储空间</h2>
+      <div class="header-actions">
+        <button v-if="papers.isConfigured" class="action-btn" @click="openStatsPage">
+          <BarChart3 :size="13" />
+          <span>后台查看</span>
+        </button>
+        <button v-if="configured" class="action-btn" :disabled="loading || papers.isFetchingPaperStats" @click="refreshAll">
+          <RefreshCw :size="13" :class="{ spinning: loading || papers.isFetchingPaperStats }" />
+        </button>
+      </div>
     </div>
 
-    <!-- Not configured -->
     <div v-if="!configured" class="empty-state">
       <CloudOff :size="36" class="empty-icon" />
       <p class="empty-title">未配置后端服务器</p>
       <p class="empty-desc">在设置 → 通用 → 后端服务器配置中填写服务地址和 API Key。</p>
     </div>
 
-    <!-- Loading -->
-    <div v-else-if="loading && !stats" class="loading-state">
-      <div class="skeleton-card" />
-      <div class="skeleton-row" v-for="i in 5" :key="i" />
+    <div v-else-if="loading && !stats" class="skeleton-wrap">
+      <div class="skeleton-circle" />
+      <div class="skeleton-rows">
+        <div v-for="i in 6" :key="i" class="skeleton-row" />
+      </div>
     </div>
 
-    <!-- Error -->
     <div v-else-if="error" class="empty-state">
       <p class="empty-title">获取失败</p>
       <p class="empty-desc">无法连接到后端，请检查网络和服务器状态。</p>
     </div>
 
-    <!-- Data -->
-    <template v-else-if="stats">
-      <!-- Total card -->
-      <div class="total-card">
-        <HardDrive :size="20" class="total-icon" />
-        <div class="total-info">
-          <span class="total-label">总占用</span>
-          <span class="total-value">{{ formatBytes(stats.total) }}</span>
+    <div v-else-if="stats" class="chart-layout">
+      <div class="chart-wrap">
+        <svg viewBox="0 0 200 200" class="donut-svg">
+          <circle cx="100" cy="100" :r="R" fill="none" stroke="rgba(0,0,0,0.06)" :stroke-width="SW" />
+          <g transform="rotate(-90 100 100)">
+            <circle
+              v-for="seg in segments" :key="seg.key"
+              cx="100" cy="100" :r="R"
+              fill="none" :stroke="seg.color"
+              :stroke-width="hoveredKey === seg.key ? SW + 6 : SW"
+              :stroke-dasharray="seg.dasharray"
+              :stroke-dashoffset="seg.dashoffset"
+              :opacity="hoveredKey && hoveredKey !== seg.key ? 0.3 : 1"
+              class="seg"
+              @mouseenter="hoveredKey = seg.key"
+              @mouseleave="hoveredKey = null"
+            />
+          </g>
+          <text x="100" y="91"  class="c-sub" text-anchor="middle" dominant-baseline="middle">{{ active ? active.label : '总占用' }}</text>
+          <text x="100" y="112" class="c-val" text-anchor="middle" dominant-baseline="middle">{{ active ? formatBytes(active.bytes) : formatBytes(stats.total) }}</text>
+          <text v-if="active" x="100" y="130" class="c-pct" text-anchor="middle" dominant-baseline="middle">{{ active.pct.toFixed(1) }}%</text>
+        </svg>
+        <div class="stacked-bar">
+          <div
+            v-for="seg in segments" :key="seg.key"
+            class="bar-seg"
+            :style="{ flex: seg.len, background: seg.color }"
+            :class="{ dimmed: hoveredKey && hoveredKey !== seg.key, lit: hoveredKey === seg.key }"
+            @mouseenter="hoveredKey = seg.key"
+            @mouseleave="hoveredKey = null"
+          />
         </div>
       </div>
-
-      <!-- Stacked bar -->
-      <div class="stacked-bar">
+      <div class="legend">
         <div
-          v-for="m in modules"
-          :key="m.key"
-          class="bar-segment"
-          :style="{ width: m.pct + '%', background: m.color }"
-          :title="`${m.label}: ${formatBytes(m.bytes)}`"
-        />
-      </div>
-
-      <!-- Module rows -->
-      <div class="module-list">
-        <div v-for="m in modules" :key="m.key" class="module-row">
-          <div class="module-left">
-            <span class="module-dot" :style="{ background: m.color }" />
-            <span class="module-label">{{ m.label }}</span>
+          v-for="m in modules" :key="m.key"
+          class="legend-row"
+          :class="{ dimmed: hoveredKey && hoveredKey !== m.key, lit: hoveredKey === m.key }"
+          @mouseenter="hoveredKey = m.key"
+          @mouseleave="hoveredKey = null"
+        >
+          <span class="dot" :style="{ background: m.color }" />
+          <span class="leg-label">{{ m.label }}</span>
+          <div class="leg-bar-wrap">
+            <div class="leg-bar-fill" :style="{ width: m.pct + '%', background: m.color }" />
           </div>
-          <div class="module-right">
-            <div class="module-bar-wrap">
-              <div class="module-bar-fill" :style="{ width: m.pct + '%', background: m.color }" />
-            </div>
-            <span class="module-size">{{ formatBytes(m.bytes) }}</span>
-          </div>
+          <span class="leg-pct">{{ m.pct.toFixed(1) }}%</span>
+          <span class="leg-size">{{ formatBytes(m.bytes) }}</span>
         </div>
       </div>
+    </div>
+
+    <!-- ── Paper AI section (only when papers backend configured) ─────────────── -->
+    <template v-if="papers.isConfigured">
+      <div class="section-sep" />
+
+      <div class="section-heading">
+        <h3 class="section-title">私人 AI 助手</h3>
+      </div>
+
+      <div v-if="papers.isFetchingPaperStats && !d" class="paper-loading">加载中…</div>
+
+      <div v-else-if="papers.paperStatsError" class="paper-error">
+        {{ papers.paperStatsError }}
+        <button class="action-btn" @click="papers.fetchPaperStatistics()">
+          <RefreshCw :size="13" /> 重试
+        </button>
+      </div>
+
+      <template v-else-if="d">
+        <!-- KPI Cards -->
+        <div class="cards-grid">
+          <div class="mini-card">
+            <div class="mini-icon"><Type :size="15" /></div>
+            <div class="mini-label">Input Tokens</div>
+            <div class="mini-value">{{ formatNumber(d.total_tokens_input) }}</div>
+          </div>
+          <div class="mini-card">
+            <div class="mini-icon"><Cpu :size="15" /></div>
+            <div class="mini-label">Output Tokens</div>
+            <div class="mini-value">{{ formatNumber(d.total_tokens_output) }}</div>
+          </div>
+          <div class="mini-card accent">
+            <div class="mini-icon"><DollarSign :size="15" /></div>
+            <div class="mini-label">总花费</div>
+            <div class="mini-value">{{ formatCost(d.cost_usd) }}</div>
+          </div>
+          <div class="mini-card">
+            <div class="mini-icon"><Server :size="15" /></div>
+            <div class="mini-label">API 请求</div>
+            <div class="mini-value">{{ formatNumber(d.api_requests_count) }}</div>
+          </div>
+          <div class="mini-card">
+            <div class="mini-icon"><BookOpen :size="15" /></div>
+            <div class="mini-label">已分析 / 总论文</div>
+            <div class="mini-value">{{ d.analyzed_papers }}<span class="mini-value-dim">/ {{ d.total_papers }}</span></div>
+          </div>
+          <div class="mini-card">
+            <div class="mini-icon"><Star :size="15" /></div>
+            <div class="mini-label">好文章</div>
+            <div class="mini-value">{{ d.good_papers }}</div>
+          </div>
+        </div>
+
+        <!-- Provider -->
+        <div v-if="provider" class="info-card">
+          <div class="info-card-title">AI 分析提供商</div>
+          <div class="provider-grid">
+            <div class="provider-item">
+              <span class="pk">名称</span><span class="pv">{{ provider.name }}</span>
+            </div>
+            <div class="provider-item">
+              <span class="pk">模型</span><span class="pv">{{ provider.model }}</span>
+            </div>
+            <div class="provider-item">
+              <span class="pk">Base URL</span><span class="pv pv-url">{{ provider.base_url }}</span>
+            </div>
+            <div class="provider-item">
+              <span class="pk">Input 单价</span><span class="pv">${{ provider.price_input_usd_per_m }} / 1M</span>
+            </div>
+            <div class="provider-item">
+              <span class="pk">Output 单价</span><span class="pv">${{ provider.price_output_usd_per_m }} / 1M</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sources -->
+        <div v-if="sources.length > 0" class="info-card">
+          <div class="info-card-title">来源分布</div>
+          <div class="source-list">
+            <div v-for="s in sources" :key="s.source" class="source-row">
+              <div class="source-info">
+                <span class="source-name">{{ s.source }}</span>
+                <span v-if="s.last_crawl_at" class="source-meta">上次爬取 {{ s.last_crawl_at }}</span>
+              </div>
+              <div class="source-bar-wrap">
+                <div class="source-bar-track">
+                  <div class="source-bar-fill" :style="{ width: `${(s.analyzed / Math.max(s.total, 1)) * 100}%` }" />
+                </div>
+                <div class="source-bar-labels">
+                  <span class="source-bar-hi">已分析 {{ s.analyzed }}</span>
+                  <span>共 {{ s.total }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Storage overview -->
+        <div class="info-card">
+          <div class="info-card-title">存储概览</div>
+          <div class="storage-row">
+            <Database :size="14" /><span class="storage-label">数据库</span>
+            <span class="storage-value">{{ formatBytes(d.db_size_bytes) }}</span>
+          </div>
+          <div class="storage-row">
+            <BookOpen :size="14" /><span class="storage-label">PDF 文件</span>
+            <span class="storage-value">{{ d.pdfs_stored }} 个 / {{ formatBytes(d.pdf_bytes) }}</span>
+          </div>
+        </div>
+      </template>
     </template>
+
   </div>
 </template>
 
 <style scoped>
 .server-storage {
-  padding: 28px 28px 40px;
-  max-width: 560px;
+  padding: 28px 32px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
 
+/* ── Header ── */
 .page-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
-
 .page-title {
   font-size: 18px;
   font-weight: 700;
@@ -146,128 +340,177 @@ onMounted(load)
   margin: 0;
 }
 
-.refresh-btn {
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.05);
-  color: #8e8e93;
+.header-actions {
   display: flex;
   align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  gap: 8px;
 }
-.refresh-btn:hover:not(:disabled) { background: rgba(0,0,0,0.09); color: #3c3c43; }
-.refresh-btn:disabled { opacity: 0.5; cursor: default; }
-.refresh-btn.spinning svg { animation: spin 0.8s linear infinite; }
 
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(0,0,0,0.08);
+  background: #fff;
+  font-size: 12px;
+  color: #3c3c43;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.action-btn:hover:not(:disabled) { background: rgba(0,0,0,0.04); }
+.action-btn:disabled { opacity: 0.5; cursor: default; }
+.action-btn.spinning svg,
+svg.spinning { animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Empty / loading states */
+/* ── Empty / error ── */
 .empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   padding: 60px 0;
   text-align: center;
 }
-.empty-icon { color: #c7c7cc; }
+.empty-icon  { color: #c7c7cc; }
 .empty-title { font-size: 15px; font-weight: 600; color: #1c1c1e; margin: 0; }
 .empty-desc  { font-size: 13px; color: #8e8e93; margin: 0; max-width: 280px; line-height: 1.5; }
 
-.loading-state { display: flex; flex-direction: column; gap: 12px; }
-.skeleton-card { height: 76px; border-radius: 14px; background: rgba(0,0,0,0.06); animation: pulse 1.4s ease-in-out infinite; }
-.skeleton-row  { height: 44px; border-radius: 10px; background: rgba(0,0,0,0.04); animation: pulse 1.4s ease-in-out infinite; }
+/* ── Skeleton ── */
+.skeleton-wrap { display: flex; gap: 32px; align-items: center; margin-bottom: 24px; }
+.skeleton-circle { width: 200px; height: 200px; border-radius: 50%; background: rgba(0,0,0,0.06); flex-shrink: 0; animation: pulse 1.4s ease-in-out infinite; }
+.skeleton-rows { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+.skeleton-row { height: 38px; border-radius: 9px; background: rgba(0,0,0,0.04); animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
 
-/* Total card */
-.total-card {
+/* ── Chart layout ── */
+.chart-layout {
+  display: flex;
+  gap: 32px;
+  align-items: center;
+  margin-bottom: 24px;
+}
+.chart-wrap { flex-shrink: 0; width: 200px; }
+.donut-svg  { width: 200px; height: 200px; overflow: visible; }
+
+.seg { cursor: pointer; transition: stroke-width 0.18s ease, opacity 0.18s ease; }
+
+.c-sub { font-size: 12px; fill: #8e8e93; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+.c-val { font-size: 17px; font-weight: 700; fill: #1c1c1e; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-variant-numeric: tabular-nums; }
+.c-pct { font-size: 12px; fill: #8e8e93; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+
+.stacked-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin-top: 14px; background: rgba(0,0,0,0.06); }
+.bar-seg { height: 100%; min-width: 3px; cursor: pointer; transition: opacity 0.18s, filter 0.18s; }
+.bar-seg.dimmed { opacity: 0.25; }
+.bar-seg.lit    { filter: brightness(1.15); }
+
+/* ── Legend ── */
+.legend { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.legend-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 9px; cursor: pointer;
+  transition: background 0.12s, opacity 0.18s;
+}
+.legend-row:hover, .legend-row.lit { background: rgba(0,0,0,0.04); }
+.legend-row.dimmed { opacity: 0.3; }
+.dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.leg-label { font-size: 13px; color: #3c3c43; width: 68px; flex-shrink: 0; }
+.leg-bar-wrap { flex: 1; height: 5px; border-radius: 3px; background: rgba(0,0,0,0.06); overflow: hidden; min-width: 0; }
+.leg-bar-fill { height: 100%; border-radius: 3px; min-width: 2px; transition: width 0.4s ease; }
+.leg-pct  { font-size: 11px; color: #8e8e93; width: 40px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.leg-size { font-size: 12px; color: #8e8e93; width: 72px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+
+/* ── Section separator ── */
+.section-sep {
+  height: 1px;
+  background: rgba(0,0,0,0.07);
+  margin: 8px 0 24px;
+}
+
+.section-heading {
   display: flex;
   align-items: center;
-  gap: 14px;
-  background: rgba(34, 63, 121, 0.06);
-  border: 1px solid rgba(34, 63, 121, 0.12);
-  border-radius: 14px;
-  padding: 16px 18px;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.section-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1c1c1e;
+  margin: 0;
+}
+
+.paper-loading { font-size: 14px; color: #8e8e93; padding: 24px 0; text-align: center; }
+.paper-error   { font-size: 13px; color: #ef4444; padding: 16px 0; display: flex; align-items: center; gap: 12px; }
+
+/* ── KPI Cards ── */
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
   margin-bottom: 16px;
 }
-.total-icon { color: #223F79; flex-shrink: 0; }
-.total-info { display: flex; flex-direction: column; gap: 2px; }
-.total-label { font-size: 12px; color: #8e8e93; }
-.total-value { font-size: 22px; font-weight: 700; color: #1c1c1e; letter-spacing: -0.5px; }
-
-/* Stacked bar */
-.stacked-bar {
-  height: 8px;
-  border-radius: 4px;
-  overflow: hidden;
-  background: rgba(0,0,0,0.06);
-  display: flex;
-  margin-bottom: 20px;
-}
-.bar-segment { height: 100%; transition: width 0.4s ease; min-width: 2px; }
-
-/* Module list */
-.module-list {
+.mini-card {
+  background: #fff;
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 13px;
+  padding: 14px 16px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.04);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 5px;
 }
+.mini-card.accent { background: linear-gradient(135deg, #223F79 0%, #2a4d94 100%); border: none; }
+.mini-card.accent .mini-label,
+.mini-card.accent .mini-value { color: rgba(255,255,255,0.85); }
+.mini-card.accent .mini-value { color: #fff; }
+.mini-icon {
+  width: 26px; height: 26px; border-radius: 7px;
+  background: rgba(34,63,121,0.08); color: #223F79;
+  display: flex; align-items: center; justify-content: center;
+}
+.mini-card.accent .mini-icon { background: rgba(255,255,255,0.15); color: #fff; }
+.mini-label { font-size: 11px; color: #8e8e93; }
+.mini-value { font-size: 18px; font-weight: 700; color: #1c1c1e; }
+.mini-value-dim { font-size: 13px; font-weight: 500; color: #8e8e93; margin-left: 2px; }
 
-.module-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  background: rgba(255, 255, 255, 0.8);
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: 10px;
+/* ── Info cards ── */
+.info-card {
+  background: #fff;
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 13px;
+  padding: 18px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+  margin-bottom: 12px;
 }
+.info-card-title { font-size: 13px; font-weight: 600; color: #1c1c1e; margin-bottom: 14px; }
 
-.module-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 80px;
-  flex-shrink: 0;
-}
-.module-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.module-label { font-size: 13px; color: #3c3c43; }
+.provider-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 20px; }
+.provider-item { display: flex; flex-direction: column; gap: 2px; }
+.pk { font-size: 11px; color: #8e8e93; }
+.pv { font-size: 13px; color: #1c1c1e; font-weight: 500; }
+.pv-url { font-size: 12px; color: #3c3c43; word-break: break-all; font-weight: 400; }
 
-.module-right {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
+.source-list { display: flex; flex-direction: column; gap: 12px; }
+.source-row  { display: flex; align-items: center; gap: 14px; }
+.source-info { width: 110px; flex-shrink: 0; display: flex; flex-direction: column; gap: 2px; }
+.source-name { font-size: 13px; color: #1c1c1e; font-weight: 500; text-transform: capitalize; }
+.source-meta { font-size: 10px; color: #8e8e93; }
+.source-bar-wrap  { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.source-bar-track { height: 7px; background: rgba(0,0,0,0.05); border-radius: 4px; overflow: hidden; }
+.source-bar-fill  { height: 100%; background: #223F79; border-radius: 4px; transition: width 0.4s; }
+.source-bar-labels { display: flex; justify-content: space-between; font-size: 11px; color: #8e8e93; }
+.source-bar-hi    { color: #223F79; font-weight: 500; }
+
+.storage-row {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: #3c3c43;
+  padding: 4px 0;
 }
-.module-bar-wrap {
-  flex: 1;
-  height: 5px;
-  border-radius: 3px;
-  background: rgba(0,0,0,0.06);
-  overflow: hidden;
-}
-.module-bar-fill {
-  height: 100%;
-  border-radius: 3px;
-  transition: width 0.4s ease;
-  min-width: 2px;
-}
-.module-size {
-  font-size: 12px;
-  color: #8e8e93;
-  width: 64px;
-  text-align: right;
-  flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
-}
+.storage-row :deep(svg) { color: #8e8e93; flex-shrink: 0; }
+.storage-label { color: #8e8e93; flex: 1; }
+.storage-value { font-weight: 600; color: #1c1c1e; }
 </style>

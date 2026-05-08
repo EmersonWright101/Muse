@@ -11,7 +11,7 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { useHomeStore, DEFAULT_PROMPT, FREQUENCY_OPTIONS } from '../../../stores/home'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
 import { useStatisticsStore } from '../../../stores/statistics'
-import { pushGeneralSettings } from '../../../services/syncManager'
+import { pushGeneralSettings, syncAllFromServer } from '../../../services/syncManager'
 
 const { locale, t } = useI18n()
 const statsStore = useStatisticsStore()
@@ -110,6 +110,7 @@ const papersPingResult = ref<'ok' | 'err' | null>(null)
 function saveBackendConn() {
   papers.persistConn()
   papersPingResult.value = null
+  syncAllFromServer().catch(() => {})
 }
 
 async function pingBackend() {

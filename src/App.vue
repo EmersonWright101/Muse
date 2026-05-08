@@ -7,10 +7,12 @@ import TitleBar from './components/TitleBar.vue'
 import AppSidebar from './components/AppSidebar.vue'
 import { cleanupTmpDir } from './utils/path'
 import { syncAllFromServer } from './services/syncManager'
+import { useTodoStore } from './stores/todo'
 
 const showPanel = ref(true)
 const route = useRoute()
 const travel = useTravelStore()
+const todo = useTodoStore()
 
 useTodoNotifications()
 
@@ -35,6 +37,7 @@ onMounted(() => {
   document.addEventListener('keydown', onKeydown)
   cleanupTmpDir().catch(() => {})
   syncAllFromServer().catch(() => {})
+  todo.load().catch(() => {})
 })
 onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 

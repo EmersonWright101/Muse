@@ -14,7 +14,7 @@
  */
 
 import { apiGet, isBackendConfigured } from './api'
-import { setSyncState } from '../stores/syncStatus'
+import { setSyncState, beginSyncOp, endSyncOp } from '../stores/syncStatus'
 import {
   fetchConvListFromServer,
   migrateConvsToServer,
@@ -252,8 +252,7 @@ export async function syncAllFromServer(): Promise<void> {
     setSyncState('not_configured')
     return
   }
-  setSyncState('syncing')
-
+  beginSyncOp()
   try {
     // 1. Pull all settings in one request
     const allSettings = await apiGet<Record<string, unknown>>('/api/settings')
@@ -294,7 +293,7 @@ export async function syncAllFromServer(): Promise<void> {
     syncTravelList(),
   ])
 
-  setSyncState('done')
+  endSyncOp()
 }
 
 /**

@@ -129,7 +129,6 @@ export default {
       assistant:    '私人助手',
       todo:         '待办',
       webSearch:    '联网搜索',
-      sync:         '同步',
       privacy:      '隐私与安全',
       about:        '关于',
     },

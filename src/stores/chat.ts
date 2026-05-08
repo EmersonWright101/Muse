@@ -16,16 +16,12 @@ import {
   listConversations,
   loadConversation,
   saveConversation,
-  deleteConversation,
   trashConversation,
   listTrashedConversations,
   restoreConversationFromTrash,
   permanentDeleteFromTrash,
   purgeExpiredTrash,
   newId,
-  getDeletedConversations,
-  applyRemoteDeletedConversations,
-  mergeConversation,
   loadTrashedConversation,
   type ConversationMeta,
   type TrashedConversationMeta,
@@ -2084,139 +2080,3 @@ export const useChatStore = defineStore('chat', () => {
   }
 })
 
-// ─── Sync module ─────────────────────────────────────────────────────────────
-
-import { syncService } from '../services/sync'
-import type { SyncModule } from '../services/sync/types'
-
-const MOD_CONV = 'conversations'
-
-interface ConversationsPayload {
-  list: ConversationMeta[]
-  deletedConversations: Record<string, string>
-}
-
-const conversationsSyncModule: SyncModule = {
-  id: MOD_CONV,
-  remoteDirs: ['conversations'],
-  getLocalTimestamp() {
-    return localStorage.getItem('muse-ts-conversations') ?? new Date(0).toISOString()
-  },
-  async sync(ctx, localChanged) {
-    ctx.setProgress('同步对话历史…')
-
-    const localList = await listConversations()
-    const idxPath = ctx.rp('conversations/index.enc')
-
-    const raw = await ctx.getEncrypted<ConversationsPayload | ConversationMeta[]>(idxPath, { list: [], deletedConversations: {} })
-    const remotePayload: ConversationsPayload = Array.isArray(raw)
-      ? { list: raw, deletedConversations: {} }
-      : raw
-
-    applyRemoteDeletedConversations(remotePayload.deletedConversations ?? {})
-    const mergedDeleted = getDeletedConversations()
-
-    function isDeleted(id: string, updatedAt: string): boolean {
-      const ts = mergedDeleted[id]
-      return !!ts && ts > updatedAt
-    }
-
-    const remoteList = remotePayload.list
-    const localIds = new Set(localList.map(c => c.id))
-    const remoteIds = new Set(remoteList.map(c => c.id))
-    const remoteTombstones = new Set(Object.keys(remotePayload.deletedConversations ?? {}))
-
-    let indexChanged = false
-
-    // ① Apply tombstones
-    for (const meta of localList) {
-      if (isDeleted(meta.id, meta.updatedAt)) await deleteConversation(meta.id)
-    }
-    for (const [id] of Object.entries(mergedDeleted)) {
-      if (!remoteTombstones.has(id)) {
-        await ctx.webdavDelete(ctx.rp(`conversations/${id}.enc`))
-        indexChanged = true
-      }
-    }
-
-    // ② Download conversations that only exist on remote
-    for (const meta of remoteList) {
-      if (localIds.has(meta.id)) continue
-      if (isDeleted(meta.id, meta.updatedAt)) continue
-      const resp = await ctx.webdavGet(ctx.rp(`conversations/${meta.id}.enc`))
-      if (!resp.ok) continue
-      try {
-        const conv = JSON.parse(await ctx.decrypt(resp.body)) as Conversation
-        if (!isDeleted(conv.id, conv.updatedAt)) await saveConversation(conv)
-      } catch { /* skip corrupt remote entry */ }
-    }
-
-    // ③ Upload conversations that only exist locally
-    if (localChanged) {
-      for (const meta of localList) {
-        if (remoteIds.has(meta.id)) continue
-        if (isDeleted(meta.id, meta.updatedAt)) continue
-        const conv = await loadConversation(meta.id)
-        if (!conv) continue
-        await ctx.putEncrypted(ctx.rp(`conversations/${meta.id}.enc`), conv)
-        indexChanged = true
-      }
-    }
-
-    // ④ Merge conversations that exist on both sides but differ
-    for (const localMeta of localList) {
-      if (isDeleted(localMeta.id, localMeta.updatedAt)) continue
-      const remoteMeta = remoteList.find(r => r.id === localMeta.id)
-      if (!remoteMeta || localMeta.updatedAt === remoteMeta.updatedAt) continue
-
-      const localConv = await loadConversation(localMeta.id)
-      if (!localConv) continue
-
-      const convPath = ctx.rp(`conversations/${localMeta.id}.enc`)
-      const remoteResp = await ctx.webdavGet(convPath)
-
-      if (!remoteResp.ok) {
-        if (localChanged && localMeta.updatedAt > remoteMeta.updatedAt) {
-          await ctx.putEncrypted(convPath, localConv)
-          indexChanged = true
-        }
-        continue
-      }
-
-      try {
-        const remoteConv = JSON.parse(await ctx.decrypt(remoteResp.body)) as Conversation
-        const { merged, localChanged: convLocalChanged, remoteChanged: convRemoteChanged } = mergeConversation(localConv, remoteConv)
-        if (convLocalChanged) await saveConversation(merged)
-        if (convRemoteChanged && localChanged) {
-          await ctx.putEncrypted(convPath, merged)
-          indexChanged = true
-        }
-      } catch {
-        if (localChanged && localMeta.updatedAt > remoteMeta.updatedAt) {
-          await ctx.putEncrypted(convPath, localConv)
-          indexChanged = true
-        }
-      }
-    }
-
-    if (!localChanged && !indexChanged) return
-
-    // Prune tombstones older than 6 months
-    const sixMonthsAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString()
-    for (const [id, ts] of Object.entries(mergedDeleted)) {
-      if (ts < sixMonthsAgo) delete mergedDeleted[id]
-    }
-    localStorage.setItem('muse-deleted-conversations', JSON.stringify(mergedDeleted))
-
-    const finalIndex = await listConversations()
-    await ctx.putEncrypted(idxPath, {
-      list: finalIndex,
-      deletedConversations: mergedDeleted,
-    } satisfies ConversationsPayload)
-  },
-  async onSynced() {
-    await useChatStore().loadList()
-  },
-}
-
-syncService.register(conversationsSyncModule)

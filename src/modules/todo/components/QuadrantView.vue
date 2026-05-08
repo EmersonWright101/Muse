@@ -9,6 +9,10 @@ import {
 const store = useTodoStore()
 
 // ─── Quadrant config ──────────────────────────────────────────────────────────
+// Layout (standard Eisenhower matrix): top-right = 重要·紧急
+//   [Q2 重要不紧急] [Q1 重要紧急  ]
+//   [Q4 不重要不紧急][Q3 不重要紧急]
+// X-axis: left=不紧急 → right=紧急
 
 const QUADRANTS: Array<{
   key: Quadrant
@@ -19,14 +23,6 @@ const QUADRANTS: Array<{
   borderColor: string
 }> = [
   {
-    key: 'q1',
-    label: '重要 · 紧急',
-    sub: '立即处理',
-    color: '#ff3b30',
-    bgColor: 'rgba(255, 59, 48, 0.04)',
-    borderColor: 'rgba(255, 59, 48, 0.18)',
-  },
-  {
     key: 'q2',
     label: '重要 · 不紧急',
     sub: '计划安排',
@@ -35,12 +31,12 @@ const QUADRANTS: Array<{
     borderColor: 'rgba(0, 122, 255, 0.18)',
   },
   {
-    key: 'q3',
-    label: '不重要 · 紧急',
-    sub: '委托他人',
-    color: '#ff9500',
-    bgColor: 'rgba(255, 149, 0, 0.04)',
-    borderColor: 'rgba(255, 149, 0, 0.18)',
+    key: 'q1',
+    label: '重要 · 紧急',
+    sub: '立即处理',
+    color: '#ff3b30',
+    bgColor: 'rgba(255, 59, 48, 0.04)',
+    borderColor: 'rgba(255, 59, 48, 0.18)',
   },
   {
     key: 'q4',
@@ -50,58 +46,100 @@ const QUADRANTS: Array<{
     bgColor: 'rgba(142, 142, 147, 0.04)',
     borderColor: 'rgba(142, 142, 147, 0.14)',
   },
+  {
+    key: 'q3',
+    label: '不重要 · 紧急',
+    sub: '委托他人',
+    color: '#ff9500',
+    bgColor: 'rgba(255, 149, 0, 0.04)',
+    borderColor: 'rgba(255, 149, 0, 0.18)',
+  },
 ]
 
 const PRIORITY_COLOR: Record<string, string> = {
   urgent: '#ff3b30', high: '#ff9500', medium: '#007aff', low: '#34c759', none: 'transparent',
 }
 
-// ─── Drag state ───────────────────────────────────────────────────────────────
+// ─── Pointer-based drag (avoids macOS green-plus OS drag behavior) ────────────
 
-const draggingId = ref<string | null>(null)
-// Separate visual ref — applied via rAF to avoid WebKit premature-dragend bug
-// when transform/opacity is applied synchronously inside dragstart.
 const draggingVisual = ref<string | null>(null)
-const dragOverZone = ref<Quadrant | 'unassigned' | null>(null)
+const dragOverZone   = ref<Quadrant | 'unassigned' | null>(null)
 
-function onDragStart(e: DragEvent, taskId: string) {
-  draggingId.value = taskId
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', taskId)
+interface PointerDrag {
+  taskId: string
+  x: number
+  y: number
+  startX: number
+  startY: number
+  active: boolean
+}
+const pointerDrag = ref<PointerDrag | null>(null)
+
+// Refs for each drop zone
+const cellRefs = ref<Record<string, HTMLElement | null>>({})
+const unassignedRef = ref<HTMLElement | null>(null)
+
+function getZoneAtPoint(x: number, y: number): Quadrant | 'unassigned' | null {
+  for (const q of QUADRANTS) {
+    const el = cellRefs.value[q.key]
+    if (!el) continue
+    const r = el.getBoundingClientRect()
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return q.key
   }
-  requestAnimationFrame(() => { draggingVisual.value = taskId })
+  const up = unassignedRef.value
+  if (up) {
+    const r = up.getBoundingClientRect()
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return 'unassigned'
+  }
+  return null
 }
 
-function onDragEnd() {
-  draggingId.value = null
+function onCardPointerDown(e: PointerEvent, taskId: string) {
+  if (e.button !== 0) return
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  pointerDrag.value = { taskId, x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY, active: false }
+}
+
+function onCardPointerMove(e: PointerEvent) {
+  const pd = pointerDrag.value
+  if (!pd) return
+  pd.x = e.clientX
+  pd.y = e.clientY
+  if (!pd.active) {
+    if (Math.hypot(e.clientX - pd.startX, e.clientY - pd.startY) > 6) {
+      pd.active = true
+      draggingVisual.value = pd.taskId
+    }
+    return
+  }
+  dragOverZone.value = getZoneAtPoint(e.clientX, e.clientY)
+}
+
+function onCardPointerUp(e: PointerEvent) {
+  const pd = pointerDrag.value
+  if (!pd) return
+  if (pd.active) {
+    const zone = getZoneAtPoint(e.clientX, e.clientY)
+    if (zone !== null) {
+      store.setTaskQuadrant(pd.taskId, zone === 'unassigned' ? null : zone)
+    }
+  }
+  pointerDrag.value = null
   draggingVisual.value = null
   dragOverZone.value = null
 }
 
-function onDragOver(e: DragEvent, zone: Quadrant | 'unassigned') {
-  e.preventDefault()
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-  dragOverZone.value = zone
-}
-
-function onDragLeave(e: DragEvent, zone: Quadrant | 'unassigned') {
-  // Only clear if truly leaving the zone (not entering a child)
-  const related = e.relatedTarget as HTMLElement | null
-  if (related && (e.currentTarget as HTMLElement).contains(related)) return
-  if (dragOverZone.value === zone) dragOverZone.value = null
-}
-
-function onDrop(e: DragEvent, zone: Quadrant | 'unassigned') {
-  e.preventDefault()
-  // Use dataTransfer as fallback in case draggingId was cleared by premature dragend
-  const id = draggingId.value ?? e.dataTransfer?.getData('text/plain') ?? null
-  if (!id) return
-  store.setTaskQuadrant(id, zone === 'unassigned' ? null : zone)
-  draggingId.value = null
+function onCardPointerCancel() {
+  pointerDrag.value = null
   draggingVisual.value = null
   dragOverZone.value = null
 }
+
+// Floating drag preview — follows cursor
+const draggingTask = computed(() => {
+  if (!pointerDrag.value?.active) return null
+  return store.tasks.find(t => t.id === pointerDrag.value!.taskId) ?? null
+})
 
 // ─── Add task inline ──────────────────────────────────────────────────────────
 
@@ -166,16 +204,27 @@ function getQuadrantTasks(q: Quadrant) {
 
 <template>
   <div class="quadrant-root">
+    <!-- Floating drag preview -->
+    <Teleport to="body">
+      <div
+        v-if="draggingTask && pointerDrag"
+        class="drag-preview"
+        :style="{ left: `${pointerDrag.x + 12}px`, top: `${pointerDrag.y + 8}px` }"
+      >
+        {{ draggingTask.title || '无标题' }}
+      </div>
+    </Teleport>
+
     <div class="quadrant-body">
-      <!-- Top axis label (紧急 ↔ 不紧急) -->
+      <!-- Top axis label (不紧急 ↔ 紧急) -->
       <div class="axis-x-row">
         <div class="axis-x-label left">
           <div class="axis-arrow axis-arrow--left" />
-          紧急
+          不紧急
         </div>
         <div class="axis-x-divider" />
         <div class="axis-x-label right">
-          不紧急
+          紧急
           <div class="axis-arrow axis-arrow--right" />
         </div>
       </div>
@@ -185,15 +234,13 @@ function getQuadrantTasks(q: Quadrant) {
         <div
           v-for="q in QUADRANTS"
           :key="q.key"
+          :ref="el => cellRefs[q.key] = el as HTMLElement | null"
           class="quadrant-cell"
           :class="{ 'drag-over': dragOverZone === q.key }"
           :style="{
             background: dragOverZone === q.key ? q.bgColor.replace('0.04', '0.10') : q.bgColor,
             borderColor: dragOverZone === q.key ? q.color : q.borderColor,
           }"
-          @dragover="onDragOver($event, q.key)"
-          @dragleave="onDragLeave($event, q.key)"
-          @drop="onDrop($event, q.key)"
         >
           <!-- Cell header -->
           <div class="cell-header" :style="{ borderBottomColor: q.borderColor }">
@@ -234,9 +281,10 @@ function getQuadrantTasks(q: Quadrant) {
                 dragging: draggingVisual === task.id,
                 overdue: isOverdue(task),
               }"
-              draggable="true"
-              @dragstart="onDragStart($event, task.id)"
-              @dragend="onDragEnd"
+              @pointerdown="onCardPointerDown($event, task.id)"
+              @pointermove="onCardPointerMove"
+              @pointerup="onCardPointerUp"
+              @pointercancel="onCardPointerCancel"
               @click="store.activeTaskId = task.id"
             >
               <div class="card-drag-handle">
@@ -299,11 +347,9 @@ function getQuadrantTasks(q: Quadrant) {
 
       <!-- Unassigned panel -->
       <div
+        ref="unassignedRef"
         class="unassigned-panel"
         :class="{ 'drag-over': dragOverZone === 'unassigned' }"
-        @dragover="onDragOver($event, 'unassigned')"
-        @dragleave="onDragLeave($event, 'unassigned')"
-        @drop="onDrop($event, 'unassigned')"
       >
         <button class="unassigned-header" @click="unassignedOpen = !unassignedOpen">
           <component :is="unassignedOpen ? ChevronDown : ChevronUp" :size="13" />
@@ -321,9 +367,10 @@ function getQuadrantTasks(q: Quadrant) {
               active: store.activeTaskId === task.id,
               dragging: draggingVisual === task.id,
             }"
-            draggable="true"
-            @dragstart="onDragStart($event, task.id)"
-            @dragend="onDragEnd"
+            @pointerdown="onCardPointerDown($event, task.id)"
+            @pointermove="onCardPointerMove"
+            @pointerup="onCardPointerUp"
+            @pointercancel="onCardPointerCancel"
             @click="store.activeTaskId = task.id"
           >
             <div class="card-drag-handle">
@@ -568,6 +615,8 @@ function getQuadrantTasks(q: Quadrant) {
   gap: 5px;
   transition: box-shadow 0.12s, opacity 0.12s, transform 0.12s;
   position: relative;
+  user-select: none;
+  touch-action: none;
 }
 
 .quadrant-card:active {
@@ -695,6 +744,26 @@ function getQuadrantTasks(q: Quadrant) {
   color: #ff3b30;
 }
 
+/* ─── Floating drag preview ────────────────────────────────────────────────── */
+.drag-preview {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  background: white;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: #1c1c1e;
+  font-weight: 500;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.92;
+}
+
 /* ─── Unassigned panel ─────────────────────────────────────────────────────── */
 .unassigned-panel {
   flex-shrink: 0;
@@ -765,6 +834,8 @@ function getQuadrantTasks(q: Quadrant) {
   cursor: grab;
   flex-shrink: 0;
   transition: box-shadow 0.1s, opacity 0.12s, transform 0.12s;
+  user-select: none;
+  touch-action: none;
 }
 
 .unassigned-card:active {

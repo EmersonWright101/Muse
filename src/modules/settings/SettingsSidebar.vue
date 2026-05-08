@@ -3,7 +3,6 @@ import { useI18n } from 'vue-i18n'
 import {
   SlidersHorizontal,
   Bot,
-  CloudUpload,
   Info,
   MessageSquare,
   CheckSquare,
@@ -20,7 +19,6 @@ const sections = [
   { id: 'chat',      icon: MessageSquare,     labelKey: 'settings.sections.chat' },
   { id: 'assistant', icon: null, customIcon: assistantIcon, labelKey: 'settings.sections.assistant' },
   { id: 'todo',      icon: CheckSquare,       labelKey: 'settings.sections.todo' },
-  { id: 'sync',      icon: CloudUpload,       labelKey: 'settings.sections.sync' },
   { id: 'about',     icon: Info,              labelKey: 'settings.sections.about' },
 ]
 

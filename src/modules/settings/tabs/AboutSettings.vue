@@ -58,7 +58,7 @@ const renderedNotes = computed(() => {
 
     <p class="app-desc">
       Muse 是一款私密、安全的个人 AI 助手桌面应用。
-      支持多家 AI 供应商，对话历史本地加密存储，可选 WebDAV 云同步。
+      支持多家 AI 供应商，对话历史本地加密存储。
     </p>
 
     <div class="section-card">

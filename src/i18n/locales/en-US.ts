@@ -129,7 +129,6 @@ export default {
       assistant:     'Personal Assistant',
       todo:          'Todo',
       webSearch:     'Web Search',
-      sync:          'Sync',
       privacy:       'Privacy & Security',
       about:         'About',
     },

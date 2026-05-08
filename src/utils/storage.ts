@@ -16,6 +16,8 @@ import {
   rename,
 } from '@tauri-apps/plugin-fs';
 import { resolveDataRoot, conversationsDir } from './path';
+import { pushConvToServer, fetchConvFromServer } from '../services/chatSync';
+import { isBackendConfigured } from '../services/api';
 
 export interface AttachmentMeta {
   id:       string;
@@ -211,9 +213,19 @@ export async function listConversations(): Promise<ConversationMeta[]> {
 export async function loadConversation(id: string): Promise<Conversation | null> {
   try {
     const path = `${await convDir()}/${id}.json`;
-    if (!(await exists(path))) return null;
-    const raw = await readTextFile(path);
-    return JSON.parse(raw) as Conversation;
+    if (await exists(path)) {
+      const raw = await readTextFile(path);
+      return JSON.parse(raw) as Conversation;
+    }
+    // Local file missing — fetch from backend and cache locally (no re-push)
+    if (isBackendConfigured()) {
+      const remote = await fetchConvFromServer(id);
+      if (remote) {
+        await saveConversationLocalOnly(remote);
+        return remote;
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -225,11 +237,41 @@ async function atomicWriteTextFile(path: string, content: string): Promise<void>
   await rename(tmpPath, path);
 }
 
+async function saveConversationLocalOnly(conv: Conversation): Promise<void> {
+  await ensureDirs();
+  const path = `${await convDir()}/${conv.id}.json`;
+  await atomicWriteTextFile(path, JSON.stringify(conv, null, 2));
+  localStorage.setItem('muse-ts-conversations', new Date().toISOString());
+  await indexMutex.run(async () => {
+    const index = await readIndex();
+    const idx   = index.findIndex(m => m.id === conv.id);
+    const lastMsg = conv.messages.filter(m => m.role !== 'system').at(-1);
+    const meta: ConversationMeta = {
+      id:          conv.id,
+      title:       conv.title,
+      createdAt:   conv.createdAt,
+      updatedAt:   conv.updatedAt,
+      preview:     lastMsg ? lastMsg.content.slice(0, 80).replace(/\n/g, ' ') : '',
+      model:       conv.model,
+      providerId:  conv.providerId,
+      pinned:      conv.pinned,
+      assistantId: conv.assistantId,
+    };
+    if (idx >= 0) index[idx] = meta;
+    else index.unshift(meta);
+    await writeIndex(index);
+  });
+}
+
 export async function saveConversation(conv: Conversation): Promise<void> {
   await ensureDirs();
   const path = `${await convDir()}/${conv.id}.json`;
   await atomicWriteTextFile(path, JSON.stringify(conv, null, 2));
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
+  // Push to backend (fire-and-forget; upsert via POST→fallback-to-PUT)
+  if (isBackendConfigured()) {
+    pushConvToServer(conv).catch(() => {});
+  }
 
   await indexMutex.run(async () => {
     const index = await readIndex();

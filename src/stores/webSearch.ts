@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
-import { encryptLocal, decryptLocal } from '../utils/crypto'
+import { encryptLocal, decryptLocal, encryptForServer, decryptFromServer } from '../utils/crypto'
 import { listWebSearchProviders } from '../services/webSearch'
+import { apiPut, getServerApiKey } from '../services/api'
 
 const LS_KEY       = 'muse-web-search-settings'
 const LS_USAGE_KEY = 'muse-web-search-usage'
@@ -107,7 +108,10 @@ export const useWebSearchStore = defineStore('webSearch', () => {
     localStorage.setItem(LS_MODIFIED_AT_KEY, new Date().toISOString())
   }
 
-  watch([enabled, activeProviderId, providerApiKeyEnc, providerNumResults, exaSearchType], persist, { deep: true })
+  watch([enabled, activeProviderId, providerApiKeyEnc, providerNumResults, exaSearchType], () => {
+    persist()
+    scheduleServerPush()
+  }, { deep: true })
 
   // ─── API key helpers ──────────────────────────────────────────────────────
 
@@ -160,6 +164,61 @@ export const useWebSearchStore = defineStore('webSearch', () => {
     exaSearchType.value = raw.providers?.exa?.exaSearchType ?? 'auto'
   }
 
+  // ─── Server sync ─────────────────────────────────────────────────────────
+
+  let _serverPushTimer: ReturnType<typeof setTimeout> | null = null
+
+  async function _buildServerPayload(): Promise<PersistedSettings> {
+    const srvKey = getServerApiKey()
+    const providers: Record<string, ProviderStore> = {}
+    for (const { id } of listWebSearchProviders()) {
+      const plain = await getApiKey(id)
+      const apiKeyEnc = plain && srvKey
+        ? await encryptForServer(plain, srvKey).catch(() => '')
+        : ''
+      providers[id] = {
+        apiKeyEnc,
+        numResults: providerNumResults.value[id] ?? 5,
+        ...(id === 'exa' ? { exaSearchType: exaSearchType.value } : {}),
+      }
+    }
+    return { enabled: enabled.value, activeProviderId: activeProviderId.value, providers }
+  }
+
+  function scheduleServerPush() {
+    if (_serverPushTimer) clearTimeout(_serverPushTimer)
+    _serverPushTimer = setTimeout(async () => {
+      const payload = await _buildServerPayload().catch(() => null)
+      if (payload) apiPut('/api/settings/webSearch', { value: payload }).catch(() => {})
+    }, 800)
+  }
+
+  async function pushToServer() {
+    const payload = await _buildServerPayload().catch(() => null)
+    if (payload) await apiPut('/api/settings/webSearch', { value: payload }).catch(() => {})
+  }
+
+  async function syncFromServer(allSettings: Record<string, unknown>) {
+    const s = allSettings.webSearch as PersistedSettings | undefined
+    if (!s) return
+    const srvKey = getServerApiKey()
+    if (s.enabled !== undefined) enabled.value = s.enabled
+    if (s.activeProviderId) activeProviderId.value = s.activeProviderId
+    for (const [id, pv] of Object.entries(s.providers ?? {})) {
+      if (pv.apiKeyEnc && srvKey) {
+        try {
+          const plain = await decryptFromServer(pv.apiKeyEnc, srvKey)
+          await setApiKey(id, plain)
+        } catch { /* skip */ }
+      }
+      if (pv.numResults !== undefined) {
+        providerNumResults.value = { ...providerNumResults.value, [id]: pv.numResults }
+      }
+      if (id === 'exa' && pv.exaSearchType) exaSearchType.value = pv.exaSearchType
+    }
+    persist()
+  }
+
   return {
     enabled,
     activeProviderId,
@@ -174,99 +233,8 @@ export const useWebSearchStore = defineStore('webSearch', () => {
     incrementUsage,
     getMonthlyUsage,
     reload,
+    pushToServer,
+    syncFromServer,
   }
 })
 
-// ─── Sync module ─────────────────────────────────────────────────────────────
-
-import { syncService } from '../services/sync'
-import type { SyncModule } from '../services/sync/types'
-
-interface RemoteProviderStore {
-  apiKey?: string      // plaintext — safe inside sync-encrypted container
-  apiKeyEnc?: string   // legacy: device-local encrypted key from old sync format
-  numResults?: number
-  exaSearchType?: 'auto' | 'fast' | 'deep'
-}
-
-interface RemoteWebSearchSettings {
-  __syncTs?: string
-  enabled?: boolean
-  activeProviderId?: string
-  providers?: Record<string, RemoteProviderStore>
-}
-
-const MOD_WEB_SEARCH = 'webSearch'
-
-const webSearchSyncModule: SyncModule = {
-  id: MOD_WEB_SEARCH,
-  remoteDirs: ['settings'],
-  getLocalTimestamp() {
-    return localStorage.getItem(LS_MODIFIED_AT_KEY) ?? new Date(0).toISOString()
-  },
-  async sync(ctx, localChanged) {
-    ctx.setProgress('同步联网搜索设置…')
-    const store = useWebSearchStore()
-    const path  = ctx.rp('settings/web_search_settings.enc')
-
-    // Build remote payload with plaintext API keys (safe inside sync-encrypted container)
-    async function buildRemotePayload(ts: string): Promise<RemoteWebSearchSettings> {
-      const providers: Record<string, RemoteProviderStore> = {}
-      for (const { id } of listWebSearchProviders()) {
-        providers[id] = {
-          apiKey:     await store.getApiKey(id),
-          numResults: store.getNumResults(id),
-          ...(id === 'exa' ? { exaSearchType: store.exaSearchType } : {}),
-        }
-      }
-      return {
-        __syncTs:         ts,
-        enabled:          store.enabled,
-        activeProviderId: store.activeProviderId,
-        providers,
-      }
-    }
-
-    const remoteData = await ctx.getEncrypted<RemoteWebSearchSettings | null>(path, null)
-
-    if (!remoteData) {
-      if (localChanged) await ctx.putEncrypted(path, await buildRemotePayload(new Date().toISOString()))
-      return
-    }
-
-    const localTs  = this.getLocalTimestamp() as string
-    const remoteTs = remoteData.__syncTs ?? new Date(0).toISOString()
-
-    // Apply remote settings to localStorage when remote is newer, then refresh in-memory state via onSynced
-    if (remoteTs > localTs) {
-      const providers: Record<string, ProviderStore> = {}
-      for (const { id } of listWebSearchProviders()) {
-        const rp = remoteData.providers?.[id]
-        providers[id] = {
-          // Prefer plaintext apiKey (new format); fall back to legacy apiKeyEnc
-          apiKeyEnc: rp?.apiKey
-            ? await encryptLocal(rp.apiKey)
-            : (rp?.apiKeyEnc ?? ''),
-          numResults: rp?.numResults ?? 5,
-          ...(id === 'exa' ? { exaSearchType: rp?.exaSearchType ?? 'auto' } : {}),
-        }
-      }
-      localStorage.setItem(LS_KEY, JSON.stringify({
-        enabled:          remoteData.enabled ?? false,
-        activeProviderId: remoteData.activeProviderId ?? 'exa',
-        providers,
-      } satisfies PersistedSettings))
-      localStorage.setItem(LS_MODIFIED_AT_KEY, remoteTs)
-    }
-
-    if (!localChanged && remoteTs <= localTs) return
-    await ctx.putEncrypted(path, await buildRemotePayload(new Date().toISOString()))
-  },
-}
-
-syncService.register({
-  ...webSearchSyncModule,
-  async onSynced() {
-    useWebSearchStore().reload()
-  },
-})

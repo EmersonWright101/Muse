@@ -84,3 +84,18 @@ export async function encryptLocal(value: string): Promise<string> {
 export async function decryptLocal(ciphertext: string): Promise<string> {
   return decryptData(ciphertext, getDeviceKey());
 }
+
+/**
+ * Encrypt a value using the backend API key as the password.
+ * The ciphertext can be decrypted on any device that has the same backend connection.
+ */
+export async function encryptForServer(value: string, serverApiKey: string): Promise<string> {
+  return encryptData(value, serverApiKey);
+}
+
+/**
+ * Decrypt a value that was encrypted with encryptForServer.
+ */
+export async function decryptFromServer(ciphertext: string, serverApiKey: string): Promise<string> {
+  return decryptData(ciphertext, serverApiKey);
+}

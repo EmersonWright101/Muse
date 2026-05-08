@@ -3,7 +3,6 @@ import { computed } from 'vue'
 import { useUiStore } from '../../stores/uiStore'
 import GeneralSettings from './tabs/GeneralSettings.vue'
 import AISettings      from './tabs/AISettings.vue'
-import SyncSettings    from './tabs/SyncSettings.vue'
 import AboutSettings   from './tabs/AboutSettings.vue'
 import ChatSettings      from './tabs/ChatSettings.vue'
 import AssistantSettings from './tabs/AssistantSettings.vue'
@@ -20,7 +19,6 @@ const sectionComponents: Record<string, unknown> = {
   chat:      ChatSettings,
   assistant: AssistantSettings,
   todo:      TodoSettings,
-  sync:    SyncSettings,
   about:   AboutSettings,
 }
 

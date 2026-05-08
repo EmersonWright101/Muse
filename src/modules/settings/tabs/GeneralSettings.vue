@@ -11,6 +11,7 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { useHomeStore, DEFAULT_PROMPT, FREQUENCY_OPTIONS } from '../../../stores/home'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
 import { useStatisticsStore } from '../../../stores/statistics'
+import { pushGeneralSettings } from '../../../services/syncManager'
 
 const { locale, t } = useI18n()
 const statsStore = useStatisticsStore()
@@ -75,6 +76,7 @@ const RETENTION_OPTIONS = [
 function setTrashRetention(days: number) {
   trashRetentionDays.value = days
   setTrashRetentionDays(days)
+  pushGeneralSettings().catch(() => {})
 }
 
 const languages = [
@@ -85,6 +87,7 @@ const languages = [
 function setLocale(code: string) {
   locale.value = code
   localStorage.setItem('muse-locale', code)
+  pushGeneralSettings().catch(() => {})
 }
 
 const currencies = [
@@ -94,6 +97,7 @@ const currencies = [
 
 function setCurrency(code: string) {
   statsStore.setCurrency(code as 'usd' | 'cny')
+  pushGeneralSettings().catch(() => {})
 }
 
 // ── ArXiv backend connection ─────────────────────────────────────────────────

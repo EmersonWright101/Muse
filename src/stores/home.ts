@@ -12,8 +12,7 @@ import { resolveDataRoot, normalizePath } from '../utils/path'
 import { readTextFile, writeTextFile, exists, mkdir, readDir, remove } from '@tauri-apps/plugin-fs'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { useAiSettingsStore } from './aiSettings'
-import { syncService } from '../services/sync'
-import type { SyncModule } from '../services/sync/types'
+import { apiGet, apiPut, apiDelete, apiPostForm, apiGetBinary, isBackendConfigured } from '../services/api'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -248,6 +247,9 @@ export const useHomeStore = defineStore('home', () => {
   function saveSettings() {
     localStorage.setItem(LS_KEY, JSON.stringify({ ...settings.value, animals: animals.value }))
     localStorage.setItem(LS_MODIFIED_AT_KEY, new Date().toISOString())
+    apiPut('/api/settings/home', {
+      value: { ...settings.value, animals: animals.value },
+    }).catch(() => {})
   }
 
   function updateSettings(patch: Partial<Omit<HomeSettings, 'animals'>>) {
@@ -294,6 +296,69 @@ export const useHomeStore = defineStore('home', () => {
   // ─── Posters ───────────────────────────────────────────────────────────────
 
   async function loadPosters() {
+    if (isBackendConfigured()) {
+      try {
+        interface RemotePoster { id: string; date: string; animalName: string; description: string; prompt: string; generatedAt: string; modelId: string; providerId: string; costUsd: number; deletedAt: string | null; imageUrl: string }
+        const remote = await apiGet<RemotePoster[]>('/api/home/posters')
+        if (remote && remote.length > 0) {
+          const loaded: AnimalPoster[] = []
+          for (const rp of remote) {
+            if (rp.deletedAt) continue
+            // Fetch image binary and convert to base64 for local use
+            const binary = await apiGetBinary(`/api/home/posters/${rp.id}/image`)
+            if (!binary) continue
+            let bin = ''
+            for (let i = 0; i < binary.length; i += 8192) {
+              bin += String.fromCharCode(...Array.from(binary.subarray(i, i + 8192)))
+            }
+            const imageBase64 = btoa(bin)
+            const poster: AnimalPoster = {
+              id:          rp.id,
+              date:        rp.date,
+              animalName:  rp.animalName,
+              description: rp.description,
+              imageBase64,
+              prompt:      rp.prompt,
+              generatedAt: rp.generatedAt,
+              modelId:     rp.modelId,
+              providerId:  rp.providerId,
+              costUsd:     rp.costUsd,
+            }
+            await writePosterFile(poster)
+            loaded.push(poster)
+          }
+          loaded.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt))
+          posters.value = loaded
+          posterIds.value = loaded.map(p => p.id)
+          return
+        }
+        // remote is [] → backend empty → migrate existing local posters (fire-and-forget)
+        ;(async () => {
+          const localIds = await listPosterIds()
+          for (const id of localIds) {
+            const p = await loadPosterFile(id)
+            if (!p?.imageBase64) continue
+            try {
+              const binary = Uint8Array.from(atob(p.imageBase64), c => c.charCodeAt(0))
+              const form = new FormData()
+              form.append('meta', JSON.stringify({
+                id:           p.id,
+                date:         p.date,
+                animal_name:  p.animalName,
+                description:  p.description,
+                prompt:       p.prompt,
+                generated_at: p.generatedAt,
+                model_id:     p.modelId,
+                provider_id:  p.providerId,
+                cost_usd:     p.costUsd,
+              }))
+              form.append('image', new Blob([binary], { type: 'image/png' }), `${p.id}.png`)
+              await apiPostForm<{ id: string }>('/api/home/posters', form)
+            } catch { /* ignore individual upload failure */ }
+          }
+        })().catch(() => {})
+      } catch { /* fall through to local */ }
+    }
     const ids = await listPosterIds()
     const loaded: AnimalPoster[] = []
     for (const id of ids) {
@@ -392,6 +457,29 @@ export const useHomeStore = defineStore('home', () => {
 
       await writePosterFile(poster)
 
+      // Upload to backend (fire-and-forget)
+      if (isBackendConfigured() && poster.imageBase64) {
+        ;(async () => {
+          try {
+            const binary = Uint8Array.from(atob(poster.imageBase64), c => c.charCodeAt(0))
+            const form = new FormData()
+            form.append('meta', JSON.stringify({
+              id:          poster.id,
+              date:        poster.date,
+              animal_name: poster.animalName,
+              description: poster.description,
+              prompt:      poster.prompt,
+              generated_at: poster.generatedAt,
+              model_id:    poster.modelId,
+              provider_id: poster.providerId,
+              cost_usd:    poster.costUsd,
+            }))
+            form.append('image', new Blob([binary], { type: 'image/png' }), `${poster.id}.png`)
+            await apiPostForm('/api/home/posters', form)
+          } catch { /* ignore */ }
+        })()
+      }
+
       posters.value = [poster, ...posters.value]
       posterIds.value = posters.value.map(p => p.id)
 
@@ -417,6 +505,7 @@ export const useHomeStore = defineStore('home', () => {
       stat.requests += 1
       posterStats.value = { ...posterStats.value, [today]: stat }
       await savePosterStats(posterStats.value)
+      apiPut(`/api/home/stats/${today}`, { cost_usd: stat.costUsd, requests: stat.requests }).catch(() => {})
     } catch (e: unknown) {
       generateError.value = e instanceof Error ? e.message : String(e)
       console.error('Poster generation failed:', e)
@@ -468,6 +557,29 @@ export const useHomeStore = defineStore('home', () => {
     deleted[id] = new Date().toISOString()
     setDeletedPosters(deleted)
     localStorage.setItem(LS_MODIFIED_AT_KEY, new Date().toISOString())
+    apiDelete(`/api/home/posters/${id}`).catch(() => {})
+  }
+
+  function pushToServer() {
+    apiPut('/api/settings/home', { value: { ...settings.value, animals: animals.value } }).catch(() => {})
+  }
+
+  async function syncFromServer() {
+    if (!isBackendConfigured()) return
+    try {
+      const allSettings = await apiGet<Record<string, unknown>>('/api/settings')
+      if (allSettings?.home) {
+        const s = allSettings.home as Partial<HomeSettings & { animals?: AnimalEntry[] }>
+        if (s.enabled        !== undefined) settings.value.enabled        = s.enabled
+        if (s.providerId)                   settings.value.providerId     = s.providerId
+        if (s.modelId)                      settings.value.modelId        = s.modelId
+        if (s.frequency)                    settings.value.frequency      = s.frequency
+        if (s.promptTemplate)               settings.value.promptTemplate = s.promptTemplate
+        if (s.maxPosters     !== undefined) settings.value.maxPosters     = s.maxPosters
+        if (Array.isArray(s.animals) && s.animals.length > 0) animals.value = s.animals
+        localStorage.setItem(LS_KEY, JSON.stringify({ ...settings.value, animals: animals.value }))
+      }
+    } catch { /* ignore */ }
   }
 
   // ─── Init ─────────────────────────────────────────────────────────────────
@@ -504,6 +616,8 @@ export const useHomeStore = defineStore('home', () => {
     maybeAutoGenerate,
     startDailyScheduler,
     deletePoster,
+    pushToServer,
+    syncFromServer,
   }
 })
 
@@ -517,155 +631,3 @@ export async function loadPosterStatsFile(): Promise<Record<string, PosterDailyS
   } catch { return {} }
 }
 
-// ─── Sync module ──────────────────────────────────────────────────────────────
-
-const MOD_HOME = 'homePoster'
-
-const homeSyncModule: SyncModule = {
-  id: MOD_HOME,
-  remoteDirs: ['home_posters'],
-  getLocalTimestamp() {
-    return localStorage.getItem(LS_MODIFIED_AT_KEY) ?? new Date(0).toISOString()
-  },
-  async sync(ctx, localChanged) {
-    ctx.setProgress('同步动物海报…')
-    const store = useHomeStore()
-
-    // Sync settings + animal list
-    const settingsPath = ctx.rp('home_posters/settings.enc')
-    type SyncedSettings = Omit<HomeSettings, 'animals'> & { animals?: AnimalEntry[] }
-    const remoteSettings = await ctx.getEncrypted<SyncedSettings | null>(settingsPath, null)
-    if (localChanged) {
-      await ctx.putEncrypted(settingsPath, { ...store.settings, animals: store.animals })
-    } else if (remoteSettings) {
-      store.updateSettings(remoteSettings)
-      if (Array.isArray(remoteSettings.animals) && remoteSettings.animals.length > 0) {
-        store.animals = remoteSettings.animals
-      }
-    }
-
-    // Sync last generated date — take the later of local and remote to avoid re-generating
-    // on a device that hasn't seen a generation done on another device.
-    const lastGenPath = ctx.rp('home_posters/last_generated.enc')
-    const localLastGen = localStorage.getItem('muse-home-last-generated')
-    const remoteLastGen = await ctx.getEncrypted<{ date?: string } | null>(lastGenPath, null)
-    const effectiveLastGen = [localLastGen, remoteLastGen?.date]
-      .filter((d): d is string => Boolean(d))
-      .sort()
-      .at(-1) ?? null
-    if (effectiveLastGen && effectiveLastGen !== localLastGen) {
-      localStorage.setItem('muse-home-last-generated', effectiveLastGen)
-      store.lastGeneratedDate = effectiveLastGen
-    }
-    if (localChanged) {
-      await ctx.putEncrypted(lastGenPath, { date: effectiveLastGen ?? localLastGen })
-    }
-
-    // Sync poster stats — merge by taking the higher costUsd per day, then persist to disk
-    const statsPath = ctx.rp('home_posters/poster-stats.enc')
-    const remoteStats = await ctx.getEncrypted<Record<string, PosterDailyStat> | null>(statsPath, null)
-    let statsChanged = false
-    if (remoteStats) {
-      for (const [date, rs] of Object.entries(remoteStats)) {
-        const ls = store.posterStats[date]
-        if (!ls || rs.costUsd > ls.costUsd) {
-          store.posterStats = { ...store.posterStats, [date]: rs }
-          statsChanged = true
-        }
-      }
-    }
-    if (statsChanged) await savePosterStats(store.posterStats)
-    if (localChanged) {
-      await ctx.putEncrypted(statsPath, store.posterStats)
-    }
-
-    // Sync poster manifest (metadata without images)
-    type PosterMeta = Omit<AnimalPoster, 'imageBase64'>
-    const manifestPath = ctx.rp('home_posters/manifest.enc')
-    const localMeta: PosterMeta[] = store.posters.map(({ imageBase64: _img, ...rest }) => rest)
-    const remoteMeta = await ctx.getEncrypted<PosterMeta[] | null>(manifestPath, null)
-
-    // Sync tombstones
-    const tombstonesPath = ctx.rp('home_posters/tombstones.enc')
-    const localDeleted = getDeletedPosters()
-    const remoteDeleted = await ctx.getEncrypted<Record<string, string> | null>(tombstonesPath, null)
-
-    if (localChanged) {
-      await ctx.putEncrypted(manifestPath, localMeta)
-      await ctx.putEncrypted(tombstonesPath, localDeleted)
-    }
-
-    // Merge remote deletions into local tombstones and apply them
-    if (remoteDeleted) {
-      for (const [id, ts] of Object.entries(remoteDeleted)) {
-        if (!localDeleted[id] || ts > localDeleted[id]) {
-          localDeleted[id] = ts
-          // Delete local file if it still exists
-          try {
-            const dir = await getPostersDir()
-            const p = `${dir}/${id}.json`
-            if (await exists(p)) await remove(p)
-          } catch { /* ignore */ }
-          store.posters = store.posters.filter(p => p.id !== id)
-          store.posterIds = store.posters.map(p => p.id)
-        }
-      }
-      setDeletedPosters(localDeleted)
-    }
-
-    // Delete remote images that are in local tombstones but still on remote
-    if (localChanged && remoteMeta) {
-      for (const meta of remoteMeta) {
-        if (localDeleted[meta.id]) {
-          await ctx.webdavDelete(ctx.rp(`home_posters/${meta.id}.enc`))
-        }
-      }
-    }
-
-    // Pull poster images not present locally (and not tombstoned)
-    if (remoteMeta) {
-      const localIds = new Set(store.posterIds)
-      for (const meta of remoteMeta) {
-        if (localIds.has(meta.id)) continue
-        if (localDeleted[meta.id]) continue
-        const imgPath = ctx.rp(`home_posters/${meta.id}.enc`)
-        const imgData = await ctx.getEncrypted<{ imageBase64: string } | null>(imgPath, null)
-        if (imgData) {
-          const fullPoster: AnimalPoster = { ...meta, imageBase64: imgData.imageBase64 }
-          await writePosterFile(fullPoster)
-          store.posters.push(fullPoster)
-          store.posterIds = store.posters.map(p => p.id)
-        }
-      }
-      store.posters.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt))
-      store.posterIds = store.posters.map(p => p.id)
-    }
-
-    // Push local images not on remote
-    if (localChanged && remoteMeta) {
-      const remoteIds = new Set(remoteMeta.map(m => m.id))
-      for (const poster of store.posters) {
-        if (remoteIds.has(poster.id)) continue
-        const imgPath = ctx.rp(`home_posters/${poster.id}.enc`)
-        await ctx.putEncrypted(imgPath, { imageBase64: poster.imageBase64 })
-      }
-    }
-
-    // Prune tombstones older than 6 months
-    const sixMonthsAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString()
-    const prunedDeleted: Record<string, string> = {}
-    for (const [id, ts] of Object.entries(localDeleted) as [string, string][]) {
-      if (ts >= sixMonthsAgo) prunedDeleted[id] = ts
-    }
-    setDeletedPosters(prunedDeleted)
-
-    localStorage.setItem(LS_MODIFIED_AT_KEY, new Date().toISOString())
-  },
-  async onSynced() {
-    const store = useHomeStore()
-    store.loadSettings()
-    await store.loadPosters()
-  },
-}
-
-syncService.register(homeSyncModule)

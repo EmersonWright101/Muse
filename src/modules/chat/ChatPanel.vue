@@ -520,11 +520,13 @@ const pdfNative = computed(() => {
             @blur="commitTitleEdit"
             @keydown="onTitleKeydown"
             @input="updateTitleInputWidth"
+            @mousedown.stop
           />
           <span
             v-else
             class="conv-title"
             title="双击编辑标题"
+            @mousedown.stop
             @dblclick="startTitleEdit"
           >{{ conv?.title }}</span>
         </div>

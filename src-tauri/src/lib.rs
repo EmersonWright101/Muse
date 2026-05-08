@@ -17,7 +17,7 @@ mod macos_notif {
     use objc2::runtime::ProtocolObject;
     use objc2::{define_class, ClassType, MainThreadMarker};
     use objc2_app_kit::NSApplication;
-    use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
+    use objc2_foundation::{NSBundle, NSObject, NSObjectProtocol, NSString};
     use objc2_user_notifications::{
         UNMutableNotificationContent, UNNotification, UNNotificationPresentationOptions,
         UNNotificationRequest, UNNotificationSound, UNTimeIntervalNotificationTrigger,
@@ -49,7 +49,22 @@ mod macos_notif {
         }
     );
 
+    /// Returns true only when running inside a proper .app bundle.
+    /// UNUserNotificationCenter requires bundleProxyForCurrentProcess, which the OS
+    /// only sets when the process is launched from a real .app bundle. Raw debug
+    /// binaries have an embedded bundle ID (from Info.plist) but no bundleProxy,
+    /// causing NSInternalInconsistencyException in currentNotificationCenter.
+    fn is_proper_app_bundle() -> bool {
+        NSBundle::mainBundle()
+            .bundlePath()
+            .to_string()
+            .ends_with(".app")
+    }
+
     pub fn setup() {
+        if !is_proper_app_bundle() {
+            return;
+        }
         unsafe {
             let center = UNUserNotificationCenter::currentNotificationCenter();
             let delegate: Retained<MuseNotificationDelegate> =
@@ -63,6 +78,10 @@ mod macos_notif {
     /// Uses OS scheduling so delivery works regardless of foreground/background state.
     /// Returns the number of reminders successfully passed to UNUserNotificationCenter.
     pub fn schedule_reminders(reminders: &[super::TaskReminder]) -> u32 {
+        if !is_proper_app_bundle() {
+            return 0;
+        }
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -181,11 +200,18 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    // Set the macOS notification delegate AFTER all plugins finish initializing.
-    // tauri-plugin-notification sets its own delegate during init; calling setup()
-    // here ensures ours wins and willPresentNotification fires for foreground banners.
+    // Set the macOS notification delegate on RunEvent::Ready — the run loop must
+    // be active before UNUserNotificationCenter::currentNotificationCenter() is safe.
+    // tauri-plugin-notification sets its own delegate during init; overriding here
+    // (after Ready) ensures ours wins so willPresentNotification fires in foreground.
     #[cfg(target_os = "macos")]
-    macos_notif::setup();
+    let mut notif_setup_done = false;
 
-    app.run(|_app_handle, _event| {});
+    app.run(move |_app_handle, event| {
+        #[cfg(target_os = "macos")]
+        if !notif_setup_done && matches!(event, tauri::RunEvent::Ready) {
+            macos_notif::setup();
+            notif_setup_done = true;
+        }
+    });
 }

@@ -7,6 +7,7 @@ import {
   newId,
   type Assistant,
 } from '../utils/storage'
+import { apiGet, apiPost, apiPut, apiDelete, isBackendConfigured } from '../services/api'
 
 export type { Assistant }
 
@@ -21,10 +22,44 @@ export const ASSISTANT_COLORS = [
   '#E55E5E',
 ]
 
+interface RemoteAssistant {
+  id: string
+  name: string
+  systemPrompt: string
+  color: string
+  defaultProviderId?: string
+  defaultModelId?: string
+  createdAt: string
+  updatedAt: string
+  deletedAt: string | null
+}
+
 export const useAssistantsStore = defineStore('assistants', () => {
   const assistants = ref<Assistant[]>([])
 
   async function load() {
+    if (isBackendConfigured()) {
+      try {
+        const remote = await apiGet<RemoteAssistant[]>('/api/assistants')
+        if (remote) {
+          // Filter soft-deleted records; apply to local store and file
+          const active = remote.filter(a => !a.deletedAt).map(a => ({
+            id:                a.id,
+            name:              a.name,
+            systemPrompt:      a.systemPrompt,
+            color:             a.color,
+            defaultProviderId: a.defaultProviderId,
+            defaultModelId:    a.defaultModelId,
+            createdAt:         a.createdAt,
+            updatedAt:         a.updatedAt,
+          } as Assistant))
+          // Persist to local file as cache
+          for (const a of active) await saveAssistant(a)
+          assistants.value = active
+          return
+        }
+      } catch { /* fall through to local */ }
+    }
     assistants.value = await listAssistants()
   }
 
@@ -44,6 +79,18 @@ export const useAssistantsStore = defineStore('assistants', () => {
       updatedAt:    now,
     }
     await saveAssistant(a)
+    if (isBackendConfigured()) {
+      apiPost('/api/assistants', {
+        id:                 a.id,
+        name:               a.name,
+        system_prompt:      a.systemPrompt,
+        color:              a.color,
+        default_provider_id: a.defaultProviderId,
+        default_model_id:    a.defaultModelId,
+        created_at:         a.createdAt,
+        updated_at:         a.updatedAt,
+      }).catch(() => {})
+    }
     await load()
     return a
   }
@@ -54,7 +101,7 @@ export const useAssistantsStore = defineStore('assistants', () => {
   ) {
     const existing = assistants.value.find(a => a.id === id)
     if (!existing) return
-    await saveAssistant({
+    const updated: Assistant = {
       ...existing,
       name: name.trim(),
       systemPrompt: systemPrompt.trim(),
@@ -62,87 +109,72 @@ export const useAssistantsStore = defineStore('assistants', () => {
       defaultProviderId,
       defaultModelId,
       updatedAt: new Date().toISOString(),
-    })
+    }
+    await saveAssistant(updated)
+    if (isBackendConfigured()) {
+      apiPut(`/api/assistants/${id}`, {
+        name:               updated.name,
+        system_prompt:      updated.systemPrompt,
+        color:              updated.color,
+        default_provider_id: updated.defaultProviderId,
+        default_model_id:    updated.defaultModelId,
+        updated_at:         updated.updatedAt,
+      }).catch(() => {})
+    }
     await load()
   }
 
   async function remove(id: string) {
     await deleteAssistant(id)
+    if (isBackendConfigured()) {
+      apiDelete(`/api/assistants/${id}`).catch(() => {})
+    }
     await load()
+  }
+
+  async function syncFromServer() {
+    if (!isBackendConfigured()) return
+    try {
+      const remote = await apiGet<RemoteAssistant[]>('/api/assistants')
+      if (!remote) return
+      const active = remote.filter(a => !a.deletedAt).map(a => ({
+        id:                a.id,
+        name:              a.name,
+        systemPrompt:      a.systemPrompt,
+        color:             a.color,
+        defaultProviderId: a.defaultProviderId,
+        defaultModelId:    a.defaultModelId,
+        createdAt:         a.createdAt,
+        updatedAt:         a.updatedAt,
+      } as Assistant))
+
+      // Check if backend is empty → migrate local data
+      if (active.length === 0) {
+        const local = await listAssistants()
+        if (local.length > 0) {
+          for (const a of local) {
+            await apiPost('/api/assistants', {
+              id:                 a.id,
+              name:               a.name,
+              system_prompt:      a.systemPrompt,
+              color:              a.color,
+              default_provider_id: a.defaultProviderId,
+              default_model_id:    a.defaultModelId,
+              created_at:         a.createdAt,
+              updated_at:         a.updatedAt,
+            }).catch(() => {})
+          }
+          assistants.value = local
+          return
+        }
+      }
+
+      for (const a of active) await saveAssistant(a)
+      assistants.value = active
+    } catch { /* ignore */ }
   }
 
   load()
 
-  return { assistants, load, create, update, remove }
+  return { assistants, load, create, update, remove, syncFromServer }
 })
-
-// ─── Sync module ─────────────────────────────────────────────────────────────
-
-import { syncService } from '../services/sync'
-import type { SyncModule } from '../services/sync/types'
-import {
-  getDeletedAssistants,
-  applyRemoteDeletedAssistants,
-} from '../utils/storage'
-
-const MOD_AST = 'assistants'
-
-interface AssistantsPayload {
-  list: Assistant[]
-  deletedAssistants: Record<string, string>
-}
-
-const assistantsSyncModule: SyncModule = {
-  id: MOD_AST,
-  remoteDirs: ['assistants'],
-  getLocalTimestamp() {
-    return localStorage.getItem('muse-ts-assistants') ?? new Date(0).toISOString()
-  },
-  async sync(ctx, localChanged) {
-    ctx.setProgress('同步助手配置…')
-    const localList = await listAssistants()
-    const path = ctx.rp('assistants/list.enc')
-
-    const raw = await ctx.getEncrypted<AssistantsPayload | Assistant[]>(path, { list: [], deletedAssistants: {} })
-    const remotePayload: AssistantsPayload = Array.isArray(raw)
-      ? { list: raw, deletedAssistants: {} }
-      : raw
-
-    applyRemoteDeletedAssistants(remotePayload.deletedAssistants ?? {})
-    const mergedDeleted = getDeletedAssistants()
-
-    function isDeleted(a: Assistant): boolean {
-      const ts = mergedDeleted[a.id]
-      return !!ts && ts > (a.updatedAt ?? a.createdAt)
-    }
-
-    const merged = new Map<string, Assistant>()
-    for (const a of localList) if (!isDeleted(a)) merged.set(a.id, a)
-    for (const a of remotePayload.list) if (!isDeleted(a)) {
-      const local = merged.get(a.id)
-      if (!local || (a.updatedAt ?? a.createdAt) > (local.updatedAt ?? local.createdAt)) {
-        merged.set(a.id, a)
-      }
-    }
-
-    const mergedList = [...merged.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-
-    for (const a of mergedList) {
-      const local = localList.find(l => l.id === a.id)
-      if (!local || (a.updatedAt ?? a.createdAt) > (local.updatedAt ?? local.createdAt)) {
-        await saveAssistant(a)
-      }
-    }
-    for (const local of localList) {
-      if (isDeleted(local)) await deleteAssistant(local.id)
-    }
-
-    if (!localChanged) return
-    await ctx.putEncrypted(path, { list: mergedList, deletedAssistants: mergedDeleted } satisfies AssistantsPayload)
-  },
-  async onSynced() {
-    await useAssistantsStore().load()
-  },
-}
-
-syncService.register(assistantsSyncModule)

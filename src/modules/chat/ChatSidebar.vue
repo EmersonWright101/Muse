@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Search, SquarePen, Trash2, ListChecks, X, Pin, Plus, Pencil, ChevronDown, Download, RotateCcw, Check, Cpu } from 'lucide-vue-next'
 import { useChatStore }       from '../../stores/chat'
@@ -7,6 +7,7 @@ import { useAssistantsStore, ASSISTANT_COLORS } from '../../stores/assistants'
 import { useAiSettingsStore } from '../../stores/aiSettings'
 import type { Assistant }     from '../../stores/assistants'
 import { useChatExport, type ExportFilter } from '../../composables/useChatExport'
+import { loadConversation } from '../../utils/storage'
 
 const { t } = useI18n()
 const chat       = useChatStore()
@@ -60,6 +61,34 @@ const activeFilterLabel = computed(() => {
   return assistants.assistants.find(a => a.id === filterAssistantId.value) ?? null
 })
 
+// ─── Full-text search (async, scans message content) ─────────────────────────
+const fullTextIds     = ref<Set<string>>(new Set())
+const fullTextLoading = ref(false)
+let fullTextTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(searchQuery, (q) => {
+  if (fullTextTimer) clearTimeout(fullTextTimer)
+  if (!q.trim()) { fullTextIds.value = new Set(); return }
+  fullTextTimer = setTimeout(() => runFullTextSearch(q.trim().toLowerCase()), 300)
+})
+
+async function runFullTextSearch(q: string) {
+  fullTextLoading.value = true
+  const ids = new Set<string>()
+  for (const meta of chat.conversations) {
+    const conv = await loadConversation(meta.id)
+    if (!conv) continue
+    for (const msg of conv.messages) {
+      if (typeof msg.content === 'string' && msg.content.toLowerCase().includes(q)) {
+        ids.add(meta.id)
+        break
+      }
+    }
+  }
+  fullTextIds.value = ids
+  fullTextLoading.value = false
+}
+
 const filtered = computed(() => {
   let list = chat.conversations
   if (filterAssistantId.value !== null) {
@@ -68,7 +97,9 @@ const filtered = computed(() => {
   const q = searchQuery.value.toLowerCase().trim()
   if (!q) return list
   return list.filter(c =>
-    c.title.toLowerCase().includes(q) || c.preview.toLowerCase().includes(q),
+    c.title.toLowerCase().includes(q) ||
+    c.preview.toLowerCase().includes(q) ||
+    fullTextIds.value.has(c.id),
   )
 })
 
@@ -446,7 +477,8 @@ function daysUntilExpiry(deletedAt: string): number {
         :placeholder="t('chat.search')"
         type="text"
       />
-      <button v-if="searchQuery" class="clear-btn" @click="searchQuery = ''">
+      <span v-if="fullTextLoading" class="search-spinner" />
+      <button v-else-if="searchQuery" class="clear-btn" @click="searchQuery = ''">
         <X :size="11" />
       </button>
     </div>
@@ -1024,6 +1056,17 @@ function daysUntilExpiry(deletedAt: string): number {
   display: flex;
   align-items: center;
 }
+
+.search-spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid #8e8e93;
+  border-top-color: transparent;
+  border-radius: 50%;
+  flex-shrink: 0;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ─── List ────────────────────────────────────────────────────────────────── */
 

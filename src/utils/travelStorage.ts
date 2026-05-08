@@ -34,7 +34,6 @@
 import {
   readTextFile,
   writeTextFile,
-  readFile,
   writeFile,
   exists,
   mkdir,
@@ -43,6 +42,7 @@ import {
   readDir,
 } from '@tauri-apps/plugin-fs'
 import { travelNotesDir } from './path'
+import { apiPost, apiPut, apiDelete, apiPostForm, apiGetBinary, isBackendConfigured } from '../services/api'
 
 export interface TravelNoteMeta {
   id: string        // filename without .md
@@ -264,6 +264,42 @@ export async function saveTravelNote(note: TravelNote): Promise<void> {
   await writeTextFile(tmp, stringifyFrontmatter(note))
   await rename(tmp, path)
   localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
+
+  if (isBackendConfigured()) {
+    // Upsert: try PUT, fall back to POST on 404
+    apiPut(`/api/travel/notes/${note.id}`, {
+      title:       note.title,
+      content:     note.content,
+      date:        note.date,
+      lat:         note.lat,
+      lng:         note.lng,
+      category_l1: note.categoryL1,
+      category_l2: note.categoryL2,
+      tags:        note.tags ?? [],
+      rating:      note.rating,
+      cover:       note.cover,
+      status:      note.status ?? 'visited',
+      updated_at:  note.updatedAt,
+    }).catch(async (e: { status?: number }) => {
+      if (e?.status === 404) {
+        await apiPost('/api/travel/notes', {
+          id:          note.id,
+          title:       note.title,
+          content:     note.content,
+          date:        note.date,
+          lat:         note.lat,
+          lng:         note.lng,
+          category_l1: note.categoryL1,
+          category_l2: note.categoryL2,
+          tags:        note.tags ?? [],
+          rating:      note.rating,
+          cover:       note.cover,
+          status:      note.status ?? 'visited',
+          updated_at:  note.updatedAt,
+        }).catch(() => {})
+      }
+    })
+  }
 }
 
 export async function deleteTravelNote(id: string): Promise<void> {
@@ -275,6 +311,7 @@ export async function deleteTravelNote(id: string): Promise<void> {
   map[id] = new Date().toISOString()
   localStorage.setItem(LS_DELETED_TRAVEL_KEY, JSON.stringify(map))
   localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
+  apiDelete(`/api/travel/notes/${id}`).catch(() => {})
 }
 
 // ─── Trash ───────────────────────────────────────────────────────────────────
@@ -323,6 +360,7 @@ export async function moveNoteToTrash(id: string): Promise<void> {
   map[id] = deletedAt
   localStorage.setItem(LS_DELETED_TRAVEL_KEY, JSON.stringify(map))
   localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
+  apiDelete(`/api/travel/notes/${id}`).catch(() => {})
 }
 
 /** List all notes currently in the trash folder. */
@@ -398,6 +436,7 @@ export async function restoreNoteFromTrash(id: string): Promise<void> {
   delete tombstones[id]
   localStorage.setItem(LS_DELETED_TRAVEL_KEY, JSON.stringify(tombstones))
   localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
+  apiPost(`/api/travel/notes/${id}/restore`, {}).catch(() => {})
 }
 
 /** Permanently delete a note from trash (tombstone already set by moveNoteToTrash). */
@@ -479,7 +518,7 @@ function addPendingImageDeletion(filename: string): void {
   localStorage.setItem(LS_DELETED_IMAGES_KEY, JSON.stringify(Array.from(pending)))
 }
 
-function clearPendingImageDeletions(): void {
+export function clearPendingImageDeletions(): void {
   localStorage.removeItem(LS_DELETED_IMAGES_KEY)
 }
 
@@ -490,6 +529,44 @@ export async function deleteAttachment(filename: string): Promise<void> {
     if (await exists(filePath)) await remove(filePath)
   } catch { /* ignore */ }
   addPendingImageDeletion(filename)
+  apiDelete(`/api/travel/images/${encodeURIComponent(filename)}`).catch(() => {})
+}
+
+/**
+ * Upload a travel note image to the backend and return its filename.
+ * The local file is written first; this is a background push.
+ */
+export async function uploadTravelImage(
+  filename: string,
+  noteId: string,
+  data: Uint8Array,
+  mimeType: string,
+): Promise<void> {
+  if (!isBackendConfigured()) return
+  try {
+    const form = new FormData()
+    form.append('file', new Blob([data], { type: mimeType }), filename)
+    form.append('note_id', noteId)
+    await apiPostForm('/api/travel/images', form)
+  } catch { /* ignore */ }
+}
+
+/**
+ * Fetch a travel image from the backend and save it locally.
+ * Used when local file is missing (e.g., on a new device).
+ */
+export async function fetchAndCacheTravelImage(filename: string): Promise<void> {
+  if (!isBackendConfigured()) return
+  try {
+    const dir = await travelNotesDir()
+    const imgDir = `${dir}/images`
+    const localPath = `${imgDir}/${filename}`
+    if (await exists(localPath)) return
+    const binary = await apiGetBinary(`/api/travel/images/${encodeURIComponent(filename)}`)
+    if (!binary) return
+    if (!(await exists(imgDir))) await mkdir(imgDir, { recursive: true })
+    await writeFile(localPath, binary)
+  } catch { /* ignore */ }
 }
 
 export function newNoteId(): string {
@@ -522,240 +599,3 @@ export function rebuildContent(note: TravelNote): string {
   return stringifyFrontmatter(note)
 }
 
-// ─── Sync module ─────────────────────────────────────────────────────────────
-
-import { syncService } from '../services/sync'
-import type { SyncModule, SyncContext } from '../services/sync/types'
-
-const MOD_TRAVEL = 'travelNotes'
-const IMAGE_EXTS = /\.(jpe?g|png|gif|webp|avif|svg|bmp|tiff?)$/i
-
-interface TravelPayload {
-  list: TravelNoteMeta[]
-  deletedTravelNotes: Record<string, string>
-}
-
-async function syncImages(ctx: SyncContext, localChanged: boolean): Promise<void> {
-  const dir = await travelNotesDir()
-  const imgDir = `${dir}/images`
-
-  // Collect local images
-  const localImages: string[] = []
-  if (await exists(imgDir)) {
-    const entries = await readDir(imgDir)
-    for (const e of entries) {
-      if (e.name && !e.isDirectory && IMAGE_EXTS.test(e.name)) {
-        localImages.push(e.name)
-      }
-    }
-  }
-
-  // Get remote image index (list of filenames known to be on remote)
-  const remoteIndex = await ctx.getEncrypted<string[]>(ctx.rp('travel/images_index.enc'), [])
-  const remoteSet = new Set(Array.isArray(remoteIndex) ? remoteIndex : [])
-  const localSet = new Set(localImages)
-  let indexChanged = false
-
-  // Remove locally-deleted images from remote (pending deletions are tracked across syncs)
-  const pendingDeletions = getPendingImageDeletions()
-  for (const filename of pendingDeletions) {
-    if (remoteSet.has(filename)) {
-      try {
-        ctx.setProgress(`删除远程图片 ${filename}…`)
-        await ctx.webdavDelete(ctx.rp(`travel/images/${filename}.enc`))
-      } catch { /* ignore — file may not exist on remote */ }
-      remoteSet.delete(filename)
-      indexChanged = true
-    }
-  }
-  if (pendingDeletions.size > 0) clearPendingImageDeletions()
-
-  // Upload local images not yet on remote (only when local data changed)
-  if (localChanged) {
-    for (const filename of localImages) {
-      if (remoteSet.has(filename)) continue
-      try {
-        ctx.setProgress(`上传图片 ${filename}…`)
-        const bytes = await readFile(`${imgDir}/${filename}`)
-        let binary = ''
-        for (let i = 0; i < bytes.length; i += 8192) {
-          binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
-        }
-        await ctx.putEncrypted(ctx.rp(`travel/images/${filename}.enc`), btoa(binary))
-        remoteSet.add(filename)
-        indexChanged = true
-      } catch {
-        // skip failed image
-      }
-    }
-  }
-
-  // Download remote images not available locally (skip pending-deleted filenames)
-  const toDownload = Array.from(remoteSet).filter(f => !localSet.has(f) && !pendingDeletions.has(f))
-  if (toDownload.length > 0) {
-    if (!(await exists(imgDir))) await mkdir(imgDir, { recursive: true })
-    for (const filename of toDownload) {
-      try {
-        ctx.setProgress(`下载图片 ${filename}…`)
-        const base64 = await ctx.getEncrypted<string | null>(
-          ctx.rp(`travel/images/${filename}.enc`), null,
-        )
-        if (!base64 || typeof base64 !== 'string') continue
-        const binary = atob(base64)
-        const bytes = new Uint8Array(binary.length)
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-        await writeFile(`${imgDir}/${filename}`, bytes)
-      } catch {
-        // skip failed image
-      }
-    }
-  }
-
-  // Update remote index when images were added or removed
-  if (indexChanged) {
-    await ctx.putEncrypted(ctx.rp('travel/images_index.enc'), Array.from(remoteSet))
-  }
-}
-
-const travelSyncModule: SyncModule = {
-  id: MOD_TRAVEL,
-  remoteDirs: ['travel', 'travel/images'],
-  getLocalTimestamp() {
-    return localStorage.getItem('muse-ts-travel-notes') ?? new Date(0).toISOString()
-  },
-  async sync(ctx, localChanged) {
-    ctx.setProgress('同步旅行日记…')
-    const localList = await listTravelNotes()
-    const idxPath = ctx.rp('travel/index.enc')
-
-    const raw = await ctx.getEncrypted<TravelPayload | null>(idxPath, { list: [], deletedTravelNotes: {} })
-    const remotePayload: TravelPayload = raw ?? { list: [], deletedTravelNotes: {} }
-
-    applyRemoteDeletedTravelNotes(remotePayload.deletedTravelNotes ?? {})
-    const mergedDeleted = getDeletedTravelNotes()
-
-    function isDeleted(id: string): boolean {
-      return !!mergedDeleted[id]
-    }
-
-    const remoteList = remotePayload.list
-    const localIds = new Set(localList.map(n => n.id))
-    const remoteIds = new Set(remoteList.map(n => n.id))
-    const remoteTombstones = new Set(Object.keys(remotePayload.deletedTravelNotes ?? {}))
-
-    let indexChanged = false
-
-    // ① Apply tombstones
-    for (const meta of localList) {
-      if (isDeleted(meta.id)) await deleteTravelNote(meta.id)
-    }
-    for (const [id] of Object.entries(mergedDeleted)) {
-      if (!remoteTombstones.has(id)) {
-        await ctx.webdavDelete(ctx.rp(`travel/${id}.enc`))
-        indexChanged = true
-      }
-    }
-
-    // ② Download notes that only exist on remote
-    for (const meta of remoteList) {
-      if (localIds.has(meta.id)) continue
-      if (isDeleted(meta.id)) continue
-      const resp = await ctx.webdavGet(ctx.rp(`travel/${meta.id}.enc`))
-      if (!resp.ok) continue
-      try {
-        const note = JSON.parse(await ctx.decrypt(resp.body)) as TravelNote
-        if (!isDeleted(note.id)) await saveTravelNote(note)
-      } catch { /* skip corrupt */ }
-    }
-
-    // ③ Upload notes that only exist locally
-    if (localChanged) {
-      for (const meta of localList) {
-        if (remoteIds.has(meta.id)) continue
-        if (isDeleted(meta.id)) continue
-        const note = await loadTravelNote(meta.id)
-        if (!note) continue
-        await ctx.putEncrypted(ctx.rp(`travel/${meta.id}.enc`), note)
-        indexChanged = true
-      }
-    }
-
-    // ④ Merge notes that exist on both sides (newer updatedAt wins)
-    for (const localMeta of localList) {
-      if (isDeleted(localMeta.id)) continue
-      const remoteMeta = remoteList.find(r => r.id === localMeta.id)
-      if (!remoteMeta) continue
-
-      const localNote = await loadTravelNote(localMeta.id)
-      if (!localNote) continue
-      const localUpdatedAt = localNote.updatedAt ?? localMeta.updatedAt ?? new Date(0).toISOString()
-      const remoteUpdatedAt = remoteMeta.updatedAt ?? new Date(0).toISOString()
-
-      if (remoteUpdatedAt > localUpdatedAt) {
-        const resp = await ctx.webdavGet(ctx.rp(`travel/${localMeta.id}.enc`))
-        if (resp.ok) {
-          try {
-            const remoteNote = JSON.parse(await ctx.decrypt(resp.body)) as TravelNote
-            await saveTravelNote(remoteNote)
-          } catch { /* skip */ }
-        }
-      } else if (localChanged && localUpdatedAt > remoteUpdatedAt) {
-        await ctx.putEncrypted(ctx.rp(`travel/${localMeta.id}.enc`), localNote)
-        indexChanged = true
-      }
-    }
-
-    // Sync image attachments (always, so remote images are downloaded even when no notes changed)
-    await syncImages(ctx, localChanged)
-
-    if (!localChanged && !indexChanged) return
-
-    const finalList = await listTravelNotes()
-    await ctx.putEncrypted(idxPath, {
-      list: finalList,
-      deletedTravelNotes: mergedDeleted,
-    } satisfies TravelPayload)
-  },
-}
-
-syncService.register(travelSyncModule)
-
-// ─── Trash retention sync module ─────────────────────────────────────────────
-
-const MOD_TRASH = 'trashRetention'
-const LS_TRASH_MODIFIED_AT = 'muse-trash-retention-modified-at'
-
-const trashSyncModule: SyncModule = {
-  id: MOD_TRASH,
-  remoteDirs: ['settings'],
-  getLocalTimestamp() {
-    return localStorage.getItem(LS_TRASH_MODIFIED_AT) ?? new Date(0).toISOString()
-  },
-  async sync(ctx, localChanged) {
-    ctx.setProgress('同步回收站设置…')
-    const path = ctx.rp('settings/trash_retention.enc')
-    const raw = localStorage.getItem(LS_TRASH_RETENTION)
-    const localData = raw ? { days: parseInt(raw) } : {}
-
-    const remoteData = await ctx.getEncrypted<Record<string, unknown> | null>(path, null)
-
-    if (!remoteData) {
-      if (localChanged && Object.keys(localData).length > 0) {
-        await ctx.putEncrypted(path, localData)
-      }
-      return
-    }
-
-    const localTs = await this.getLocalTimestamp()
-    const remoteTs = (remoteData as Record<string, unknown> & { __syncTs?: string }).__syncTs ?? new Date(0).toISOString()
-
-    if (remoteTs > localTs && typeof remoteData.days === 'number') {
-      localStorage.setItem(LS_TRASH_RETENTION, String(remoteData.days))
-    }
-
-    if (!localChanged) return
-    await ctx.putEncrypted(path, { ...localData, __syncTs: new Date().toISOString() })
-  },
-}
-
-syncService.register(trashSyncModule)

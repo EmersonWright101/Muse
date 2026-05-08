@@ -8,9 +8,10 @@
 
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
-import { encryptLocal, decryptLocal } from '../utils/crypto'
+import { encryptLocal, decryptLocal, encryptForServer, decryptFromServer } from '../utils/crypto'
 import { resolveDataRoot } from '../utils/path'
 import { writeTextFile, rename } from '@tauri-apps/plugin-fs'
+import { apiPut, getServerApiKey } from '../services/api'
 
 const LS_KEY             = 'muse-ai-settings'
 const LS_DELETED_KEY     = 'muse-deleted-providers'
@@ -433,11 +434,76 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     if (_pendingPersist) persist()
   })()
 
-  // Watch for changes and auto-persist
-  watch(providers, persist, { deep: true })
-  watch(activeProviderId, persist)
-  watch(defaultProviderId, persist)
-  watch(defaultModelId, persist)
+  // Watch for changes and auto-persist + server push
+  let _serverPushTimer: ReturnType<typeof setTimeout> | null = null
+
+  function scheduleServerPush() {
+    if (_serverPushTimer) clearTimeout(_serverPushTimer)
+    _serverPushTimer = setTimeout(() => { pushToServer().catch(() => {}) }, 800)
+  }
+
+  watch(providers, () => { persist(); scheduleServerPush() }, { deep: true })
+  watch(activeProviderId, () => { persist(); scheduleServerPush() })
+  watch(defaultProviderId, () => { persist(); scheduleServerPush() })
+  watch(defaultModelId,    () => { persist(); scheduleServerPush() })
+
+  // ─── Server sync ────────────────────────────────────────────────────────────
+
+  async function pushToServer(): Promise<void> {
+    const srvKey = getServerApiKey()
+    if (!srvKey) return
+    const persisted: PersistedProvider[] = []
+    for (const p of providers.value) {
+      let apiKeyEnc = ''
+      if (p.apiKey) {
+        try { apiKeyEnc = await encryptForServer(p.apiKey, srvKey) } catch { /* skip */ }
+      }
+      persisted.push({
+        id:              p.id,
+        type:            p.type,
+        name:            p.name,
+        builtIn:         p.builtIn,
+        apiKeyEnc,
+        baseUrl:         p.baseUrl,
+        enabled:         p.enabled,
+        selectedModelId: p.selectedModelId,
+        customModels:    p.models,
+        updatedAt:       p.updatedAt,
+      })
+    }
+    await apiPut('/api/settings/ai', {
+      value: {
+        activeProviderId:  activeProviderId.value,
+        providers:         persisted,
+        defaultProviderId: defaultProviderId.value,
+        defaultModelId:    defaultModelId.value,
+        deletedProviders:  getDeletedProviders(),
+      },
+    })
+  }
+
+  async function syncFromServer(allSettings: Record<string, unknown>): Promise<void> {
+    const s = allSettings.ai as (PersistedSettings & { deletedProviders?: Record<string, string> }) | undefined
+    if (!s) return
+    const srvKey = getServerApiKey()
+
+    if (s.deletedProviders) applyRemoteDeletedProviders(s.deletedProviders)
+    const deletedMap = getDeletedProviders()
+
+    for (const sp of s.providers ?? []) {
+      if (!sp.name || deletedMap[sp.id]) continue
+      let apiKey = ''
+      if (sp.apiKeyEnc && srvKey) {
+        try { apiKey = await decryptFromServer(sp.apiKeyEnc, srvKey) } catch { /* skip */ }
+      }
+      importProvider({ ...sp, apiKey })
+    }
+    if (s.activeProviderId)  activeProviderId.value  = s.activeProviderId
+    if (s.defaultProviderId) defaultProviderId.value = s.defaultProviderId
+    if (s.defaultModelId)    defaultModelId.value    = s.defaultModelId
+
+    await flush()
+  }
 
   return {
     providers,
@@ -459,103 +525,8 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     removeProvider,
     persist,
     flush,
+    pushToServer,
+    syncFromServer,
   }
 })
 
-// ─── Sync module ─────────────────────────────────────────────────────────────
-
-import { syncService } from '../services/sync'
-import type { SyncModule } from '../services/sync/types'
-
-const MOD_AI = 'aiSettings'
-
-const aiSyncModule: SyncModule = {
-  id: MOD_AI,
-  remoteDirs: ['settings'],
-  getLocalTimestamp() {
-    return localStorage.getItem(LS_MODIFIED_AT_KEY) ?? new Date(0).toISOString()
-  },
-  async sync(ctx, localChanged) {
-    ctx.setProgress('同步 AI 设置…')
-    const aiStore = useAiSettingsStore()
-
-    function toRemote(p: AIProvider) {
-      return {
-        id: p.id, name: p.name, type: p.type, builtIn: p.builtIn,
-        apiKey: p.apiKey, baseUrl: p.baseUrl, enabled: p.enabled,
-        selectedModelId: p.selectedModelId,
-        customModels: p.models,
-        updatedAt: p.updatedAt ?? new Date(0).toISOString(),
-      }
-    }
-
-    const localDeleted = getDeletedProviders()
-    const localData = {
-      timestamp: await this.getLocalTimestamp(),
-      providers: aiStore.providers.map(toRemote),
-      activeProviderId: aiStore.activeProviderId,
-      defaultProviderId: aiStore.defaultProviderId,
-      defaultModelId:    aiStore.defaultModelId,
-      deletedProviders:  localDeleted,
-    }
-
-    const path = ctx.rp('settings/ai_settings.enc')
-    const remoteData = await ctx.getEncrypted<typeof localData | null>(path, null)
-
-    if (!remoteData) {
-      if (localChanged) await ctx.putEncrypted(path, localData)
-      return
-    }
-
-    const remoteDeleted: Record<string, string> = remoteData.deletedProviders ?? {}
-    applyRemoteDeletedProviders(remoteDeleted)
-    const mergedDeleted = getDeletedProviders()
-
-    function isDeleted(p: ReturnType<typeof toRemote>): boolean {
-      const ts = mergedDeleted[p.id]
-      return !!ts && ts > (p.updatedAt ?? new Date(0).toISOString())
-    }
-
-    const remoteMap = new Map<string, ReturnType<typeof toRemote>>(
-      (remoteData.providers ?? []).filter((p: ReturnType<typeof toRemote>) => !isDeleted(p)).map((p: ReturnType<typeof toRemote>) => [p.id, p]),
-    )
-    const localMap = new Map<string, ReturnType<typeof toRemote>>(localData.providers.map(p => [p.id, p]))
-
-    for (const [id, rp_] of remoteMap) {
-      const lp = localMap.get(id)
-      if (!lp || (rp_.updatedAt ?? '') > (lp.updatedAt ?? '')) aiStore.importProvider(rp_)
-    }
-
-    for (const [id, ts] of Object.entries(mergedDeleted)) {
-      const p = aiStore.providers.find(p => p.id === id)
-      if (p && ts > (p.updatedAt ?? new Date(0).toISOString())) aiStore.removeProvider(id)
-    }
-
-    if ((remoteData.timestamp ?? '') > localData.timestamp) {
-      if (remoteData.activeProviderId) aiStore.setActiveProvider(remoteData.activeProviderId)
-      if (remoteData.defaultProviderId && remoteData.defaultModelId) {
-        aiStore.setDefaultModel(remoteData.defaultProviderId, remoteData.defaultModelId)
-      }
-    }
-
-    if (!localChanged) return
-
-    const mergedProviders = aiStore.providers.map(toRemote)
-    for (const [id, rp_] of remoteMap) {
-      if (!localMap.has(id) && !mergedProviders.find(p => p.id === id)) {
-        mergedProviders.push(rp_)
-      }
-    }
-
-    await ctx.putEncrypted(path, {
-      timestamp: new Date().toISOString(),
-      providers: mergedProviders,
-      activeProviderId: aiStore.activeProviderId,
-      defaultProviderId: aiStore.defaultProviderId,
-      defaultModelId:    aiStore.defaultModelId,
-      deletedProviders:  mergedDeleted,
-    })
-  },
-}
-
-syncService.register(aiSyncModule)

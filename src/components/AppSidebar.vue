@@ -2,9 +2,10 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings, Cloud, Loader2, Check } from 'lucide-vue-next'
+import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings, Cloud, Loader2, Check, BookOpen } from 'lucide-vue-next'
 import { syncStatus } from '../stores/syncStatus'
 import { syncAllFromServer } from '../services/syncManager'
+import { apiPut } from '../services/api'
 import assistantIcon from '../assets/icons/AIAssistant@2x.svg'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useTodoStore } from '../stores/todo'
@@ -19,6 +20,7 @@ const navItems = computed(() => [
   { path: '/chat',      icon: MessageSquare, labelKey: 'nav.chat',      avatar: false },
   { path: '/assistant', icon: null,          labelKey: 'nav.assistant', customIcon: assistantIcon },
   { path: '/todo',      icon: CheckSquare,   labelKey: 'nav.todo',      avatar: false, iconSize: 18 },
+  { path: '/ebook',     icon: BookOpen,      labelKey: 'nav.ebook',     avatar: false, iconSize: 20 },
   { path: '/travel',    icon: MapPin,        labelKey: 'nav.travel',    avatar: false },
 ])
 
@@ -55,11 +57,13 @@ function loadAvatar() {
 function saveAvatar(base64: string) {
   localStorage.setItem(LS_AVATAR_KEY, base64)
   userAvatar.value = base64
+  apiPut('/api/settings/profile', { value: { avatar: base64 } }).catch(() => {})
 }
 
 function clearAvatar() {
   localStorage.removeItem(LS_AVATAR_KEY)
   userAvatar.value = null
+  apiPut('/api/settings/profile', { value: { avatar: null } }).catch(() => {})
 }
 
 const logoMenuOpen = ref(false)

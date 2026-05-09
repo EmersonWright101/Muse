@@ -142,7 +142,7 @@ export const useTodoStore = defineStore('todo', () => {
     apiError.value  = msg
   }
 
-  // Per-task debounce timers — reads latest task state at fire time
+  // Per-task debounce timers — coalesces rapid edits (e.g. typing) into one request
   const _updateTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   function _scheduleApiUpdate(taskId: string) {
@@ -158,6 +158,26 @@ export const useTodoStore = defineStore('todo', () => {
       catch (e) {
         _onApiError(e, `updateTask ${taskId}`)
         _enqueuePending({ type: 'updateTask', d: { ...task } })
+      }
+    }, 500))
+  }
+
+  // Per-project debounce timers
+  const _projectUpdateTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  function _scheduleProjectUpdate(projectId: string) {
+    const c = cfg()
+    if (!c) return
+    const existing = _projectUpdateTimers.get(projectId)
+    if (existing) clearTimeout(existing)
+    _projectUpdateTimers.set(projectId, setTimeout(async () => {
+      _projectUpdateTimers.delete(projectId)
+      const project = projects.value.find(p => p.id === projectId)
+      if (!project) return
+      try { await apiUpdateProject(c, project) }
+      catch (e) {
+        _onApiError(e, `updateProject ${projectId}`)
+        _enqueuePending({ type: 'updateProject', d: { ...project } })
       }
     }, 500))
   }
@@ -181,14 +201,31 @@ export const useTodoStore = defineStore('todo', () => {
       const c = cfg()
       if (c) {
         try {
-          // Push any offline changes first, then pull the merged state
+          // Read local state before overwriting, so we can detect local-only items
+          const localData = await loadTodos()
+
           await _syncPending(c)
           const remote = await apiLoadAll(c)
-          projects.value  = remote.projects
-          tasks.value     = remote.tasks
+
+          // Upload local tasks/projects that don't exist on this backend (e.g. after server switch)
+          const remoteTaskIds    = new Set(remote.tasks.map(t => t.id))
+          const remoteProjectIds = new Set(remote.projects.map(p => p.id))
+
+          const localOnlyTasks    = localData.tasks.filter(t => !remoteTaskIds.has(t.id))
+          const localOnlyProjects = localData.projects.filter(p => !remoteProjectIds.has(p.id))
+
+          for (const p of localOnlyProjects) apiCreateProject(c, p).catch(() => {})
+          for (const t of localOnlyTasks)    apiCreateTask(c, t).catch(() => {})
+
+          // Merge: remote data wins for conflicts; local-only items appended
+          const mergedProjects = [...remote.projects, ...localOnlyProjects]
+          const mergedTasks    = [...remote.tasks,    ...localOnlyTasks]
+
+          projects.value  = mergedProjects
+          tasks.value     = mergedTasks
           apiStatus.value = 'connected'
           apiError.value  = null
-          await saveTodos({ version: 1, projects: remote.projects, tasks: remote.tasks })
+          await saveTodos({ version: 1, projects: mergedProjects, tasks: mergedTasks })
           return
         } catch (e) {
           _onApiError(e, 'load')
@@ -354,7 +391,6 @@ export const useTodoStore = defineStore('todo', () => {
   function deleteTask(id: string) {
     tasks.value = tasks.value.filter(t => t.id !== id)
     if (activeTaskId.value === id) activeTaskId.value = null
-
     const c = cfg()
     if (c) {
       apiDeleteTask(c, id).catch(e => {
@@ -406,14 +442,7 @@ export const useTodoStore = defineStore('todo', () => {
     const idx = projects.value.findIndex(p => p.id === id)
     if (idx === -1) return
     projects.value[idx] = { ...projects.value[idx], ...patch }
-
-    const c = cfg()
-    if (c) {
-      apiUpdateProject(c, projects.value[idx]).catch(e => {
-        _onApiError(e, `updateProject ${id}`)
-        _enqueuePending({ type: 'updateProject', d: { ...projects.value[idx] } })
-      })
-    }
+    _scheduleProjectUpdate(id)
   }
 
   function deleteProject(id: string, deleteTasks: boolean = true) {

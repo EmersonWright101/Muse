@@ -35,6 +35,7 @@ import {
   readTextFile,
   writeTextFile,
   writeFile,
+  readFile,
   exists,
   mkdir,
   remove,
@@ -180,6 +181,43 @@ export function extractFirstImage(body: string): string | null {
   return m ? m[1] : null
 }
 
+export function extractTravelImageFilenames(content: string): string[] {
+  const filenames = new Set<string>()
+  const re = /!\[[^\]]*]\((?:\.\/)?images\/([^)\s]+)(?:\s+"[^"]*")?\)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(content))) {
+    if (m[1]) filenames.add(decodeURIComponent(m[1]))
+  }
+  return [...filenames]
+}
+
+function mimeFromFilename(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase()
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'webp') return 'image/webp'
+  if (ext === 'gif') return 'image/gif'
+  if (ext === 'svg') return 'image/svg+xml'
+  if (ext === 'avif') return 'image/avif'
+  return 'image/png'
+}
+
+export async function cacheTravelImagesForContent(content: string): Promise<void> {
+  await Promise.all(extractTravelImageFilenames(content).map(filename => fetchAndCacheTravelImage(filename)))
+}
+
+export async function uploadReferencedTravelImages(noteId: string, content: string): Promise<void> {
+  if (!isBackendConfigured()) return
+  const dir = await travelNotesDir()
+  await Promise.all(extractTravelImageFilenames(content).map(async filename => {
+    try {
+      const path = `${dir}/images/${filename}`
+      if (!(await exists(path))) return
+      const data = await readFile(path)
+      await uploadTravelImage(filename, noteId, data, mimeFromFilename(filename))
+    } catch { /* ignore individual image failures */ }
+  }))
+}
+
 // ─── File helpers ────────────────────────────────────────────────────────────
 
 async function ensureDir(): Promise<void> {
@@ -234,6 +272,7 @@ export async function loadTravelNote(id: string): Promise<TravelNote | null> {
     const path = await notePath(id)
     if (!(await exists(path))) return null
     const raw = await readTextFile(path)
+    cacheTravelImagesForContent(raw).catch(() => {})
     const { meta, body } = parseFrontmatter(raw)
     const cover = extractFirstImage(body) || meta.cover || randomTravelEmoji()
     return {
@@ -256,16 +295,19 @@ export async function loadTravelNote(id: string): Promise<TravelNote | null> {
   }
 }
 
-export async function saveTravelNote(note: TravelNote): Promise<void> {
+export async function saveTravelNote(
+  note: TravelNote,
+  opts: { sync?: boolean; preserveUpdatedAt?: boolean } = {},
+): Promise<void> {
   await ensureDir()
   const path = await notePath(note.id)
-  note.updatedAt = new Date().toISOString()
+  if (!opts.preserveUpdatedAt) note.updatedAt = new Date().toISOString()
   const tmp = `${path}.tmp`
   await writeTextFile(tmp, stringifyFrontmatter(note))
   await rename(tmp, path)
   localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
 
-  if (isBackendConfigured()) {
+  if (opts.sync !== false && isBackendConfigured()) {
     // Upsert: try PUT, fall back to POST on 404
     apiPut(`/api/travel/notes/${note.id}`, {
       title:       note.title,
@@ -299,19 +341,20 @@ export async function saveTravelNote(note: TravelNote): Promise<void> {
         }).catch(() => {})
       }
     })
+    uploadReferencedTravelImages(note.id, note.content).catch(() => {})
   }
 }
 
-export async function deleteTravelNote(id: string): Promise<void> {
+export async function deleteTravelNote(id: string, opts: { sync?: boolean; deletedAt?: string } = {}): Promise<void> {
   try {
     const path = await notePath(id)
     if (await exists(path)) await remove(path)
   } catch { /* ignore */ }
   const map = getDeletedTravelNotes()
-  map[id] = new Date().toISOString()
+  map[id] = opts.deletedAt ?? new Date().toISOString()
   localStorage.setItem(LS_DELETED_TRAVEL_KEY, JSON.stringify(map))
   localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
-  apiDelete(`/api/travel/notes/${id}`).catch(() => {})
+  if (opts.sync !== false) apiDelete(`/api/travel/notes/${id}`).catch(() => {})
 }
 
 // ─── Trash ───────────────────────────────────────────────────────────────────
@@ -338,9 +381,12 @@ async function ensureTrashDir(): Promise<void> {
 }
 
 /** Move a note to the trash folder. Adds a tombstone to prevent sync re-download. */
-export async function moveNoteToTrash(id: string): Promise<void> {
+export async function moveNoteToTrash(
+  id: string,
+  opts: { sync?: boolean; deletedAt?: string } = {},
+): Promise<void> {
   const srcPath = await notePath(id)
-  const deletedAt = new Date().toISOString()
+  const deletedAt = opts.deletedAt ?? new Date().toISOString()
 
   if (await exists(srcPath)) {
     await ensureTrashDir()
@@ -360,7 +406,7 @@ export async function moveNoteToTrash(id: string): Promise<void> {
   map[id] = deletedAt
   localStorage.setItem(LS_DELETED_TRAVEL_KEY, JSON.stringify(map))
   localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
-  apiDelete(`/api/travel/notes/${id}`).catch(() => {})
+  if (opts.sync !== false) apiDelete(`/api/travel/notes/${id}`).catch(() => {})
 }
 
 /** List all notes currently in the trash folder. */
@@ -400,7 +446,7 @@ export async function listTrashItems(): Promise<TravelTrashMeta[]> {
 }
 
 /** Restore a note from trash back to the notes folder. Removes its tombstone. */
-export async function restoreNoteFromTrash(id: string): Promise<void> {
+export async function restoreNoteFromTrash(id: string, opts: { sync?: boolean } = {}): Promise<void> {
   const dir = await trashDir()
   const srcPath = `${dir}/${id}.md`
   if (!(await exists(srcPath))) return
@@ -436,16 +482,17 @@ export async function restoreNoteFromTrash(id: string): Promise<void> {
   delete tombstones[id]
   localStorage.setItem(LS_DELETED_TRAVEL_KEY, JSON.stringify(tombstones))
   localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
-  apiPost(`/api/travel/notes/${id}/restore`, {}).catch(() => {})
+  if (opts.sync !== false) apiPost(`/api/travel/notes/${id}/restore`, {}).catch(() => {})
 }
 
 /** Permanently delete a note from trash (tombstone already set by moveNoteToTrash). */
-export async function permanentlyDeleteFromTrash(id: string): Promise<void> {
+export async function permanentlyDeleteFromTrash(id: string, opts: { sync?: boolean } = {}): Promise<void> {
   const dir = await trashDir()
   const path = `${dir}/${id}.md`
   try {
     if (await exists(path)) await remove(path)
   } catch { /* ignore */ }
+  if (opts.sync !== false) apiDelete(`/api/travel/notes/${id}`).catch(() => {})
 }
 
 /** Delete all expired trash items based on retention setting. */
@@ -598,4 +645,3 @@ export function createEmptyNote(): TravelNote {
 export function rebuildContent(note: TravelNote): string {
   return stringifyFrontmatter(note)
 }
-

@@ -53,6 +53,21 @@ export async function apiGet<T>(path: string): Promise<T | null> {
   }
 }
 
+export async function apiPostBinary(path: string, body: unknown): Promise<ArrayBuffer | null> {
+  if (!isBackendConfigured()) return null
+  try {
+    const resp = await tauriFetch(`${baseUrl()}${path}`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    })
+    if (!resp.ok) return null
+    return resp.arrayBuffer()
+  } catch {
+    return null
+  }
+}
+
 export async function apiGetBinary(path: string): Promise<Uint8Array | null> {
   if (!isBackendConfigured()) return null
   try {
@@ -65,6 +80,16 @@ export async function apiGetBinary(path: string): Promise<Uint8Array | null> {
 }
 
 // ─── PUT ─────────────────────────────────────────────────────────────────────
+
+export async function apiPutBinary(path: string, data: ArrayBuffer, contentType = 'audio/mpeg'): Promise<void> {
+  if (!isBackendConfigured()) return
+  const resp = await tauriFetch(`${baseUrl()}${path}`, {
+    method: 'PUT',
+    headers: authHeaders({ 'Content-Type': contentType }),
+    body: data,
+  })
+  if (!resp.ok) throw await parseError(resp)
+}
 
 export async function apiPut(path: string, body: unknown): Promise<void> {
   if (!isBackendConfigured()) return

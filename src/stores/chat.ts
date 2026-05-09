@@ -37,6 +37,7 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { useChatSettingsStore, DEFAULT_TITLE_PROMPT } from './chatSettings'
 import { useWebSearchStore } from './webSearch'
 import { performSearch, formatSearchResultsForContext } from '../services/webSearch'
+import { apiPut } from '../services/api'
 import type { WebSearchResult } from '../utils/storage'
 import { ocrImage } from '../utils/ocr'
 
@@ -50,6 +51,7 @@ interface StreamChunkHandler {
   onError:           (err: string) => void
   onReasoningToken?: (token: string) => void
   onMediaOutput?:    (mimeType: string, data: string, isUrl?: boolean) => void
+  onProgress?:       (percent: number) => void
 }
 
 function isOpenRouter(baseUrl: string): boolean {
@@ -143,6 +145,103 @@ async function callImageEdit(
   }
 }
 
+async function callAudioSpeech(
+  baseUrl: string, apiKey: string, model: string,
+  input: string, voice: string,
+  handler: StreamChunkHandler,
+  signal: AbortSignal,
+): Promise<void> {
+  const resp = await tauriFetch(`${baseUrl}/audio/speech`, {
+    method:  'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ model, input, voice: voice || undefined }),
+    signal,
+  })
+  if (!resp.ok) {
+    const err = await resp.text()
+    handler.onError(`TTS error ${resp.status}: ${err}`)
+    return
+  }
+  try {
+    const buf   = await resp.arrayBuffer()
+    const bytes = new Uint8Array(buf)
+    let binary  = ''
+    const chunk = 8192
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...(bytes.subarray(i, i + chunk) as unknown as number[]))
+    }
+    handler.onMediaOutput?.('audio/wav', btoa(binary))
+    handler.onDone({})
+  } catch (e) {
+    handler.onError(e instanceof Error ? e.message : String(e))
+  }
+}
+
+async function callVideoGeneration(
+  baseUrl: string, apiKey: string, model: string,
+  prompt: string,
+  imageBase64: string | undefined, imageMimeType: string | undefined,
+  handler: StreamChunkHandler,
+  signal: AbortSignal,
+): Promise<void> {
+  const body: Record<string, unknown> = {
+    model, prompt, stream: true,
+    height: 480, width: 832, num_frames: 49, num_inference_steps: 30,
+  }
+  if (imageBase64 && imageMimeType) {
+    body.image = `data:${imageMimeType};base64,${imageBase64}`
+  }
+  handler.onProgress?.(0)
+  let resp: Awaited<ReturnType<typeof tauriFetch>>
+  try {
+    resp = await tauriFetch(`${baseUrl}/video/generations`, {
+      method:  'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+      signal,
+    })
+  } catch (e) {
+    handler.onError(e instanceof Error ? e.message : String(e))
+    return
+  }
+  if (!resp.ok) {
+    const err = await resp.text()
+    handler.onError(`Video API error ${resp.status}: ${err}`)
+    return
+  }
+  try {
+    const reader  = resp.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data: ')) continue
+        const data = trimmed.slice(6)
+        if (data === '[DONE]') { handler.onDone({}); return }
+        try {
+          const event = JSON.parse(data)
+          if (event.type === 'progress' && typeof event.percent === 'number') {
+            handler.onProgress?.(event.percent)
+          } else if (event.type === 'done') {
+            if (event.video_b64) handler.onMediaOutput?.('video/mp4', event.video_b64)
+            handler.onDone({})
+            return
+          }
+        } catch { /* skip malformed SSE line */ }
+      }
+    }
+    handler.onDone({})
+  } catch (e) {
+    if ((e as Error)?.name !== 'AbortError') handler.onError(e instanceof Error ? e.message : String(e))
+  }
+}
+
 function handleMediaUrl(url: string, handler: StreamChunkHandler) {
   if (!handler.onMediaOutput) return
   if (url.startsWith('data:')) {
@@ -197,6 +296,7 @@ async function streamOpenAI(
   const decoder = new TextDecoder()
   let buffer = ''
   let reasoningText = ''
+  let audioChunks = ''
   const usage: MessageUsage = {}
   while (true) {
     const { done, value } = await reader.read()
@@ -208,9 +308,14 @@ async function streamOpenAI(
       const trimmed = line.trim()
       if (!trimmed.startsWith('data: ')) continue
       const data = trimmed.slice(6)
-      if (data === '[DONE]') { handler.onDone(usage); return }
+      if (data === '[DONE]') {
+        if (audioChunks && handler.onMediaOutput) handler.onMediaOutput('audio/wav', audioChunks)
+        handler.onDone(usage)
+        return
+      }
       try {
         const parsed  = JSON.parse(data)
+
 
         // OpenRouter image generation: images arrive in choices[0].delta.images
         const deltaImages = parsed.choices?.[0]?.delta?.images
@@ -220,22 +325,50 @@ async function streamOpenAI(
           }
         }
 
-        const rawContent = parsed.choices?.[0]?.delta?.content
+        // OpenAI native audio output: delta.audio arrives as incremental base64 chunks
+        // Handle both {data: "..."} and bare string forms
+        const deltaAudio = parsed.choices?.[0]?.delta?.audio
+        if (deltaAudio) {
+          const chunk = typeof deltaAudio === 'string' ? deltaAudio : (deltaAudio.data ?? deltaAudio.wav ?? deltaAudio.base64 ?? '')
+          if (chunk) audioChunks += chunk
+        }
+        // Non-streaming: audio in message.audio.data (OpenAI format) or message.content array
+        const msgAudio = parsed.choices?.[0]?.message?.audio
+        if (msgAudio) {
+          const chunk = typeof msgAudio === 'string' ? msgAudio : (msgAudio.data ?? msgAudio.wav ?? '')
+          if (chunk) audioChunks += chunk
+        }
+
+        // Parse content from delta (streaming) or message (non-streaming)
+        const rawContent = parsed.choices?.[0]?.delta?.content ?? parsed.choices?.[0]?.message?.content
         if (rawContent) {
           if (typeof rawContent === 'string') {
-            if ((rawContent.startsWith('data:image/') || rawContent.startsWith('data:video/')) && handler.onMediaOutput) {
+            if ((rawContent.startsWith('data:image/') || rawContent.startsWith('data:video/') || rawContent.startsWith('data:audio/')) && handler.onMediaOutput) {
               const comma = rawContent.indexOf(',')
               if (comma > 0) handler.onMediaOutput(rawContent.slice(5, comma).replace(';base64', ''), rawContent.slice(comma + 1))
             } else {
               handler.onToken(rawContent)
             }
           } else if (Array.isArray(rawContent)) {
-            for (const blk of rawContent as Array<{ type?: string; text?: string; image_url?: { url?: string } }>) {
+            for (const blk of rawContent as Array<{ type?: string; text?: string; data?: string; audio?: string; mimeType?: string; mime_type?: string; image_url?: { url?: string } }>) {
               if (blk.text) {
                 handler.onToken(blk.text)
+              } else if (blk.type === 'audio' && handler.onMediaOutput) {
+                const audioData = blk.data ?? blk.audio
+                if (audioData) handler.onMediaOutput(blk.mimeType ?? blk.mime_type ?? 'audio/wav', audioData)
               } else if (blk.image_url?.url && handler.onMediaOutput) {
                 handleMediaUrl(blk.image_url.url, handler)
               }
+            }
+          } else if (typeof rawContent === 'object' && rawContent !== null) {
+            // Single content block object — e.g. Qwen TTS: delta.content = { type:"audio", audio:"base64..." }
+            // Accumulate chunks into audioChunks (same as delta.audio path) so partial chunks don't emit broken audio
+            const blk = rawContent as { type?: string; text?: string; data?: string; audio?: string; mimeType?: string; mime_type?: string }
+            if (blk.type === 'audio') {
+              const audioData = blk.data ?? blk.audio
+              if (audioData) audioChunks += audioData
+            } else if (blk.text) {
+              handler.onToken(blk.text)
             }
           }
         }
@@ -253,8 +386,9 @@ async function streamOpenAI(
           if (parsed.usage.completion_tokens_details?.reasoning_tokens != null) {
             usage.reasoningTokens = parsed.usage.completion_tokens_details.reasoning_tokens
           }
-          if (parsed.usage.cost != null)       usage.costUsd = parsed.usage.cost
-          if (parsed.usage.total_cost != null) usage.costUsd = parsed.usage.total_cost
+          if (parsed.usage.cost != null)                   usage.costUsd = parsed.usage.cost
+          if (parsed.usage.total_cost != null)             usage.costUsd = parsed.usage.total_cost
+          if (parsed.usage.audio_duration_seconds != null) usage.audioDurationSeconds = parsed.usage.audio_duration_seconds
         }
       } catch { /* skip malformed */ }
     }
@@ -263,6 +397,8 @@ async function streamOpenAI(
   if (!usage.reasoningTokens && reasoningText) {
     usage.reasoningTokens = Math.max(1, Math.ceil(reasoningText.length / 4))
   }
+  // Emit any accumulated audio that arrived without a [DONE] event
+  if (audioChunks && handler.onMediaOutput) handler.onMediaOutput('audio/wav', audioChunks)
   handler.onDone(usage)
 }
 
@@ -348,8 +484,9 @@ async function streamDeepSeek(
           if (parsed.usage.completion_tokens_details?.reasoning_tokens != null) {
             usage.reasoningTokens = parsed.usage.completion_tokens_details.reasoning_tokens
           }
-          if (parsed.usage.cost != null)       usage.costUsd = parsed.usage.cost
-          if (parsed.usage.total_cost != null) usage.costUsd = parsed.usage.total_cost
+          if (parsed.usage.cost != null)                   usage.costUsd = parsed.usage.cost
+          if (parsed.usage.total_cost != null)             usage.costUsd = parsed.usage.total_cost
+          if (parsed.usage.audio_duration_seconds != null) usage.audioDurationSeconds = parsed.usage.audio_duration_seconds
         }
       } catch { /* skip malformed */ }
     }
@@ -749,6 +886,9 @@ export const useChatStore = defineStore('chat', () => {
   const selectedConvIds    = reactive<Set<string>>(new Set())
   const batchMode          = ref(false)
 
+  // Video generation progress: msgId → percent (0-100), present only while generating
+  const _videoProgressMap = reactive(new Map<string, number>())
+
   // Per-conversation streaming UI state (supports split view)
   const _streamingTexts = reactive(new Map<string, string>())
   const _streamingReasonings = reactive(new Map<string, string>())
@@ -799,6 +939,7 @@ export const useChatStore = defineStore('chat', () => {
   function getStreamingReasoning(convId: string): string { return _streamingReasonings.get(convId) ?? '' }
   function getStreamingMsgId(convId: string): string | null { return _streamingMsgIds.get(convId) ?? null }
   function isStreamingFor(convId: string): boolean { return streamingConvIds.has(convId) }
+  function getVideoProgress(messageId: string): number | null { return _videoProgressMap.get(messageId) ?? null }
 
   function setSecondModel(pid: string | null, mid: string | null) {
     secondProviderId.value = pid
@@ -1156,10 +1297,21 @@ export const useChatStore = defineStore('chat', () => {
         if (!assistantMsg.mediaOutputs) assistantMsg.mediaOutputs = []
         assistantMsg.mediaOutputs.push(isUrl ? { mimeType, url: data } : { mimeType, data })
       },
+      onProgress(percent) {
+        _videoProgressMap.set(assistantMsg.id, percent)
+      },
       async onDone(usage) {
-        // Fallback: if full accumulated text is a data URL or image URL, convert to media output
+        // Fallback: if full accumulated text is a data URL or image/audio URL, convert to media output
         const txt = localText.trim()
-        if (txt.startsWith('data:image/') || txt.startsWith('data:video/')) {
+        if (txt.startsWith('data:audio/')) {
+          const comma = txt.indexOf(',')
+          if (comma > 0) {
+            if (!assistantMsg.mediaOutputs) assistantMsg.mediaOutputs = []
+            assistantMsg.mediaOutputs.push({ mimeType: txt.slice(5, comma).replace(';base64', ''), data: txt.slice(comma + 1) })
+            assistantMsg.content = ''
+            localText            = ''
+          }
+        } else if (txt.startsWith('data:image/') || txt.startsWith('data:video/')) {
           const comma = txt.indexOf(',')
           if (comma > 0) {
             if (!assistantMsg.mediaOutputs) assistantMsg.mediaOutputs = []
@@ -1187,6 +1339,7 @@ export const useChatStore = defineStore('chat', () => {
         _streamingMsgIds.delete(conv.id)
         _streamingTexts.delete(conv.id)
         _streamingReasonings.delete(conv.id)
+        _videoProgressMap.delete(assistantMsg.id)
         conv.updatedAt = new Date().toISOString()
         await saveConversation(conv)
         scheduleLoadList()
@@ -1201,6 +1354,7 @@ export const useChatStore = defineStore('chat', () => {
         _streamingMsgIds.delete(conv.id)
         _streamingTexts.delete(conv.id)
         _streamingReasonings.delete(conv.id)
+        _videoProgressMap.delete(assistantMsg.id)
         await saveConversation(conv)
         scheduleLoadList()
       },
@@ -1228,7 +1382,10 @@ export const useChatStore = defineStore('chat', () => {
       } else if (provider.id === 'deepseek' || provider.baseUrl.includes('deepseek')) {
         // DeepSeek uses OpenAI-compatible endpoint with extra thinking/reasoning_effort params
         const modelInfo = provider.models.find(m => m.id === mid)
-        if (modelInfo?.imageOutput) {
+        if (modelInfo?.audio) {
+          const userText = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          await callAudioSpeech(provider.baseUrl, provider.apiKey, mid, userText, modelInfo.defaultVoice ?? '', handler, ac.signal)
+        } else if (modelInfo?.imageOutput) {
           const userPrompt = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
           const size       = modelInfo.imageSize ?? '1024x1024'
           const imageAtt   = msgsForApi.filter(m => m.role === 'user').at(-1)?.attachments?.find(a => a.mimeType?.startsWith('image/') && a.data)
@@ -1240,11 +1397,35 @@ export const useChatStore = defineStore('chat', () => {
         } else {
           await streamDeepSeek(provider.baseUrl, provider.apiKey, mid, payload, handler, ac.signal, systemPrompt, useReasoning.value, reasoningLevel.value, temperature, maxTokens)
         }
+      } else if (provider.type === 'qcw-muse') {
+        const modelInfo = provider.models.find(m => m.id === mid)
+        if (modelInfo?.video) {
+          const userPrompt = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          const imageAtt   = msgsForApi.filter(m => m.role === 'user').at(-1)?.attachments?.find(a => a.mimeType?.startsWith('image/') && a.data)
+          await callVideoGeneration(provider.baseUrl, provider.apiKey, mid, userPrompt, imageAtt?.data, imageAtt?.mimeType, handler, ac.signal)
+        } else if (modelInfo?.audio) {
+          const userText = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          await callAudioSpeech(provider.baseUrl, provider.apiKey, mid, userText, modelInfo.defaultVoice ?? '', handler, ac.signal)
+        } else if (modelInfo?.imageOutput) {
+          const userPrompt = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          const size       = modelInfo.imageSize ?? '1024x1024'
+          const imageAtt   = msgsForApi.filter(m => m.role === 'user').at(-1)?.attachments?.find(a => a.mimeType?.startsWith('image/') && a.data)
+          if (imageAtt) {
+            await callImageEdit(provider.baseUrl, provider.apiKey, mid, userPrompt, imageAtt.data!, imageAtt.mimeType!, size, handler, ac.signal)
+          } else {
+            await callImageGeneration(provider.baseUrl, provider.apiKey, mid, userPrompt, size, handler, ac.signal)
+          }
+        } else {
+          await streamOpenAI(provider.baseUrl, provider.apiKey, mid, payload, handler, ac.signal, systemPrompt, undefined, undefined, temperature, maxTokens)
+        }
       } else {
         // openai / custom — pass reasoning_effort for o-series and compatible providers
         const effort = useReasoning.value ? reasoningLevel.value : undefined
         const modelInfo = provider.models.find(m => m.id === mid)
-        if (!isOpenRouter(provider.baseUrl) && modelInfo?.imageOutput) {
+        if (modelInfo?.audio) {
+          const userText = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          await callAudioSpeech(provider.baseUrl, provider.apiKey, mid, userText, modelInfo.defaultVoice ?? '', handler, ac.signal)
+        } else if (!isOpenRouter(provider.baseUrl) && modelInfo?.imageOutput) {
           // Non-OpenRouter image-generation models use /images/generations or /images/edits
           const userPrompt = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
           const size       = modelInfo.imageSize ?? '1024x1024'
@@ -1603,7 +1784,9 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     const targetConv = conv!
+    const progressKey = isPrimary ? messageId : `${messageId}:${vi}`
     function cleanupVariant() {
+      _videoProgressMap.delete(progressKey)
       if (isPrimary) {
         _abortControllers.delete(targetConv.id)
         streamingConvIds.delete(targetConv.id)
@@ -1647,6 +1830,9 @@ export const useChatStore = defineStore('chat', () => {
           v.mediaOutputs.push(isUrl ? { mimeType, url: data } : { mimeType, data })
         }
       },
+      onProgress(percent) {
+        _videoProgressMap.set(progressKey, percent)
+      },
       async onDone(usage) {
         if (usage.costUsd == null) {
           const computed = calculateModelCost(aiStore.providers, providerId, modelId, usage.inputTokens, usage.outputTokens)
@@ -1689,7 +1875,10 @@ export const useChatStore = defineStore('chat', () => {
         await streamOllama(provider.baseUrl, modelId, payload, handler, ac.signal, systemPrompt, chatSettings.temperature, chatSettings.maxTokens, useReasoning.value)
       } else if (provider.id === 'deepseek' || provider.baseUrl.includes('deepseek')) {
         const mInfo = provider.models.find(m => m.id === modelId)
-        if (mInfo?.imageOutput) {
+        if (mInfo?.audio) {
+          const userText = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          await callAudioSpeech(provider.baseUrl, provider.apiKey, modelId, userText, mInfo.defaultVoice ?? '', handler, ac.signal)
+        } else if (mInfo?.imageOutput) {
           const userPrompt = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
           const size       = mInfo.imageSize ?? '1024x1024'
           const imageAtt   = msgsForApi.filter(m => m.role === 'user').at(-1)?.attachments?.find(a => a.mimeType?.startsWith('image/') && a.data)
@@ -1701,10 +1890,34 @@ export const useChatStore = defineStore('chat', () => {
         } else {
           await streamDeepSeek(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, useReasoning.value, reasoningLevel.value, chatSettings.temperature, chatSettings.maxTokens)
         }
+      } else if (provider.type === 'qcw-muse') {
+        const mInfo = provider.models.find(m => m.id === modelId)
+        if (mInfo?.video) {
+          const userPrompt = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          const imageAtt   = msgsForApi.filter(m => m.role === 'user').at(-1)?.attachments?.find(a => a.mimeType?.startsWith('image/') && a.data)
+          await callVideoGeneration(provider.baseUrl, provider.apiKey, modelId, userPrompt, imageAtt?.data, imageAtt?.mimeType, handler, ac.signal)
+        } else if (mInfo?.audio) {
+          const userText = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          await callAudioSpeech(provider.baseUrl, provider.apiKey, modelId, userText, mInfo.defaultVoice ?? '', handler, ac.signal)
+        } else if (mInfo?.imageOutput) {
+          const userPrompt = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          const size       = mInfo.imageSize ?? '1024x1024'
+          const imageAtt   = msgsForApi.filter(m => m.role === 'user').at(-1)?.attachments?.find(a => a.mimeType?.startsWith('image/') && a.data)
+          if (imageAtt) {
+            await callImageEdit(provider.baseUrl, provider.apiKey, modelId, userPrompt, imageAtt.data!, imageAtt.mimeType!, size, handler, ac.signal)
+          } else {
+            await callImageGeneration(provider.baseUrl, provider.apiKey, modelId, userPrompt, size, handler, ac.signal)
+          }
+        } else {
+          await streamOpenAI(provider.baseUrl, provider.apiKey, modelId, payload, handler, ac.signal, systemPrompt, undefined, undefined, chatSettings.temperature, chatSettings.maxTokens)
+        }
       } else {
         const effort = useReasoning.value ? reasoningLevel.value : undefined
         const mInfo = provider.models.find(m => m.id === modelId)
-        if (!isOpenRouter(provider.baseUrl) && mInfo?.imageOutput) {
+        if (mInfo?.audio) {
+          const userText = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
+          await callAudioSpeech(provider.baseUrl, provider.apiKey, modelId, userText, mInfo.defaultVoice ?? '', handler, ac.signal)
+        } else if (!isOpenRouter(provider.baseUrl) && mInfo?.imageOutput) {
           const userPrompt = extractTextFromContent(payload.filter(m => m.role === 'user').at(-1)?.content)
           const size       = mInfo.imageSize ?? '1024x1024'
           const imageAtt   = msgsForApi.filter(m => m.role === 'user').at(-1)?.attachments?.find(a => a.mimeType?.startsWith('image/') && a.data)
@@ -2043,8 +2256,10 @@ export const useChatStore = defineStore('chat', () => {
 
   function setConvLayout(convId: string, layout: 'tab' | 'horizontal') {
     convLayouts.set(convId, layout)
-    localStorage.setItem(LS_CONV_LAYOUTS, JSON.stringify(Object.fromEntries(convLayouts)))
+    const variantLayout = Object.fromEntries(convLayouts)
+    localStorage.setItem(LS_CONV_LAYOUTS, JSON.stringify(variantLayout))
     localStorage.setItem(LS_CONV_LAYOUTS_AT, new Date().toISOString())
+    apiPut('/api/settings/chatUi', { value: { variantLayout } }).catch(() => {})
   }
 
   // Init
@@ -2077,6 +2292,6 @@ export const useChatStore = defineStore('chat', () => {
     openConversationWindow,
     registerWindowConv, unregisterWindowConv, fetchConversation,
     getStreamingText, getStreamingReasoning, getStreamingMsgId, isStreamingFor,
+    getVideoProgress,
   }
 })
-

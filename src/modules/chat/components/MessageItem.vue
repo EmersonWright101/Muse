@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import MermaidBlock from './MermaidBlock.vue'
+import AudioPlayer from './AudioPlayer.vue'
 import { marked, type Tokens } from 'marked'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
@@ -61,7 +62,7 @@ hljs.registerLanguage('rb', ruby)
 hljs.registerLanguage('php', php)
 hljs.registerLanguage('r', r)
 import DOMPurify from 'dompurify'
-import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Maximize2, Minimize2, Bot, AtSign, Download, Clock, ThumbsUp, ThumbsDown, Trash2, Rows3, Columns2, Globe } from 'lucide-vue-next'
+import { Copy, Check, Pencil, RefreshCw, FileText, ChevronDown, Maximize2, Minimize2, Bot, AtSign, Download, Clock, ThumbsUp, ThumbsDown, Trash2, Rows3, Columns2, Globe, Volume2 } from 'lucide-vue-next'
 import { svgStringToPngBlob } from '../../../utils/svgToPng'
 import { copyPngBlobToClipboard } from '../../../utils/clipboard'
 import { useI18n } from 'vue-i18n'
@@ -383,6 +384,16 @@ const displayedMediaOutputs = computed(() => {
   if (activeVariantIdx.value === 0) return props.message.mediaOutputs
   return activeVariantData.value?.mediaOutputs
 })
+
+// ─── Video generation progress ────────────────────────────────────────────────
+
+const videoGenProgress = computed(() => chat.getVideoProgress(props.message.id))
+
+function seekVideoThumbnail(e: Event) {
+  const video = e.target as HTMLVideoElement
+  const t = isFinite(video.duration) ? Math.min(Math.max(video.duration * 0.15, 0.5), 3) : 0.5
+  video.currentTime = t
+}
 
 // ─── @ Model picker ───────────────────────────────────────────────────────────
 
@@ -773,6 +784,19 @@ function resultDomain(url: string): string {
         </Transition>
       </div>
 
+      <!-- Video generation progress bar -->
+      <div v-if="!isUser && activeSlotStreaming && videoGenProgress !== null" class="video-gen-progress">
+        <div class="vgp-header">
+          <span class="vgp-label">视频生成中</span>
+          <span class="vgp-pct">{{ videoGenProgress }}%</span>
+        </div>
+        <div class="vgp-track">
+          <div class="vgp-fill" :style="{ width: `${Math.max(videoGenProgress ?? 0, 2)}%` }">
+            <div class="vgp-shimmer" />
+          </div>
+        </div>
+      </div>
+
       <!-- Media outputs — hidden in horizontal compare mode (shown per-column there instead) -->
       <div v-if="!isUser && displayedMediaOutputs?.length && !(allVariantSlots.length > 1 && variantLayout === 'horizontal')" class="media-outputs">
         <template v-for="(out, idx) in displayedMediaOutputs" :key="idx">
@@ -803,7 +827,12 @@ function resultDomain(url: string): string {
             :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
             class="media-video"
             controls
-            preload="metadata"
+            preload="auto"
+            @loadedmetadata="seekVideoThumbnail"
+          />
+          <AudioPlayer
+            v-else-if="out.mimeType.startsWith('audio/')"
+            :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
           />
         </template>
       </div>
@@ -883,6 +912,9 @@ function resultDomain(url: string): string {
           <span v-if="displayedUsage?.durationMs != null" class="msg-duration">
             <Clock :size="9" />{{ (displayedUsage.durationMs / 1000).toFixed(1) }}s
           </span>
+          <span v-if="displayedUsage?.audioDurationSeconds != null" class="msg-audio-duration">
+            <Volume2 :size="9" />{{ displayedUsage.audioDurationSeconds.toFixed(1) }}s
+          </span>
           <span v-if="displayedUsage?.costUsd != null">{{ stats.formatCost(displayedUsage.costUsd) }}</span>
         </div>
       </div>
@@ -956,6 +988,13 @@ function resultDomain(url: string): string {
                 v-else-if="out.mimeType.startsWith('video/')"
                 :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
                 class="media-video"
+                controls
+                preload="metadata"
+              />
+              <audio
+                v-else-if="out.mimeType.startsWith('audio/')"
+                :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
+                class="media-audio"
                 controls
                 preload="metadata"
               />
@@ -1354,6 +1393,12 @@ function resultDomain(url: string): string {
   gap: 3px;
   padding-left: 6px;
   border-left: 1px solid rgba(0, 0, 0, 0.10);
+}
+
+.msg-audio-duration {
+  display: flex;
+  align-items: center;
+  gap: 3px;
 }
 
 /* ─── @ Model picker ────────────────────────────────────────────────────────── */
@@ -1861,6 +1906,60 @@ details[open] .compare-reasoning-summary::before { content: '▼ '; }
 .reasoning-content::-webkit-scrollbar { width: 3px; }
 .reasoning-content::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.10); border-radius: 2px; }
 
+/* ─── Video generation progress ─────────────────────────────────────────────── */
+.video-gen-progress {
+  margin: 6px 0 8px;
+  padding: 12px 14px 10px;
+  border-radius: 10px;
+  background: rgba(34, 63, 121, 0.05);
+  border: 1px solid rgba(34, 63, 121, 0.12);
+}
+.vgp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.vgp-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #3c3c43;
+  opacity: 0.75;
+}
+.vgp-pct {
+  font-size: 12px;
+  font-weight: 600;
+  color: #223F79;
+  font-variant-numeric: tabular-nums;
+  min-width: 32px;
+  text-align: right;
+}
+.vgp-track {
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(34, 63, 121, 0.12);
+  overflow: hidden;
+}
+.vgp-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #3a5fc8, #6d9bef);
+  position: relative;
+  overflow: hidden;
+  transition: width 0.6s cubic-bezier(0.25, 1, 0.5, 1);
+  min-width: 5px;
+}
+.vgp-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.55) 50%, transparent 100%);
+  animation: vgp-sweep 1.6s ease-in-out infinite;
+}
+@keyframes vgp-sweep {
+  0%   { transform: translateX(-150%); }
+  100% { transform: translateX(250%); }
+}
+
 /* ─── Media outputs ─────────────────────────────────────────────────────────── */
 .media-outputs {
   display: flex;
@@ -1889,6 +1988,7 @@ details[open] .compare-reasoning-summary::before { content: '▼ '; }
   background: #000;
   outline: none;
 }
+
 
 /* ─── Lightbox ──────────────────────────────────────────────────────────────── */
 .lightbox-overlay {

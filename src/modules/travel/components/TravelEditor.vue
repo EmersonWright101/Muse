@@ -28,6 +28,7 @@ import { streamCopilotCompletion } from '../../../composables/useCopilotStream'
 import { writeFile, mkdir, exists } from '@tauri-apps/plugin-fs'
 import { travelNotesDir } from '../../../utils/path'
 import { initImageAssetBase, resolveImageUrl } from '../../../utils/imageAsset'
+import { uploadTravelImage } from '../../../utils/travelStorage'
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('typescript', typescript)
@@ -744,6 +745,7 @@ async function onPaste(e: ClipboardEvent) {
     const imgDir  = `${baseDir}/images`
     if (!(await exists(imgDir))) await mkdir(imgDir, { recursive: true })
     await writeFile(`${imgDir}/${filename}`, bytes)
+    uploadTravelImage(filename, note.value.id, bytes, item.type).catch(() => {})
 
     const mdText      = `![${filename}](images/${filename})`
     const offset      = getBodyCursorOffset()

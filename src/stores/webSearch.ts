@@ -12,6 +12,7 @@ interface PersistedSettings {
   enabled?: boolean
   activeProviderId?: string
   providers?: Record<string, ProviderStore>
+  usage?: MonthlyUsage
 }
 
 interface ProviderStore {
@@ -66,6 +67,7 @@ export const useWebSearchStore = defineStore('webSearch', () => {
       [providerId]: (monthlyUsage.value[providerId] ?? 0) + 1,
     }
     localStorage.setItem(LS_USAGE_KEY, JSON.stringify({ month: _thisMonth, counts: monthlyUsage.value }))
+    scheduleServerPush()
   }
 
   function getMonthlyUsage(providerId: string): number {
@@ -182,7 +184,12 @@ export const useWebSearchStore = defineStore('webSearch', () => {
         ...(id === 'exa' ? { exaSearchType: exaSearchType.value } : {}),
       }
     }
-    return { enabled: enabled.value, activeProviderId: activeProviderId.value, providers }
+    return {
+      enabled: enabled.value,
+      activeProviderId: activeProviderId.value,
+      providers,
+      usage: { month: _thisMonth, counts: monthlyUsage.value },
+    }
   }
 
   function scheduleServerPush() {
@@ -204,6 +211,10 @@ export const useWebSearchStore = defineStore('webSearch', () => {
     const srvKey = getServerApiKey()
     if (s.enabled !== undefined) enabled.value = s.enabled
     if (s.activeProviderId) activeProviderId.value = s.activeProviderId
+    if (s.usage?.month === _thisMonth) {
+      monthlyUsage.value = { ...monthlyUsage.value, ...(s.usage.counts ?? {}) }
+      localStorage.setItem(LS_USAGE_KEY, JSON.stringify({ month: _thisMonth, counts: monthlyUsage.value }))
+    }
     for (const [id, pv] of Object.entries(s.providers ?? {})) {
       if (pv.apiKeyEnc && srvKey) {
         try {
@@ -237,4 +248,3 @@ export const useWebSearchStore = defineStore('webSearch', () => {
     syncFromServer,
   }
 })
-

@@ -8,7 +8,7 @@ import {
 } from '@tauri-apps/plugin-notification'
 
 const NOTIFY_INTERVAL_MS = 10 * 1000
-const POLL_INTERVAL_MS   = 30 * 1000
+const POLL_INTERVAL_MS   = 5 * 60 * 1000
 const POLL_WINDOW_MS     = NOTIFY_INTERVAL_MS + 5 * 1000
 
 // ─── Notification health status (exported for settings page) ─────────────────
@@ -248,13 +248,12 @@ export function useTodoNotifications() {
     updateDockBadge()
     checkAndNotify()
     notifyTimer = setInterval(checkAndNotify, NOTIFY_INTERVAL_MS)
+    pollTimer   = setInterval(() => {
+      if (store.apiStatus === 'connected') store.load()
+    }, POLL_INTERVAL_MS)
 
     stopWatcher = watch(() => store.tasks, scheduleOsReminders, { deep: true })
     stopBadgeWatcher = watch(() => store.tasks, updateDockBadge, { deep: true })
-
-    pollTimer = setInterval(() => {
-      if (store.apiStatus === 'connected') store.load()
-    }, POLL_INTERVAL_MS)
   })
 
   onUnmounted(() => {

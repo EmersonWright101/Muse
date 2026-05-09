@@ -111,7 +111,16 @@ export async function apiCreateTask(cfg: TodoApiConfig, t: TodoTask): Promise<To
 }
 
 export async function apiUpdateTask(cfg: TodoApiConfig, t: TodoTask): Promise<void> {
-  return apiFetch(cfg, 'PUT', `/tasks/${t.id}`, normalizeTask(t))
+  try {
+    return await apiFetch(cfg, 'PUT', `/tasks/${t.id}`, normalizeTask(t))
+  } catch (e) {
+    // Task missing on server (e.g. after switching backends) — create it instead
+    if (e instanceof Error && e.message.includes('HTTP 404')) {
+      await apiFetch(cfg, 'POST', '/tasks', normalizeTask(t))
+      return
+    }
+    throw e
+  }
 }
 
 export async function apiDeleteTask(cfg: TodoApiConfig, id: string): Promise<void> {

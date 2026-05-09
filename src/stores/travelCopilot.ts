@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { resolveDataRoot, normalizePath } from '../utils/path'
 import { readTextFile, writeTextFile, exists, mkdir } from '@tauri-apps/plugin-fs'
+import { apiPut } from '../services/api'
 
 const LS_KEY             = 'muse-travel-copilot'
 const LS_MODIFIED_AT_KEY = 'muse-travel-copilot-modified-at'
@@ -62,15 +63,18 @@ export const useTravelCopilotStore = defineStore('travelCopilot', () => {
   loadCopilotStats().then(s => { copilotStats.value = s }).catch(() => {})
 
   function save() {
-    localStorage.setItem(LS_KEY, JSON.stringify({
+    const payload = {
       enabled:         enabled.value,
       providerId:      providerId.value,
       modelId:         modelId.value,
       completionWords: completionWords.value,
       triggerDelay:    triggerDelay.value,
       contextChars:    contextChars.value,
-    }))
+      stats:           copilotStats.value,
+    }
+    localStorage.setItem(LS_KEY, JSON.stringify(payload))
     localStorage.setItem(LS_MODIFIED_AT_KEY, new Date().toISOString())
+    apiPut('/api/settings/travelCopilot', { value: payload }).catch(() => {})
   }
 
   function setEnabled(v: boolean)  { enabled.value = v; save() }
@@ -88,6 +92,45 @@ export const useTravelCopilotStore = defineStore('travelCopilot', () => {
     s.requests     += 1
     copilotStats.value = { ...copilotStats.value, [date]: s }
     saveCopilotStats(copilotStats.value).catch(() => {})
+    pushToServer().catch(() => {})
+  }
+
+  async function pushToServer() {
+    await apiPut('/api/settings/travelCopilot', {
+      value: {
+        enabled: enabled.value,
+        providerId: providerId.value,
+        modelId: modelId.value,
+        completionWords: completionWords.value,
+        triggerDelay: triggerDelay.value,
+        contextChars: contextChars.value,
+        stats: copilotStats.value,
+      },
+    }).catch(() => {})
+  }
+
+  async function syncFromServer(allSettings: Record<string, unknown>) {
+    const s = allSettings.travelCopilot as Record<string, unknown> | undefined
+    if (!s) return
+    if (s.enabled         !== undefined) enabled.value         = !!s.enabled
+    if (s.providerId      !== undefined) providerId.value      = s.providerId as string
+    if (s.modelId         !== undefined) modelId.value         = s.modelId as string
+    if (s.completionWords !== undefined) completionWords.value = Number(s.completionWords) || 10
+    if (s.triggerDelay    !== undefined) triggerDelay.value    = Number(s.triggerDelay) || 600
+    if (s.contextChars    !== undefined) contextChars.value    = Number(s.contextChars) || 2000
+    if (s.stats && typeof s.stats === 'object') {
+      copilotStats.value = { ...copilotStats.value, ...(s.stats as Record<string, CopilotDailyStat>) }
+      saveCopilotStats(copilotStats.value).catch(() => {})
+    }
+    localStorage.setItem(LS_KEY, JSON.stringify({
+      enabled: enabled.value,
+      providerId: providerId.value,
+      modelId: modelId.value,
+      completionWords: completionWords.value,
+      triggerDelay: triggerDelay.value,
+      contextChars: contextChars.value,
+      stats: copilotStats.value,
+    }))
   }
 
   /** Called after a remote sync to refresh reactive state from updated localStorage. */
@@ -96,6 +139,6 @@ export const useTravelCopilotStore = defineStore('travelCopilot', () => {
   return {
     enabled, providerId, modelId, completionWords, triggerDelay, contextChars, copilotStats,
     setEnabled, setProvider, setModel, setWords, setDelay, setContext, recordUsage, reload,
+    pushToServer, syncFromServer,
   }
 })
-

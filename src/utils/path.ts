@@ -22,6 +22,7 @@ const APP_ENTRIES = new Set([
   'travel_notes',
   'home_posters',
   'todos',
+  'ebooks',
   'assistants.json',
   'stats-cache.json',
   'copilot-stats.json',
@@ -69,6 +70,10 @@ export async function travelNotesDir(): Promise<string> {
 
 export async function homePostersDir(): Promise<string> {
   return `${await resolveDataRoot()}/home_posters`
+}
+
+export async function ebooksDir(): Promise<string> {
+  return `${await resolveDataRoot()}/ebooks`
 }
 
 export async function tmpDir(): Promise<string> {

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { apiPut } from '../services/api'
 
 const LS_KEY = 'assistant-settings'
 
@@ -36,6 +37,28 @@ export const useAssistantSettingsStore = defineStore('assistantSettings', () => 
       titleGenPrompt:     titleGenPrompt.value,
     }
     localStorage.setItem(LS_KEY, JSON.stringify(data))
+    apiPut('/api/settings/privateAssistant', { value: data }).catch(() => {})
+  }
+
+  async function pushToServer() {
+    persist()
+  }
+
+  async function syncFromServer(allSettings: Record<string, unknown>) {
+    const s = allSettings.privateAssistant as Partial<Persisted> | undefined
+    if (!s) return
+    if (s.providerId         !== undefined) providerId.value         = s.providerId
+    if (s.modelId            !== undefined) modelId.value            = s.modelId
+    if (s.titleGenProviderId !== undefined) titleGenProviderId.value = s.titleGenProviderId
+    if (s.titleGenModelId    !== undefined) titleGenModelId.value    = s.titleGenModelId
+    if (s.titleGenPrompt     !== undefined) titleGenPrompt.value     = s.titleGenPrompt
+    localStorage.setItem(LS_KEY, JSON.stringify({
+      providerId: providerId.value,
+      modelId: modelId.value,
+      titleGenProviderId: titleGenProviderId.value,
+      titleGenModelId: titleGenModelId.value,
+      titleGenPrompt: titleGenPrompt.value,
+    } satisfies Persisted))
   }
 
   return {
@@ -45,5 +68,7 @@ export const useAssistantSettingsStore = defineStore('assistantSettings', () => 
     titleGenModelId,
     titleGenPrompt,
     persist,
+    pushToServer,
+    syncFromServer,
   }
 })

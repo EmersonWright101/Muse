@@ -48,6 +48,13 @@ const router = createRouter({
       },
     },
     {
+      path: '/ebook',
+      components: {
+        sidebar: () => import('../modules/ebook/EbookSidebar.vue'),
+        main: () => import('../modules/ebook/EbookMain.vue'),
+      },
+    },
+    {
       path: '/statistics',
       components: {
         sidebar: () => import('../modules/statistics/StatisticsSidebar.vue'),

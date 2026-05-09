@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useTravelStore } from './stores/travel'
 import { useTodoNotifications } from './modules/todo/composables/useTodoNotifications'
@@ -8,11 +8,19 @@ import AppSidebar from './components/AppSidebar.vue'
 import { cleanupTmpDir } from './utils/path'
 import { syncAllFromServer } from './services/syncManager'
 import { useTodoStore } from './stores/todo'
+import { useEbookStore } from './stores/ebook'
 
 const showPanel = ref(true)
 const route = useRoute()
 const travel = useTravelStore()
 const todo = useTodoStore()
+const ebookStore = useEbookStore()
+
+// Auto-hide sidebar when opening a book; restore when closing
+watch(() => ebookStore.activeBookId, (id, prevId) => {
+  if (!prevId && id && route.path.startsWith('/ebook')) showPanel.value = false
+  else if (prevId && !id && route.path.startsWith('/ebook')) showPanel.value = true
+})
 
 useTodoNotifications()
 
@@ -41,10 +49,26 @@ onMounted(() => {
 })
 onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 
-const panelFloats = computed(() => route.path === '/travel' && travel.viewMode !== 'editor')
+const panelFloats = computed(() =>
+  (route.path === '/travel' && travel.viewMode !== 'editor') ||
+  (route.path.startsWith('/ebook') && !!ebookStore.activeBookId)
+)
 
 // Routes without a sidebar component — hide the panel column entirely for these
 const routeHasSidebar = computed(() => route.path !== '/home')
+
+// When floating ebook sidebar is visible, push the epub content right so text isn't hidden
+const ebookPanelActive = computed(() =>
+  route.path.startsWith('/ebook') && !!ebookStore.activeBookId && showPanel.value && routeHasSidebar.value
+)
+
+// Give the panel-column the same background as the ebook paper when reading
+const panelBgClass = computed(() => {
+  if (!route.path.startsWith('/ebook') || !ebookStore.activeBookId) return ''
+  return ebookStore.settings.theme === 'sepia' ? 'panel-sepia'
+       : ebookStore.settings.theme === 'dark'  ? 'panel-dark'
+       : ''
+})
 
 // Independent chat window: no sidebar, no title bar, full-screen content
 const isChatWindow = computed(() => route.path === '/chat-window')
@@ -60,9 +84,9 @@ const isChatWindow = computed(() => route.path === '/chat-window')
       <div class="app-right">
         <TitleBar :panel-visible="showPanel" @toggle="showPanel = !showPanel" />
 
-        <div class="content-area" :class="{ 'panel-floats': panelFloats }">
+        <div class="content-area" :class="{ 'panel-floats': panelFloats, 'ebook-panel-active': ebookPanelActive }">
           <Transition name="panel-slide">
-            <div v-show="showPanel && routeHasSidebar" class="panel-column">
+            <div v-show="showPanel && routeHasSidebar" class="panel-column" :class="panelBgClass">
               <router-view name="sidebar" />
             </div>
           </Transition>
@@ -171,7 +195,18 @@ body {
   display: flex;
   overflow: hidden;
   background: #ffffff;
+  transition: padding-left 0.2s ease;
 }
+
+/* When ebook floating sidebar is open: push content right so text isn't hidden,
+   but the background still extends behind the sidebar */
+.content-area.ebook-panel-active .main-column {
+  padding-left: 252px;
+}
+
+/* Ebook reading theme — panel background matches paper */
+.panel-sepia { background: #f4ecd8; }
+.panel-dark  { background: #1c1c1e; }
 
 /* Panel slide transition */
 .panel-slide-enter-active,

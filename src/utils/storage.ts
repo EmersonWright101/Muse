@@ -16,7 +16,13 @@ import {
   rename,
 } from '@tauri-apps/plugin-fs';
 import { resolveDataRoot, conversationsDir } from './path';
-import { pushConvToServer, fetchConvFromServer } from '../services/chatSync';
+import {
+  pushConvToServer,
+  fetchConvFromServer,
+  trashConvOnServer,
+  restoreConvOnServer,
+  deleteConvOnServer,
+} from '../services/chatSync';
 import { isBackendConfigured } from '../services/api';
 
 export interface AttachmentMeta {
@@ -35,12 +41,13 @@ export interface AttachmentMeta {
 }
 
 export interface MessageUsage {
-  inputTokens?:     number;
-  outputTokens?:    number;
-  reasoningTokens?: number;
-  durationMs?:      number;
-  costUsd?:         number;
-  tokensPerSecond?: number;  // generation speed reported by provider (Ollama eval_count / eval_duration)
+  inputTokens?:          number;
+  outputTokens?:         number;
+  reasoningTokens?:      number;
+  durationMs?:           number;
+  costUsd?:              number;
+  tokensPerSecond?:      number;  // generation speed reported by provider (Ollama eval_count / eval_duration)
+  audioDurationSeconds?: number;  // audio output duration (TTS models)
 }
 
 export interface MessageVariant {
@@ -237,7 +244,7 @@ async function atomicWriteTextFile(path: string, content: string): Promise<void>
   await rename(tmpPath, path);
 }
 
-async function saveConversationLocalOnly(conv: Conversation): Promise<void> {
+export async function saveConversationLocalOnly(conv: Conversation): Promise<void> {
   await ensureDirs();
   const path = `${await convDir()}/${conv.id}.json`;
   await atomicWriteTextFile(path, JSON.stringify(conv, null, 2));
@@ -346,6 +353,7 @@ export async function deleteConversation(id: string): Promise<void> {
   localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
   saveDiskTombstones(map);
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
+  deleteConvOnServer(id).catch(() => {});
 }
 
 export async function deleteConversations(ids: string[]): Promise<void> {
@@ -366,14 +374,19 @@ export async function deleteConversations(ids: string[]): Promise<void> {
   localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
   saveDiskTombstones(map);
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
+  for (const id of set) deleteConvOnServer(id).catch(() => {});
 }
 
 // ─── Trash (soft-delete) ─────────────────────────────────────────────────────
 
-export async function trashConversation(id: string): Promise<void> {
+export async function trashConversation(
+  id: string,
+  opts: { sync?: boolean; deletedAt?: string } = {},
+): Promise<void> {
   await ensureTrashDir();
   const convPath  = `${await convDir()}/${id}.json`;
   const trashPath = `${await trashDir()}/${id}.json`;
+  const deletedAt = opts.deletedAt ?? new Date().toISOString();
 
   let conv: Conversation | null = null;
   try {
@@ -406,7 +419,7 @@ export async function trashConversation(id: string): Promise<void> {
         providerId:  conv!.providerId,
         pinned:      conv!.pinned,
         assistantId: conv!.assistantId,
-        deletedAt:   new Date().toISOString(),
+        deletedAt,
       };
       trashIndex.unshift(meta);
       await writeTrashIndex(trashIndex);
@@ -414,6 +427,11 @@ export async function trashConversation(id: string): Promise<void> {
   }
 
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
+  const days = parseInt(localStorage.getItem('muse-trash-retention-days') ?? '30') || 30;
+  const expiryAt = days > 0 ? new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString() : null;
+  if (opts.sync !== false) {
+    trashConvOnServer(id, deletedAt, expiryAt).catch(() => {});
+  }
 }
 
 export async function listTrashedConversations(): Promise<TrashedConversationMeta[]> {
@@ -469,6 +487,7 @@ export async function restoreConversationFromTrash(id: string): Promise<void> {
   });
 
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
+  restoreConvOnServer(id).catch(() => {});
 }
 
 export async function permanentDeleteFromTrash(id: string): Promise<void> {
@@ -487,6 +506,7 @@ export async function permanentDeleteFromTrash(id: string): Promise<void> {
   localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
   saveDiskTombstones(map);
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
+  deleteConvOnServer(id).catch(() => {});
 }
 
 export async function purgeExpiredTrash(days = 30): Promise<void> {
@@ -606,12 +626,8 @@ export function mergeConversation(
   const base = newerIsRemote ? remote : local
   const merged: Conversation = { ...base, messages }
 
-  const localChanged = messages.length !== local.messages.length
-    || merged.updatedAt !== local.updatedAt
-    || merged.title !== local.title
-  const remoteChanged = messages.length !== remote.messages.length
-    || merged.updatedAt !== remote.updatedAt
-    || merged.title !== remote.title
+  const localChanged = JSON.stringify(merged) !== JSON.stringify(local)
+  const remoteChanged = JSON.stringify(merged) !== JSON.stringify(remote)
 
   return { merged, localChanged, remoteChanged }
 }

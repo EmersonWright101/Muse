@@ -6,6 +6,7 @@ import { useChatSettingsStore } from './chatSettings'
 import { useWebSearchStore } from './webSearch'
 import { performSearch, formatSearchResultsForContext } from '../services/webSearch'
 import { getBackendConfig } from '../utils/backendConfig'
+import { apiPut } from '../services/api'
 import { ocrImage } from '../utils/ocr'
 import type { AttachmentMeta, MessageUsage, WebSearchResult } from '../utils/storage'
 
@@ -453,6 +454,21 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
   function setDefaultContextMode(mode: 'abstract' | 'fulltext') {
     defaultContextMode.value = mode
     localStorage.setItem(_DEFAULT_KEY, mode)
+    pushToServer().catch(() => {})
+  }
+
+  async function pushToServer() {
+    await apiPut('/api/settings/paperCopilot', {
+      value: { defaultContextMode: defaultContextMode.value },
+    }).catch(() => {})
+  }
+
+  async function syncFromServer(allSettings: Record<string, unknown>) {
+    const s = allSettings.paperCopilot as { defaultContextMode?: 'abstract' | 'fulltext' } | undefined
+    if (!s?.defaultContextMode) return
+    defaultContextMode.value = s.defaultContextMode
+    contextMode.value = s.defaultContextMode
+    localStorage.setItem(_DEFAULT_KEY, s.defaultContextMode)
   }
 
   // ── API helpers ────────────────────────────────────────────────────────────
@@ -1093,6 +1109,7 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
     paperFullText, paperFullTextBase64, paperAbstractText, isExtractingText, fullTextError,
     openForPaper, close, setSecondModel,
     setReasoning, setReasoningLevel, setDefaultContextMode,
+    pushToServer, syncFromServer,
     prepareAbstractText, extractFullText,
     loadConversations, createConversation, openConversation, deleteConversation,
     sendMessage, stopStreaming, clearContext, removeContextCutoff,

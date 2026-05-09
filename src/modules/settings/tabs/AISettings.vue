@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Eye, EyeOff, Plus, Trash2, Check, X, ChevronRight, RefreshCw, Search, SlidersHorizontal, Pencil } from 'lucide-vue-next'
+import { Eye, EyeOff, Plus, Trash2, Check, X, ChevronRight, RefreshCw, Search, SlidersHorizontal, Pencil, Play, Square } from 'lucide-vue-next'
 import { useAiSettingsStore, inferModelCaps, type AIProvider } from '../../../stores/aiSettings'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import openrouterLogoUrl from '../../../assets/providers/openrouter.svg'
@@ -154,6 +154,7 @@ function startEditModel(m: AIModel) {
     imageOutput: m.imageOutput ?? false,
     audio: m.audio ?? false,
     video: m.video ?? false,
+    defaultVoice: m.defaultVoice ?? '',
     inputPrice: editBillingMode.value === 'request' ? undefined : (m.inputPrice ?? undefined),
     outputPrice: editBillingMode.value === 'request' ? undefined : (m.outputPrice ?? undefined),
     pricePerRequest: editBillingMode.value === 'token' ? undefined : (m.pricePerRequest ?? undefined),
@@ -182,6 +183,67 @@ function cancelEditModel() {
   editingModelId.value = null
   editDraft.value = {}
 }
+
+// ─── Voice fetching for audio model editing ───────────────────────────────────
+
+interface EditVoice { id: string; name: string; language?: string; sample?: string }
+const editVoices         = ref<EditVoice[]>([])
+const editVoicesFetching = ref(false)
+const editVoiceCustom    = ref(false)
+const playingVoiceId     = ref<string | null>(null)
+let _sampleAudio: HTMLAudioElement | null = null
+
+async function fetchEditVoices(modelId: string) {
+  if (!selected.value?.baseUrl) return
+  editVoicesFetching.value = true
+  editVoices.value = []
+  try {
+    const { baseUrl, apiKey } = selected.value
+    const resp = await tauriFetch(`${baseUrl}/audio/voices?model=${encodeURIComponent(modelId)}`, {
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+    })
+    if (!resp.ok) return
+    const data = await resp.json()
+    editVoices.value = data.voices ?? []
+    if (editVoices.value.length > 0 && editDraft.value.defaultVoice) {
+      editVoiceCustom.value = !editVoices.value.some(v => v.id === editDraft.value.defaultVoice)
+    }
+  } catch { editVoices.value = [] }
+  finally { editVoicesFetching.value = false }
+}
+
+function stopSample() {
+  if (_sampleAudio) { _sampleAudio.pause(); _sampleAudio = null }
+  playingVoiceId.value = null
+}
+
+function playSample(voice: EditVoice) {
+  if (!voice.sample) return
+  if (playingVoiceId.value === voice.id) { stopSample(); return }
+  stopSample()
+  const binary = atob(voice.sample)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }))
+  const audio = new Audio(url)
+  _sampleAudio = audio
+  playingVoiceId.value = voice.id
+  audio.play()
+  audio.onended = () => { playingVoiceId.value = null; URL.revokeObjectURL(url); _sampleAudio = null }
+}
+
+watch(editingModelId, (id) => {
+  stopSample()
+  editVoices.value = []
+  editVoiceCustom.value = false
+  if (id && editDraft.value.audio) fetchEditVoices(id)
+})
+watch(() => editDraft.value.audio, (isAudio) => {
+  stopSample()
+  editVoices.value = []
+  editVoiceCustom.value = false
+  if (isAudio && editingModelId.value) fetchEditVoices(editingModelId.value)
+})
 
 // ─── Connection test & model fetch ───────────────────────────────────────────
 
@@ -682,6 +744,7 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
             @change="ai.updateProvider(selected.id, { type: ($event.target as HTMLSelectElement).value as AIProvider['type'] })"
           >
             <option value="custom">OpenAI 兼容</option>
+            <option value="qcw-muse">qcw-muse</option>
             <option value="ollama">Ollama</option>
           </select>
         </div>
@@ -887,6 +950,66 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
                     placeholder="Token 数"
                     style="width: 140px;"
                   />
+                </div>
+
+                <div v-if="editDraft.audio" class="edit-panel-section">
+                  <div class="edit-panel-label">
+                    默认音色
+                    <span v-if="editVoicesFetching" class="voice-fetching-hint">获取中…</span>
+                  </div>
+                  <template v-if="!editVoiceCustom && editVoices.length > 0">
+                    <div class="voice-list">
+                      <div
+                        class="voice-item"
+                        :class="{ selected: !editDraft.defaultVoice }"
+                        @click="editDraft.defaultVoice = ''"
+                      >
+                        <span class="voice-item-name">不指定</span>
+                      </div>
+                      <div
+                        v-for="v in editVoices"
+                        :key="v.id"
+                        class="voice-item"
+                        :class="{ selected: editDraft.defaultVoice === v.id }"
+                        @click="editDraft.defaultVoice = v.id"
+                      >
+                        <span class="voice-item-name">{{ v.name }}{{ v.language ? ` · ${v.language}` : '' }}</span>
+                        <button
+                          v-if="v.sample"
+                          class="voice-play-btn"
+                          :class="{ playing: playingVoiceId === v.id }"
+                          @click.stop="playSample(v)"
+                          :title="playingVoiceId === v.id ? '停止' : '试听'"
+                        >
+                          <Square v-if="playingVoiceId === v.id" :size="9" />
+                          <Play v-else :size="9" />
+                        </button>
+                      </div>
+                      <div
+                        class="voice-item voice-item-custom"
+                        @click="editVoiceCustom = true; editDraft.defaultVoice = ''"
+                      >
+                        <span class="voice-item-name">自定义…</span>
+                      </div>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div class="voice-custom-row">
+                      <input
+                        v-model="editDraft.defaultVoice"
+                        type="text"
+                        class="price-edit-input"
+                        placeholder="voice id，如 Vivian"
+                        style="width: 155px;"
+                      />
+                      <button
+                        v-if="editVoices.length > 0"
+                        class="btn-ghost sm"
+                        style="padding: 3px 8px; font-size: 11px;"
+                        @click="editVoiceCustom = false"
+                      >列表</button>
+                    </div>
+                  </template>
                 </div>
 
                 <div class="edit-panel-actions">
@@ -1815,6 +1938,71 @@ function getModelLogoUrl(modelId: string, providerId = ''): string | null {
 }
 
 .price-edit-select:focus { border-color: rgba(34, 63, 121, 0.4); }
+
+.voice-fetching-hint {
+  font-size: 10px;
+  color: #999;
+  margin-left: 6px;
+  font-weight: 400;
+}
+.voice-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.voice-list {
+  border: 1px solid rgba(0,0,0,0.10);
+  border-radius: 8px;
+  overflow-y: auto;
+  max-height: 160px;
+  background: white;
+}
+
+.voice-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  cursor: pointer;
+  transition: background 0.10s;
+  user-select: none;
+}
+
+.voice-item + .voice-item { border-top: 1px solid rgba(0,0,0,0.04); }
+.voice-item:hover { background: rgba(0,0,0,0.04); }
+.voice-item.selected { background: rgba(34, 63, 121, 0.07); }
+
+.voice-item-name {
+  flex: 1;
+  font-size: 12px;
+  color: #1c1c1e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.voice-item.selected .voice-item-name { color: #223F79; font-weight: 500; }
+.voice-item-custom .voice-item-name { color: #8e8e93; }
+
+.voice-play-btn {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 5px;
+  background: rgba(0,0,0,0.06);
+  color: #8e8e93;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.10s;
+  padding: 0;
+}
+
+.voice-play-btn:hover { background: rgba(34, 63, 121, 0.10); color: #223F79; }
+.voice-play-btn.playing { background: rgba(34, 63, 121, 0.12); color: #223F79; }
 
 .edit-panel-actions {
   display: flex;

@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Bot,
   HardDrive,
+  BookOpen,
 } from 'lucide-vue-next'
 import { useUiStore } from '../../stores/uiStore'
 
@@ -13,6 +14,7 @@ const ui = useUiStore()
 const sections = [
   { id: 'overview',       icon: LayoutDashboard, labelKey: 'statistics.sections.overview' },
   { id: 'ai_usage',       icon: Bot,             labelKey: 'statistics.sections.aiUsage' },
+  { id: 'reading',        icon: BookOpen,        label: '阅读' },
   { id: 'server_storage', icon: HardDrive,       label: '服务器' },
 ]
 

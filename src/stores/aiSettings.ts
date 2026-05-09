@@ -60,7 +60,8 @@ export interface AIModel {
   multimodal?:     boolean;  // supports image/video INPUT
   reasoning?:      boolean;  // is a reasoning/thinking model
   imageOutput?:    boolean;  // generates images as output
-  audio?:          boolean;  // supports audio input
+  audio?:          boolean;  // supports audio output (TTS)
+  defaultVoice?:   string;   // default voice id for TTS models
   video?:          boolean;  // supports video input
   inputPrice?:     number;   // per 1M input tokens (in priceCurrency)
   outputPrice?:    number;   // per 1M output tokens (in priceCurrency)
@@ -113,7 +114,7 @@ export function inferModelCaps(modelId: string, openRouterModality?: string): Pa
 
 export interface AIProvider {
   id:              string;
-  type:            'openai' | 'anthropic' | 'google' | 'custom' | 'ollama';
+  type:            'openai' | 'anthropic' | 'google' | 'custom' | 'ollama' | 'qcw-muse';
   name:            string;
   apiKey:          string;   // plaintext in memory only; stored encrypted
   baseUrl:         string;
@@ -361,6 +362,8 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
   let _persistTimer: ReturnType<typeof setTimeout> | null = null
   let _initDone = false
   let _pendingPersist = false
+  let _initResolve: (() => void) | undefined
+  const _initPromise = new Promise<void>(resolve => { _initResolve = resolve })
 
   function persist() {
     if (!_initDone) { _pendingPersist = true; return }
@@ -417,10 +420,10 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
               builtIn:         sp.builtIn ?? false,
               updatedAt:       sp.updatedAt,
             }
+            providers.value.push(newP)  // claim the slot before async decrypt to prevent race duplication
             if (sp.apiKeyEnc) {
               try { newP.apiKey = await decryptLocal(sp.apiKeyEnc) } catch { /* skip */ }
             }
-            providers.value.push(newP)
           }
         }
 
@@ -429,8 +432,8 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
         if (saved.defaultModelId)    defaultModelId.value    = saved.defaultModelId
       }
     } catch { /* ignore corrupt data */ }
-    // Always mark init done so watch-triggered persist() calls are flushed
     _initDone = true
+    _initResolve?.()
     if (_pendingPersist) persist()
   })()
 
@@ -483,6 +486,7 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
   }
 
   async function syncFromServer(allSettings: Record<string, unknown>): Promise<void> {
+    await _initPromise  // wait for local init to finish before merging to prevent duplication
     const s = allSettings.ai as (PersistedSettings & { deletedProviders?: Record<string, string> }) | undefined
     if (!s) return
     const srvKey = getServerApiKey()

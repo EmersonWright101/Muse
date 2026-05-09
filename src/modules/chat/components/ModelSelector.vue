@@ -199,6 +199,7 @@ function formatCtx(n: number): string {
   align-items: center;
   gap: 4px;
   max-width: 200px;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
 }

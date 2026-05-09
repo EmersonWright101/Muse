@@ -24,6 +24,7 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { useEbookStore } from '../../../stores/ebook'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
 import { apiPutBinary, apiGetBinary, isBackendConfigured } from '../../../services/api'
+import { beginSyncOp, endSyncOp } from '../../../stores/syncStatus'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -255,8 +256,11 @@ export function useEbookTtsGenerator() {
           doneFiles.add(`${chunk.chapterIdx}_${chunk.partIdx}.wav`)
           done++
           ebookStore.updateTtsJob(bookId, { doneChunks: done })
-          // Backend upload is fire-and-forget
-          uploadToBackend(bookId, chunk.chapterIdx, chunk.partIdx, wav).catch(() => {})
+          // Upload to backend and show sync icon while in-flight
+          beginSyncOp()
+          uploadToBackend(bookId, chunk.chapterIdx, chunk.partIdx, wav)
+            .catch(() => {})
+            .finally(() => endSyncOp())
         }
       }
 

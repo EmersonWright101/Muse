@@ -6,7 +6,7 @@ import {
   Pause, Play, Square, Pencil, Trash2, Check,
   Copy, Underline, ChevronDown,
 } from 'lucide-vue-next'
-import { useEbookStore, type Book, type BookAnnotation } from '../../../stores/ebook'
+import { useEbookStore, type Book, type BookAnnotation, type TtsPlaybackPos } from '../../../stores/ebook'
 import { useEpubReader, type TocItem } from '../composables/useEpubReader'
 import { useReaderTTS } from '../composables/useReaderTTS'
 import { useEbookTtsGenerator } from '../composables/useEbookTtsGenerator'
@@ -26,11 +26,30 @@ const tts     = useReaderTTS()
 const ttsGen  = useEbookTtsGenerator()
 
 const hasPreGeneratedAudio = ref(false)
-watch(reader.currentSpineIdx, async (idx) => {
+// Whether there's a saved playback position for this book
+const hasSavedTtsPos = computed(() => !!store.getTtsPlaybackPos(props.book.id))
+// Show the play-mode picker popup
+const showTtsModePicker = ref(false)
+// Flag: spine change was caused by TTS auto-advance, not user action
+let _ttsAutoAdvancing = false
+// URLs in the current chapter that haven't been played yet (for cleanup on early stop)
+let _remainingChapterUrls: string[] = []
+
+watch(reader.currentSpineIdx, async (idx, prevIdx) => {
   if (idx < 0) { hasPreGeneratedAudio.value = false; return }
   const url = await ttsGen.getChunkUrl(props.book.id, idx, 0)
   hasPreGeneratedAudio.value = url !== null
   if (url) URL.revokeObjectURL(url)
+
+  // If the user manually turns the page while TTS is running, switch to the new chapter.
+  // Guard against our own auto-advance (which sets _ttsAutoAdvancing before calling reader.next).
+  if (isAutoTtsReading.value && !_ttsAutoAdvancing && prevIdx !== undefined && idx !== prevIdx) {
+    _remainingChapterUrls.forEach(u => URL.revokeObjectURL(u))
+    _remainingChapterUrls = []
+    tts.stop()
+    clearTtsHighlight()
+    setTimeout(() => { if (isAutoTtsReading.value) speakCurrentChapter() }, 400)
+  }
 }, { immediate: true })
 
 const settings   = computed(() => store.settings)
@@ -127,9 +146,7 @@ watch(() => reader.pageTurn.value.id, () => {
 onUnmounted(() => {
   if (pageTurnTimer != null) window.clearTimeout(pageTurnTimer)
   store.commitSession()
-  isAutoTtsReading.value = false
-  clearTtsHighlight()
-  tts.stop()
+  stopTts()
 })
 
 // ─── Save progress on location change ─────────────────────────────────────────
@@ -249,7 +266,7 @@ const currentChapterTitle = computed(() => {
   return find(reader.toc.value)
 })
 
-// ─── TTS reading with auto page-turn & highlight ──────────────────────────────
+// ─── TTS reading with auto page-turn, highlight & progress tracking ───────────
 
 const ttsHighlightId = ref<string | null>(null)
 const isAutoTtsReading = ref(false)
@@ -261,30 +278,41 @@ function clearTtsHighlight() {
   }
 }
 
-async function speakCurrentChapter() {
+/**
+ * Start reading the current chapter from the given chunk index.
+ * Records playback position on each chunk so the user can resume later.
+ */
+async function speakCurrentChapter(startChunkIdx = 0) {
   const spineIdx = reader.currentSpineIdx.value
+  const href     = reader.currentHref.value
   if (spineIdx < 0) {
     tts.state.value.error = '未找到已生成的有声书音频，请先在书架中完成有声书生成'
     return
   }
-  const urls = await ttsGen.getChapterAudioUrls(props.book.id, spineIdx)
+  const urls  = await ttsGen.getChapterAudioUrls(props.book.id, spineIdx)
   const texts = await ttsGen.getChapterChunkTexts(props.book.id, spineIdx)
   if (urls.length === 0) {
     tts.state.value.error = '未找到已生成的有声书音频，请先在书架中完成有声书生成'
     return
   }
+  // Revoke any chunks we're skipping
+  for (let i = 0; i < startChunkIdx && i < urls.length; i++) URL.revokeObjectURL(urls[i])
+  const playUrls  = startChunkIdx > 0 ? urls.slice(startChunkIdx)  : urls
+  const playTexts = startChunkIdx > 0 ? texts.slice(startChunkIdx) : texts
+
   isAutoTtsReading.value = true
-  await tts.speakFromUrls(urls, {
+  await tts.speakFromUrls(playUrls, {
     onChunkStart: (i) => {
+      // Track remaining URLs so they can be revoked if playback is interrupted
+      _remainingChapterUrls = playUrls.slice(i + 1)
       clearTtsHighlight()
-      if (texts[i]) {
-        ttsHighlightId.value = reader.highlightTextSegment(texts[i])
-      }
+      if (playTexts[i]) ttsHighlightId.value = reader.highlightTextSegment(playTexts[i])
+      // Persist playback position for resume
+      store.setTtsPlaybackPos(props.book.id, { spineIdx, chunkIdx: i + startChunkIdx, href })
     },
-    onChunkEnd: () => {
-      clearTtsHighlight()
-    },
+    onChunkEnd: () => clearTtsHighlight(),
     onFinished: () => {
+      _remainingChapterUrls = []
       clearTtsHighlight()
       onTtsChapterFinished()
     },
@@ -293,27 +321,55 @@ async function speakCurrentChapter() {
 
 async function onTtsChapterFinished() {
   if (!isAutoTtsReading.value) return
-  // Try to advance to next chapter
   const currentIdx = reader.currentSpineIdx.value
+  // Mark auto-advance so the spine watcher doesn't re-trigger a chapter switch
+  _ttsAutoAdvancing = true
   await reader.next()
-  // If spine index didn't change, we're at the end of the book
+  _ttsAutoAdvancing = false
   if (reader.currentSpineIdx.value === currentIdx) {
+    // End of book
     isAutoTtsReading.value = false
     return
   }
-  // Wait for the new chapter to render, then start reading
   await nextTick()
-  setTimeout(() => {
-    if (isAutoTtsReading.value) speakCurrentChapter()
-  }, 400)
+  setTimeout(() => { if (isAutoTtsReading.value) speakCurrentChapter() }, 400)
 }
 
-// Stop auto-reading when user manually stops TTS
-watch(() => tts.state.value.active, (active) => {
-  if (!active) {
-    isAutoTtsReading.value = false
-    clearTtsHighlight()
+/** Explicit stop: cleans up URLs, clears state, stops audio. */
+function stopTts() {
+  _remainingChapterUrls.forEach(u => URL.revokeObjectURL(u))
+  _remainingChapterUrls = []
+  isAutoTtsReading.value = false
+  clearTtsHighlight()
+  tts.stop()
+}
+
+/** Called when the play button is clicked while TTS is not active. */
+function onTtsPlayClick() {
+  if (hasSavedTtsPos.value) {
+    showTtsModePicker.value = true
+  } else {
+    speakCurrentChapter()
   }
+}
+
+/** Resume from the saved position (navigate to that chapter first if needed). */
+async function resumeFromLastPosition() {
+  showTtsModePicker.value = false
+  const pos = store.getTtsPlaybackPos(props.book.id) as TtsPlaybackPos | null
+  if (!pos) { speakCurrentChapter(); return }
+  if (pos.spineIdx !== reader.currentSpineIdx.value) {
+    await reader.jumpTo(pos.href)
+    await nextTick()
+    await new Promise<void>(r => setTimeout(r, 400))
+  }
+  speakCurrentChapter(pos.chunkIdx)
+}
+
+// Only clear highlights when TTS stops and we are NOT in the middle of an auto-advance.
+// (During auto-advance, active briefly becomes false between chapters; we must not abort.)
+watch(() => tts.state.value.active, (active) => {
+  if (!active && !isAutoTtsReading.value) clearTtsHighlight()
 })
 
 // ─── Settings panel ───────────────────────────────────────────────────────────
@@ -448,18 +504,31 @@ function onCtxDelete() {
         </button>
 
         <div class="tts-group">
-          <button
-            class="tbtn"
-            :class="{ active: tts.state.value.active }"
-            :disabled="!tts.state.value.active && !hasPreGeneratedAudio"
-            :title="!tts.state.value.active && !hasPreGeneratedAudio ? '请先完成有声书生成再朗读' : undefined"
-            @click="tts.state.value.active ? (tts.state.value.paused ? tts.resume() : tts.pause()) : speakCurrentChapter()"
-          >
-            <Pause v-if="tts.state.value.active && !tts.state.value.paused" :size="18" />
-            <Play v-else-if="tts.state.value.active && tts.state.value.paused" :size="18" />
-            <Volume2 v-else :size="18" />
-          </button>
-          <button v-if="tts.state.value.active" class="tbtn sm" @click="tts.stop()">
+          <!-- Play/Pause button -->
+          <div class="tts-play-wrap">
+            <button
+              class="tbtn"
+              :class="{ active: tts.state.value.active }"
+              :disabled="!tts.state.value.active && !hasPreGeneratedAudio"
+              :title="!tts.state.value.active && !hasPreGeneratedAudio ? '请先完成有声书生成再朗读' : undefined"
+              @click="tts.state.value.active ? (tts.state.value.paused ? tts.resume() : tts.pause()) : onTtsPlayClick()"
+            >
+              <Pause   v-if="tts.state.value.active && !tts.state.value.paused" :size="18" />
+              <Play    v-else-if="tts.state.value.active && tts.state.value.paused" :size="18" />
+              <Volume2 v-else :size="18" />
+            </button>
+            <!-- Play-mode picker: "from current page" or "resume from last position" -->
+            <div v-if="showTtsModePicker" class="tts-mode-picker">
+              <button class="tts-mode-item" @click="showTtsModePicker = false; speakCurrentChapter()">
+                从当前页朗读
+              </button>
+              <button v-if="hasSavedTtsPos" class="tts-mode-item" @click="resumeFromLastPosition">
+                从上次停止处继续
+              </button>
+            </div>
+          </div>
+          <!-- Stop button -->
+          <button v-if="tts.state.value.active" class="tbtn sm" @click="stopTts()">
             <Square :size="13" />
           </button>
         </div>
@@ -688,6 +757,9 @@ function onCtxDelete() {
     <Teleport to="body">
       <div v-if="showFontPanel" class="overlay-dismiss" @click="showFontPanel = false" />
     </Teleport>
+    <Teleport to="body">
+      <div v-if="showTtsModePicker" class="overlay-dismiss" @click="showTtsModePicker = false" />
+    </Teleport>
 
   </div>
 </template>
@@ -798,6 +870,32 @@ function onCtxDelete() {
 }
 
 .tts-group { display: flex; align-items: center; gap: 2px; }
+
+.tts-play-wrap { position: relative; }
+.tts-mode-picker {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 410;
+  min-width: 168px;
+  background: rgba(255,255,255,0.97);
+  backdrop-filter: blur(20px) saturate(1.4);
+  border: 1px solid rgba(0,0,0,0.10);
+  border-radius: 10px;
+  padding: 4px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.14);
+}
+.theme-dark .tts-mode-picker {
+  background: rgba(44,44,46,0.97);
+  border-color: rgba(255,255,255,0.10);
+}
+.tts-mode-item {
+  display: block; width: 100%; text-align: left;
+  padding: 7px 10px; border: none; background: transparent;
+  color: inherit; font-size: 13px; border-radius: 7px; cursor: pointer;
+  transition: background 0.10s;
+}
+.tts-mode-item:hover { background: rgba(128,128,128,0.10); }
 
 /* TTS settings popup */
 .tts-pop { width: 262px; }

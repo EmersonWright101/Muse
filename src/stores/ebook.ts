@@ -157,6 +157,12 @@ export interface BookTtsJobState {
   errorMsg?:      string
 }
 
+export interface TtsPlaybackPos {
+  spineIdx: number
+  chunkIdx: number
+  href:     string   // epub href of the chapter, for navigation
+}
+
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
 const LS_BOOKS          = 'muse-ebook-books'
@@ -168,6 +174,7 @@ const LS_COLLECTIONS    = 'muse-ebook-collections'
 const LS_COPILOT        = 'muse-ebook-copilot'
 const LS_TTS_SETTINGS   = 'muse-ebook-tts-settings'
 const LS_TTS_JOBS       = 'muse-ebook-tts-jobs'
+const LS_TTS_PLAYBACK   = 'muse-ebook-tts-playback'
 
 function load<T>(key: string, fallback: T): T {
   try { return JSON.parse(localStorage.getItem(key) ?? 'null') ?? fallback } catch { return fallback }
@@ -235,7 +242,8 @@ export const useEbookStore = defineStore('ebook', () => {
     if (job.status === 'running') job.status = 'paused'
     if (job.phase  === 'extracting' || job.phase === 'scanning' || job.phase === 'generating') job.phase = 'idle'
   }
-  const ttsJobStates = ref<Record<string, BookTtsJobState>>(_rawTtsJobs)
+  const ttsJobStates   = ref<Record<string, BookTtsJobState>>(_rawTtsJobs)
+  const ttsPlaybackPos = ref<Record<string, TtsPlaybackPos>>(load<Record<string, TtsPlaybackPos>>(LS_TTS_PLAYBACK, {}))
 
   // Active book & view
   const activeBookId = ref<string | null>(null)
@@ -569,6 +577,17 @@ export const useEbookStore = defineStore('ebook', () => {
     return ttsJobStates.value[bookId] ?? null
   }
 
+  // ─── TTS playback position ────────────────────────────────────────────────────
+
+  function setTtsPlaybackPos(bookId: string, pos: TtsPlaybackPos) {
+    ttsPlaybackPos.value[bookId] = pos
+    save(LS_TTS_PLAYBACK, ttsPlaybackPos.value)
+  }
+
+  function getTtsPlaybackPos(bookId: string): TtsPlaybackPos | null {
+    return ttsPlaybackPos.value[bookId] ?? null
+  }
+
   // ─── Copilot sessions ────────────────────────────────────────────────────────
 
   function saveCopilotSession(session: CopilotSession) {
@@ -614,6 +633,8 @@ export const useEbookStore = defineStore('ebook', () => {
     settings?: ReaderSettings
     ttsSettings?: TtsSettings
     ttsJobStates?: Record<string, BookTtsJobState>
+    copilotStats?: Record<string, EbookCopilotDailyStat>
+    ttsPlaybackPos?: Record<string, TtsPlaybackPos>
   }
 
   interface EbookLibraryResponse {
@@ -623,6 +644,14 @@ export const useEbookStore = defineStore('ebook', () => {
 
   async function pushToServer(): Promise<void> {
     if (!isBackendConfigured()) return
+    // Load ebook copilot stats from disk (written by recordEbookCopilotUsage)
+    let copilotStats: Record<string, EbookCopilotDailyStat> | undefined
+    try {
+      const statsPath = `${await resolveDataRoot()}/ebook-copilot-stats.json`
+      if (await exists(statsPath)) {
+        copilotStats = JSON.parse(await readTextFile(statsPath)) as Record<string, EbookCopilotDailyStat>
+      }
+    } catch { /* non-critical */ }
     const payload: EbookServerPayload = {
       books: books.value,
       progress: progress.value,
@@ -633,8 +662,26 @@ export const useEbookStore = defineStore('ebook', () => {
       settings: settings.value,
       ttsSettings: ttsSettings.value,
       ttsJobStates: ttsJobStates.value,
+      copilotStats,
+      ttsPlaybackPos: ttsPlaybackPos.value,
     }
     await apiPut('/api/ebook/library', { value: payload }).catch(() => {})
+  }
+
+  /** Upload a book's EPUB file from local FS to the server (best-effort). */
+  async function pushBookFileToServer(book: Book): Promise<void> {
+    if (!isBackendConfigured()) return
+    try {
+      const dir = await getEbooksDir()
+      const localPath = `${dir}/${book.filePath}`
+      if (!(await exists(localPath))) return
+      const bytes = await readFile(localPath)
+      await apiPutBinary(
+        `/api/ebook/books/${book.id}/file`,
+        uint8ToArrayBuffer(bytes),
+        'application/epub+zip',
+      )
+    } catch { /* non-critical */ }
   }
 
   async function syncFromServer(): Promise<void> {
@@ -647,17 +694,29 @@ export const useEbookStore = defineStore('ebook', () => {
       }
       const r = remote.value
       // Merge books: remote wins for existing, add missing
+      const serverBookIds = new Set((r.books ?? []).map((rb: Book) => rb.id))
       const localIds = new Set(books.value.map(b => b.id))
+      const newRemoteBooks: Book[] = []
       for (const rb of r.books ?? []) {
         if (!localIds.has(rb.id)) {
           books.value.push(rb)
-          // Note: book file is not synced (too large) — user re-imports on new device
+          newRemoteBooks.push(rb)
         } else {
           const idx = books.value.findIndex(b => b.id === rb.id)
           if (idx >= 0 && rb.lastReadAt && rb.lastReadAt > (books.value[idx].lastReadAt ?? 0)) {
             books.value[idx] = { ...books.value[idx], ...rb, filePath: books.value[idx].filePath }
           }
         }
+      }
+      // Push books that exist locally but are missing from the server (e.g. upload failed earlier).
+      const localOnlyBooks = books.value.filter(b => !serverBookIds.has(b.id))
+      if (localOnlyBooks.length > 0) {
+        pushToServer().catch(() => {})
+        for (const b of localOnlyBooks) pushBookFileToServer(b).catch(() => {})
+      }
+      // Pre-download EPUB files for newly discovered remote books in the background.
+      for (const rb of newRemoteBooks) {
+        readBookFile(rb).catch(() => {})
       }
       // Merge progress (remote wins if newer)
       for (const [bid, rp] of Object.entries(r.progress ?? {})) {
@@ -708,6 +767,33 @@ export const useEbookStore = defineStore('ebook', () => {
         ttsJobStates.value = { ...ttsJobStates.value, ...r.ttsJobStates }
         save(LS_TTS_JOBS, ttsJobStates.value)
       }
+      // Merge ebook copilot daily stats (take max for each date)
+      if (r.copilotStats && typeof r.copilotStats === 'object') {
+        try {
+          const statsPath = `${await resolveDataRoot()}/ebook-copilot-stats.json`
+          let localStats: Record<string, EbookCopilotDailyStat> = {}
+          try { if (await exists(statsPath)) localStats = JSON.parse(await readTextFile(statsPath)) } catch {}
+          for (const [date, remote] of Object.entries(r.copilotStats)) {
+            const local = localStats[date]
+            if (!local) {
+              localStats[date] = remote
+            } else {
+              localStats[date] = {
+                inputTokens:  Math.max(local.inputTokens, remote.inputTokens),
+                outputTokens: Math.max(local.outputTokens, remote.outputTokens),
+                costUsd:      Math.max(local.costUsd, remote.costUsd),
+                requests:     Math.max(local.requests, remote.requests),
+              }
+            }
+          }
+          await writeTextFile(statsPath, JSON.stringify(localStats))
+        } catch { /* non-critical */ }
+      }
+      // Merge TTS playback positions (remote wins per book)
+      if (r.ttsPlaybackPos && typeof r.ttsPlaybackPos === 'object') {
+        ttsPlaybackPos.value = { ...r.ttsPlaybackPos, ...ttsPlaybackPos.value }
+        save(LS_TTS_PLAYBACK, ttsPlaybackPos.value)
+      }
       storageUsed.value = remote.storageUsed ?? 0
       save(LS_BOOKS, books.value)
       save(LS_PROGRESS, progress.value)
@@ -742,6 +828,8 @@ export const useEbookStore = defineStore('ebook', () => {
     storageUsed,
     // TTS generation jobs
     ttsJobStates, updateTtsJob, getTtsJob,
+    // TTS playback position
+    ttsPlaybackPos, setTtsPlaybackPos, getTtsPlaybackPos,
     // Copilot
     saveCopilotSession, getCopilotSessions, deleteCopilotSession,
     // Sync

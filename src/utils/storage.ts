@@ -222,7 +222,20 @@ export async function loadConversation(id: string): Promise<Conversation | null>
     const path = `${await convDir()}/${id}.json`;
     if (await exists(path)) {
       const raw = await readTextFile(path);
-      return JSON.parse(raw) as Conversation;
+      const conv = JSON.parse(raw) as Conversation;
+      // If the local file has no real content (was saved mid-stream before AI replied),
+      // re-fetch from server which may have the completed version.
+      const hasRealContent = conv.messages.some(
+        m => m.content?.trim() || m.mediaOutputs?.length,
+      );
+      if (!hasRealContent && isBackendConfigured()) {
+        const remote = await fetchConvFromServer(id);
+        if (remote && remote.messages.some(m => m.content?.trim() || m.mediaOutputs?.length)) {
+          await saveConversationLocalOnly(remote);
+          return remote;
+        }
+      }
+      return conv;
     }
     // Local file missing — fetch from backend and cache locally (no re-push)
     if (isBackendConfigured()) {

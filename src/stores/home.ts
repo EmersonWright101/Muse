@@ -249,7 +249,12 @@ export const useHomeStore = defineStore('home', () => {
     localStorage.setItem(LS_KEY, JSON.stringify({ ...settings.value, animals: animals.value }))
     localStorage.setItem(LS_MODIFIED_AT_KEY, new Date().toISOString())
     apiPut('/api/settings/home', {
-      value: { ...settings.value, animals: animals.value },
+      value: {
+        ...settings.value,
+        animals: animals.value,
+        posterStats: posterStats.value,
+        lastGeneratedDate: lastGeneratedDate.value,
+      },
     }).catch(() => {})
   }
 
@@ -341,9 +346,15 @@ export const useHomeStore = defineStore('home', () => {
         }
 
         // Download remote posters not cached locally
+        const deletedMap = getDeletedPosters()
         const newPosters: AnimalPoster[] = []
         for (const rp of remoteActive) {
           if (localIdSet.has(rp.id)) continue
+          if (deletedMap[rp.id]) {
+            // Was deleted locally but server still has it — retry the delete
+            apiDelete(`/api/home/posters/${rp.id}`).catch(() => {})
+            continue
+          }
           const binary = await apiGetBinary(`/api/home/posters/${rp.id}/image`)
           if (!binary) continue
           let bin = ''
@@ -576,15 +587,22 @@ export const useHomeStore = defineStore('home', () => {
   }
 
   function pushToServer() {
-    apiPut('/api/settings/home', { value: { ...settings.value, animals: animals.value } }).catch(() => {})
+    apiPut('/api/settings/home', {
+      value: {
+        ...settings.value,
+        animals: animals.value,
+        posterStats: posterStats.value,
+        lastGeneratedDate: lastGeneratedDate.value,
+      },
+    }).catch(() => {})
   }
 
-  async function syncFromServer() {
+  async function syncFromServer(allSettings?: Record<string, unknown>) {
     if (!isBackendConfigured()) return
     try {
-      const allSettings = await apiGet<Record<string, unknown>>('/api/settings')
-      if (allSettings?.home) {
-        const s = allSettings.home as Partial<HomeSettings & { animals?: AnimalEntry[] }>
+      const fetched = allSettings ?? await apiGet<Record<string, unknown>>('/api/settings')
+      if (fetched?.home) {
+        const s = fetched.home as Partial<HomeSettings & { animals?: AnimalEntry[]; posterStats?: Record<string, PosterDailyStat>; lastGeneratedDate?: string | null }>
         if (s.enabled        !== undefined) settings.value.enabled        = s.enabled
         if (s.providerId)                   settings.value.providerId     = s.providerId
         if (s.modelId)                      settings.value.modelId        = s.modelId
@@ -592,6 +610,30 @@ export const useHomeStore = defineStore('home', () => {
         if (s.promptTemplate)               settings.value.promptTemplate = s.promptTemplate
         if (s.maxPosters     !== undefined) settings.value.maxPosters     = s.maxPosters
         if (Array.isArray(s.animals) && s.animals.length > 0) animals.value = s.animals
+        // Merge poster stats (keep the higher value for each date)
+        if (s.posterStats && typeof s.posterStats === 'object') {
+          const merged = { ...posterStats.value }
+          for (const [date, remote] of Object.entries(s.posterStats)) {
+            const local = merged[date]
+            if (!local) {
+              merged[date] = remote
+            } else {
+              merged[date] = {
+                costUsd:  Math.max(local.costUsd, remote.costUsd),
+                requests: Math.max(local.requests, remote.requests),
+              }
+            }
+          }
+          posterStats.value = merged
+          savePosterStats(merged).catch(() => {})
+        }
+        // Sync last generated date (take the most recent)
+        if (s.lastGeneratedDate !== undefined && s.lastGeneratedDate !== null) {
+          if (!lastGeneratedDate.value || s.lastGeneratedDate > lastGeneratedDate.value) {
+            lastGeneratedDate.value = s.lastGeneratedDate
+            localStorage.setItem('muse-home-last-generated', s.lastGeneratedDate)
+          }
+        }
         localStorage.setItem(LS_KEY, JSON.stringify({ ...settings.value, animals: animals.value }))
       }
     } catch { /* ignore */ }

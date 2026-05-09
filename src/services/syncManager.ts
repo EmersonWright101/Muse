@@ -181,13 +181,23 @@ async function syncChatList() {
         assistantId: rm.assistantId ?? undefined,
       })
       changed = true
+      // Fetch and cache full conversation content for offline access.
+      // Only save if the server returns real messages — a conversation with no messages
+      // indicates the server may not have fully stored it yet (preliminary push race).
+      // Leaving the file absent lets loadConversation retry on demand.
+      const remoteConv = await fetchConvFromServer(rm.id)
+      if (remoteConv && remoteConv.messages.some((m: { content?: string; mediaOutputs?: unknown[] }) => m.content?.trim() || m.mediaOutputs?.length)) {
+        await saveConversationLocalOnly(remoteConv)
+      }
       continue
     }
 
     const localConv = await readJsonFile<Conversation>(`${dir}/${rm.id}.json`)
     if (!localConv) {
       const remoteConv = await fetchConvFromServer(rm.id)
-      if (remoteConv) await saveConversationLocalOnly(remoteConv)
+      if (remoteConv && remoteConv.messages.some((m: { content?: string; mediaOutputs?: unknown[] }) => m.content?.trim() || m.mediaOutputs?.length)) {
+        await saveConversationLocalOnly(remoteConv)
+      }
       continue
     }
 
@@ -198,6 +208,18 @@ async function syncChatList() {
       if (localChanged) await saveConversationLocalOnly(merged)
       if (remoteChanged) pushConvToServer(merged).catch(() => {})
     } else if (localMeta.updatedAt > rm.updatedAt) {
+      // Local is newer — push to server. But if local still has the default title while
+      // server has a real AI-generated title, prefer the server title to avoid overwriting it.
+      const DEFAULT_TITLE = '新对话'
+      if (localConv.title === DEFAULT_TITLE && rm.title && rm.title !== DEFAULT_TITLE) {
+        const remoteConv = await fetchConvFromServer(rm.id)
+        if (remoteConv) {
+          const fixed = { ...localConv, title: remoteConv.title }
+          await saveConversationLocalOnly(fixed)
+          pushConvToServer(fixed).catch(() => {})
+          continue
+        }
+      }
       pushConvToServer(localConv).catch(() => {})
     }
   }
@@ -311,51 +333,57 @@ async function syncTravelList() {
 
     // Remote trash → local trash, unless the local active note is newer.
     for (const rm of deletedRemote) {
-      const local = localMap.get(rm.id)
-      if (!local) continue
-      if (!rm.deletedAt || local.updatedAt > rm.deletedAt) {
-        const note = await loadTravelNote(rm.id)
-        if (note) {
-          await apiPost(`/api/travel/notes/${rm.id}/restore`, {}).catch(() => {})
-          await saveTravelNote(note, { preserveUpdatedAt: true })
+      try {
+        const local = localMap.get(rm.id)
+        if (!local) continue
+        if (!rm.deletedAt || local.updatedAt > rm.deletedAt) {
+          const note = await loadTravelNote(rm.id)
+          if (note) {
+            await apiPost(`/api/travel/notes/${rm.id}/restore`, {}).catch(() => {})
+            await saveTravelNote(note, { preserveUpdatedAt: true })
+          }
+        } else {
+          await moveNoteToTrash(rm.id, { sync: false, deletedAt: rm.deletedAt })
         }
-      } else {
-        await moveNoteToTrash(rm.id, { sync: false, deletedAt: rm.deletedAt })
-      }
+      } catch { /* skip this note, continue with others */ }
     }
 
     // Remote active → local, local trash conflict handling, or local newer → remote.
     for (const rm of activeRemote) {
-      const trashedLocal = localTrashMap.get(rm.id)
-      if (trashedLocal) {
-        if (trashedLocal.deletedAt >= rm.updatedAt) {
-          apiDelete(`/api/travel/notes/${rm.id}`).catch(() => {})
-          continue
+      try {
+        const trashedLocal = localTrashMap.get(rm.id)
+        if (trashedLocal) {
+          if (trashedLocal.deletedAt >= rm.updatedAt) {
+            apiDelete(`/api/travel/notes/${rm.id}`).catch(() => {})
+            continue
+          }
+          await restoreNoteFromTrash(rm.id, { sync: false }).catch(() => {})
         }
-        await restoreNoteFromTrash(rm.id, { sync: false }).catch(() => {})
-      }
 
-      const local = localMap.get(rm.id)
-      if (!local || rm.updatedAt > local.updatedAt || trashedLocal) {
-        const full = await fetchFullTravelNote(rm.id)
-        if (!full) continue
-        await saveTravelNote(full, { sync: false, preserveUpdatedAt: true })
-        cacheTravelImagesForContent(full.content).catch(() => {})
-      } else if (local.updatedAt > rm.updatedAt) {
-        const note = await loadTravelNote(rm.id)
-        if (!note) continue
-        await saveTravelNote(note, { preserveUpdatedAt: true })
-        uploadReferencedTravelImages(note.id, note.content).catch(() => {})
-      }
+        const local = localMap.get(rm.id)
+        if (!local || rm.updatedAt > local.updatedAt || trashedLocal) {
+          const full = await fetchFullTravelNote(rm.id)
+          if (!full) continue
+          await saveTravelNote(full, { sync: false, preserveUpdatedAt: true })
+          cacheTravelImagesForContent(full.content).catch(() => {})
+        } else if (local.updatedAt > rm.updatedAt) {
+          const note = await loadTravelNote(rm.id)
+          if (!note) continue
+          await saveTravelNote(note, { preserveUpdatedAt: true })
+          uploadReferencedTravelImages(note.id, note.content).catch(() => {})
+        }
+      } catch { /* skip this note, continue with others */ }
     }
 
     // Local active notes absent from all remote records → push.
     for (const meta of localMetas) {
       if (remoteIds.has(meta.id)) continue
-      const note = await loadTravelNote(meta.id)
-      if (!note) continue
-      await saveTravelNote(note, { preserveUpdatedAt: true })
-      uploadReferencedTravelImages(note.id, note.content).catch(() => {})
+      try {
+        const note = await loadTravelNote(meta.id)
+        if (!note) continue
+        await saveTravelNote(note, { preserveUpdatedAt: true })
+        uploadReferencedTravelImages(note.id, note.content).catch(() => {})
+      } catch { /* skip this note, continue with others */ }
     }
 
     // Local trash absent remotely → keep server tombstone if possible.
@@ -432,7 +460,7 @@ export async function syncAllFromServer(): Promise<void> {
       await aiStore.syncFromServer(allSettings)
       await chatSettingsStore.syncFromServer(allSettings)
       await webSearchStore.syncFromServer(allSettings)
-      await homeStore.syncFromServer()
+      await homeStore.syncFromServer(allSettings)
       await privateAssistantSettings.syncFromServer(allSettings)
       await travelCopilotStore.syncFromServer(allSettings)
       await paperCopilotStore.syncFromServer(allSettings)
@@ -459,6 +487,8 @@ export async function syncAllFromServer(): Promise<void> {
       pushGeneralSettings().catch(() => {})
       pushProfileSettings().catch(() => {})
       pushChatUiSettings().catch(() => {})
+      // Push ebook library (settings, books, progress, etc.) since it uses its own endpoint
+      import('../stores/ebook').then(m => m.useEbookStore().pushToServer()).catch(() => {})
     }
   } catch { /* ignore */ }
 
@@ -478,7 +508,14 @@ export async function syncAllFromServer(): Promise<void> {
   const { useEbookStore } = await import('../stores/ebook')
   const ebookStore = useEbookStore()
   await Promise.allSettled([
-    syncChatList(),
+    syncChatList().then(async () => {
+      // After updating local index.json, tell the chat store to reload its in-memory list
+      // so the UI immediately shows synced titles and conversation order.
+      try {
+        const { useChatStore } = await import('../stores/chat')
+        useChatStore().loadList()
+      } catch { /* non-critical */ }
+    }),
     syncTravelList(),
     todoStore.load().catch(() => {}),
     ebookStore.syncFromServer().catch(() => {}),

@@ -142,6 +142,9 @@ export const useTodoStore = defineStore('todo', () => {
     apiError.value  = msg
   }
 
+  // Guard against concurrent load() calls (each call uploads local-only tasks, racing calls duplicate them)
+  let _loadInProgress = false
+
   // Per-task debounce timers — coalesces rapid edits (e.g. typing) into one request
   const _updateTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -196,6 +199,8 @@ export const useTodoStore = defineStore('todo', () => {
   watch([projects, tasks], scheduleLocalSave, { deep: true })
 
   async function load() {
+    if (_loadInProgress) return   // prevent concurrent calls that cause task duplication
+    _loadInProgress = true
     isLoading.value = true
     try {
       const c = cfg()
@@ -207,19 +212,34 @@ export const useTodoStore = defineStore('todo', () => {
           await _syncPending(c)
           const remote = await apiLoadAll(c)
 
-          // Upload local tasks/projects that don't exist on this backend (e.g. after server switch)
+          // Upload local tasks/projects that don't exist on this backend (e.g. after server switch).
+          // Await each upload so we use the server-assigned ID (some backends ignore client IDs),
+          // preventing the same task from being re-uploaded on every subsequent load() call.
           const remoteTaskIds    = new Set(remote.tasks.map(t => t.id))
           const remoteProjectIds = new Set(remote.projects.map(p => p.id))
 
           const localOnlyTasks    = localData.tasks.filter(t => !remoteTaskIds.has(t.id))
           const localOnlyProjects = localData.projects.filter(p => !remoteProjectIds.has(p.id))
 
-          for (const p of localOnlyProjects) apiCreateProject(c, p).catch(() => {})
-          for (const t of localOnlyTasks)    apiCreateTask(c, t).catch(() => {})
+          const uploadedTasks:    typeof localOnlyTasks    = []
+          const uploadedProjects: typeof localOnlyProjects = []
 
-          // Merge: remote data wins for conflicts; local-only items appended
-          const mergedProjects = [...remote.projects, ...localOnlyProjects]
-          const mergedTasks    = [...remote.tasks,    ...localOnlyTasks]
+          await Promise.allSettled([
+            ...localOnlyProjects.map(async p => {
+              try { uploadedProjects.push(await apiCreateProject(c, p)) } catch { uploadedProjects.push(p) }
+            }),
+            ...localOnlyTasks.map(async t => {
+              try { uploadedTasks.push(await apiCreateTask(c, t)) } catch { uploadedTasks.push(t) }
+            }),
+          ])
+
+          // Use server-returned versions (which carry the authoritative server ID) for the merge.
+          // Filter out any that already exist in remote (handles server returning same IDs).
+          const finalTasks    = uploadedTasks.filter(t => !remoteTaskIds.has(t.id))
+          const finalProjects = uploadedProjects.filter(p => !remoteProjectIds.has(p.id))
+
+          const mergedProjects = [...remote.projects, ...finalProjects]
+          const mergedTasks    = [...remote.tasks,    ...finalTasks]
 
           projects.value  = mergedProjects
           tasks.value     = mergedTasks
@@ -237,6 +257,7 @@ export const useTodoStore = defineStore('todo', () => {
       tasks.value    = data.tasks
     } finally {
       isLoading.value = false
+      _loadInProgress = false
     }
   }
 

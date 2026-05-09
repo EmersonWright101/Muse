@@ -16,6 +16,7 @@ import {
   listConversations,
   loadConversation,
   saveConversation,
+  saveConversationLocalOnly,
   trashConversation,
   listTrashedConversations,
   restoreConversationFromTrash,
@@ -1200,7 +1201,10 @@ export const useChatStore = defineStore('chat', () => {
     const ac = new AbortController()
     _abortControllers.set(conv.id, ac)
 
-    await saveConversation(conv)
+    // Save locally only at this point — the assistant message is still empty (streaming in progress).
+    // Pushing to server now would upload an empty-response version that could persist if onDone's
+    // push fails. The complete version is pushed in onDone once streaming finishes.
+    await saveConversationLocalOnly(conv)
     await loadList()
 
     const provider = aiStore.providers.find(p => p.id === pid)

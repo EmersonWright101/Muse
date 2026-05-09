@@ -486,7 +486,7 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
   }
 
   async function syncFromServer(allSettings: Record<string, unknown>): Promise<void> {
-    await _initPromise  // wait for local init to finish before merging to prevent duplication
+    await _initPromise  // wait for local init to finish
     const s = allSettings.ai as (PersistedSettings & { deletedProviders?: Record<string, string> }) | undefined
     if (!s) return
     const srvKey = getServerApiKey()
@@ -494,13 +494,30 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     if (s.deletedProviders) applyRemoteDeletedProviders(s.deletedProviders)
     const deletedMap = getDeletedProviders()
 
-    for (const sp of s.providers ?? []) {
-      if (!sp.name || deletedMap[sp.id]) continue
-      let apiKey = ''
-      if (sp.apiKeyEnc && srvKey) {
-        try { apiKey = await decryptFromServer(sp.apiKeyEnc, srvKey) } catch { /* skip */ }
+    // Server-wins: if server has providers, replace local entirely (prevents cross-device duplication)
+    if (s.providers?.length) {
+      const newProviders: AIProvider[] = []
+      for (const sp of s.providers) {
+        if (!sp.name || deletedMap[sp.id]) continue
+        let apiKey = ''
+        if (sp.apiKeyEnc && srvKey) {
+          try { apiKey = await decryptFromServer(sp.apiKeyEnc, srvKey) } catch { /* skip */ }
+        }
+        newProviders.push({
+          id:              sp.id,
+          type:            sp.type            ?? 'custom',
+          name:            sp.name,
+          apiKey,
+          baseUrl:         sp.baseUrl         ?? '',
+          models:          sp.customModels?.length ? sp.customModels : [{ id: 'default', name: '默认模型' }],
+          enabled:         sp.enabled         ?? true,
+          selectedModelId: sp.selectedModelId ?? '',
+          builtIn:         sp.builtIn         ?? false,
+          updatedAt:       sp.updatedAt,
+        })
       }
-      importProvider({ ...sp, apiKey })
+      // Temporarily suppress the watch-triggered server push during bulk replace
+      providers.value = newProviders
     }
     if (s.activeProviderId)  activeProviderId.value  = s.activeProviderId
     if (s.defaultProviderId) defaultProviderId.value = s.defaultProviderId

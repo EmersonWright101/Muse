@@ -273,9 +273,9 @@ async function requestCompletion() {
   const system = `You are a travel writing assistant. Your job is to continue the text the user has already written. Output ONLY the NEW continuation text (max ${words} words). Do NOT repeat, echo, or restate any text that already exists. Begin your output with the very next character or word that comes after the existing text.`
 
   try {
-    await streamCopilotCompletion(provider, modelId, contextText, system, words * 6, ac.signal,
-      token => { if (_ghostSpan) _ghostSpan.textContent = (_ghostSpan.textContent ?? '') + token },
-    )
+    await streamCopilotCompletion(provider, modelId, contextText, system, words * 6, ac.signal, {
+      onToken(token: string) { if (_ghostSpan) _ghostSpan.textContent = (_ghostSpan.textContent ?? '') + token },
+    })
   } catch {
     if (!ac.signal.aborted) removeGhostSpan(false)
   }

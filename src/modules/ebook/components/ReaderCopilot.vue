@@ -715,11 +715,11 @@ function removeFile(id: string) {
 }
 
 function getDisplay(msg: ChatMessage) {
-  if (msg.role !== 'assistant') return { content: msg.content, model: msg.model, providerId: msg.providerId }
+  if (msg.role !== 'assistant') return { content: msg.content, model: msg.model, providerId: msg.providerId, mediaOutputs: msg.mediaOutputs }
   const idx = msgTabIdx[msg.id] ?? 0
-  if (!idx) return { content: msg.content, model: msg.model, providerId: msg.providerId }
+  if (!idx) return { content: msg.content, model: msg.model, providerId: msg.providerId, mediaOutputs: msg.mediaOutputs }
   const v = msg.variants?.[idx - 1]
-  return { content: v?.content ?? '', model: v?.model, providerId: v?.providerId }
+  return { content: v?.content ?? '', model: v?.model, providerId: v?.providerId, mediaOutputs: v?.mediaOutputs }
 }
 
 function setTab(msg: ChatMessage, idx: number) { msgTabIdx[msg.id] = idx }

@@ -272,7 +272,7 @@ async function streamOllama(
   })
   // Fall back to OpenAI-compatible endpoint for proxies that don't expose /api/chat (e.g. DGX-Spark)
   if (resp.status === 404) {
-    return streamOpenAI(provider, modelId, prompt, systemPrompt, maxTokens, signal, onToken)
+    return streamOpenAI(provider, modelId, prompt, systemPrompt, maxTokens, signal, handler)
   }
   if (!resp.ok) throw new Error(`Ollama API error: ${resp.status} ${resp.statusText}`)
   const reader  = resp.body!.getReader()

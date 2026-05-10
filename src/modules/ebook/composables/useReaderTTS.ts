@@ -110,7 +110,6 @@ export function useReaderTTS() {
         _audio.playbackRate = state.value.speed
         state.value.loading = false
         await new Promise<void>((resolve, reject) => {
-          let hasStarted = false
           _audio!.onended = () => resolve()
           _audio!.onerror = () => {
             // Ignore errors caused by stop() clearing the src
@@ -118,7 +117,7 @@ export function useReaderTTS() {
             reject(new Error('音频播放错误'))
           }
           _audio!.onpause = () => { if (!state.value.paused) resolve() }
-          _audio!.play().then(() => { hasStarted = true }).catch((e) => {
+          _audio!.play().catch((e) => {
             // Ignore abort errors from stop() during play()
             if (!_isPlayingChunks) { resolve(); return }
             reject(e)

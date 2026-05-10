@@ -748,6 +748,10 @@ export const useEbookStore = defineStore('ebook', () => {
       const remote = await apiGet<EbookLibraryResponse>('/api/ebook/library')
       if (!remote?.value) {
         await pushToServer()
+        // First-time sync: also push all local book files so other devices can download them
+        for (const b of books.value) {
+          pushBookFileToServer(b).catch(() => {})
+        }
         return
       }
       const r = remote.value
@@ -926,11 +930,17 @@ export const useEbookStore = defineStore('ebook', () => {
       save(LS_SESSIONS, sessions.value)
       save(LS_COPILOT, copilotSessions.value)
 
-      // Pre-download EPUB files for newly discovered remote books
-      const remoteBookFps = new Set(remoteBooks.map(bookFingerprint))
+      // Pre-download EPUB files for newly discovered remote books.
+      // Use the remote book ID to request the file (so the server can locate it),
+      // but save to the local filePath (so the merged book record stays consistent).
+      const remoteBookMap = new Map(remoteBooks.map(b => [bookFingerprint(b), b]))
       for (const b of mergedBooks) {
-        if (remoteBookFps.has(bookFingerprint(b))) {
-          readBookFile(b).catch(() => {})
+        const fp = bookFingerprint(b)
+        const remoteBook = remoteBookMap.get(fp)
+        if (remoteBook) {
+          const downloadTarget: Book =
+            remoteBook.id === b.id ? b : { ...remoteBook, filePath: b.filePath }
+          readBookFile(downloadTarget).catch(() => {})
         }
       }
 

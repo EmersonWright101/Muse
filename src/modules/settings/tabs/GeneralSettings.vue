@@ -146,6 +146,22 @@ const oldDirEntries = ref<Array<{ name: string; isDirectory: boolean }>>([])
 const dirSizeBytes  = shallowRef<number | null>(null)
 const dirSizeLoading = ref(false)
 
+// ── AI Model Path (for tools like RemoveBg) ─────────────────────────────────
+const modelPath = ref(localStorage.getItem('muse-tools-model-path') ?? '')
+
+async function chooseModelFolder() {
+  const selected = await open({ directory: true })
+  if (typeof selected === 'string') {
+    modelPath.value = selected
+    localStorage.setItem('muse-tools-model-path', selected)
+  }
+}
+
+function clearModelPath() {
+  modelPath.value = ''
+  localStorage.removeItem('muse-tools-model-path')
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024)              return `${bytes} B`
   if (bytes < 1024 * 1024)      return `${(bytes / 1024).toFixed(1)} KB`
@@ -429,6 +445,28 @@ async function confirmDeleteOld() {
         >
           {{ opt.label() }}
         </button>
+      </div>
+    </div>
+
+    <!-- ── AI Model Path ─────────────────────────────────────────── -->
+    <div class="section-card">
+      <h2 class="section-title">AI 模型权重路径</h2>
+      <p class="section-desc">所有 AI 功能（如背景消除）的模型文件存放根目录。</p>
+
+      <div class="path-row">
+        <div class="path-info">
+          <span class="path-label">当前路径</span>
+          <span class="path-value" :class="{ custom: !!modelPath }">{{ modelPath || '未配置（将使用默认内置模型）' }}</span>
+        </div>
+        <div class="path-actions">
+          <button class="path-btn" @click="chooseModelFolder">
+            <FolderOpen :size="14" />
+            {{ modelPath ? '更改文件夹' : '选择文件夹' }}
+          </button>
+          <button v-if="modelPath" class="path-btn secondary" @click="clearModelPath">
+            重置
+          </button>
+        </div>
       </div>
     </div>
 

@@ -4,7 +4,9 @@ import App from './App.vue'
 import router from './router'
 import i18n from './i18n'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import './style.css'
 import 'leaflet/dist/leaflet.css'
+import 'katex/dist/katex.min.css'
 
 const app = createApp(App)
   .use(createPinia())

@@ -80,6 +80,10 @@ export async function tmpDir(): Promise<string> {
   return `${await resolveDataRoot()}/tmp`
 }
 
+export async function toolsRemoveBgDir(): Promise<string> {
+  return `${await resolveDataRoot()}/tools/remove_bg`
+}
+
 export async function cleanupTmpDir(maxAgeDays = 7): Promise<void> {
   const dir = await tmpDir()
   if (!(await exists(dir))) return

@@ -405,7 +405,7 @@ img { max-width: 100% !important; height: auto !important; }
     if (!el || typeof ResizeObserver === 'undefined') return
     resizeObserver = new ResizeObserver(() => {
       if (resizeTimer != null) clearTimeout(resizeTimer)
-      resizeTimer = window.setTimeout(() => { resizeTimer = null; resize() }, 150)
+      resizeTimer = setTimeout(() => { resizeTimer = null; resize() }, 150)
     })
     resizeObserver.observe(el)
   }

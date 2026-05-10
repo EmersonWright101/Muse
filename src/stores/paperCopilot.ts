@@ -562,10 +562,10 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
 
   // ── Context mode ───────────────────────────────────────────────────────────
   const _DEFAULT_KEY = 'paperCopilot.defaultContextMode'
-  const defaultContextMode = ref<'abstract' | 'fulltext'>(
-    (localStorage.getItem(_DEFAULT_KEY) as 'abstract' | 'fulltext') ?? 'abstract',
+  const defaultContextMode = ref<'abstract' | 'fulltext' | 'none'>(
+    (localStorage.getItem(_DEFAULT_KEY) as 'abstract' | 'fulltext' | 'none') ?? 'abstract',
   )
-  const contextMode      = ref<'abstract' | 'fulltext'>(defaultContextMode.value)
+  const contextMode      = ref<'abstract' | 'fulltext' | 'none'>(defaultContextMode.value)
   const includeFullText  = computed(() => contextMode.value === 'fulltext')
   const paperFullText    = ref<string | null>(null)
   const paperFullTextBase64 = ref<string | null>(null)
@@ -573,7 +573,7 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
   const isExtractingText = ref(false)
   const fullTextError    = ref<string | null>(null)
 
-  function setDefaultContextMode(mode: 'abstract' | 'fulltext') {
+  function setDefaultContextMode(mode: 'abstract' | 'fulltext' | 'none') {
     defaultContextMode.value = mode
     localStorage.setItem(_DEFAULT_KEY, mode)
     pushSettingsToServer().catch(() => {})
@@ -586,7 +586,7 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
   }
 
   async function syncSettingsFromServer(allSettings: Record<string, unknown>) {
-    const s = allSettings.paperCopilot as { defaultContextMode?: 'abstract' | 'fulltext' } | undefined
+    const s = allSettings.paperCopilot as { defaultContextMode?: 'abstract' | 'fulltext' | 'none' } | undefined
     if (!s?.defaultContextMode) return
     defaultContextMode.value = s.defaultContextMode
     contextMode.value = s.defaultContextMode

@@ -11,6 +11,7 @@ export default {
     ebook:       'Books',
     statistics:  'Statistics',
     settings:    'Settings',
+    tools:       'Tools',
   },
   ebook: {
     sidebar: {

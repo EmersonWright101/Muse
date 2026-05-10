@@ -35,6 +35,7 @@ import yaml       from 'highlight.js/lib/languages/yaml'
 import plaintext  from 'highlight.js/lib/languages/plaintext'
 import DOMPurify  from 'dompurify'
 import type { AttachmentMeta } from '../../../stores/chat'
+import { renderLatexInText, renderMarkdownWithLatex } from '../../../utils/latex'
 
 hljs.registerLanguage('javascript', javascript); hljs.registerLanguage('js', javascript)
 hljs.registerLanguage('typescript', typescript); hljs.registerLanguage('ts', typescript)
@@ -87,9 +88,7 @@ marked.setOptions({ renderer: mdRenderer, breaks: true })
 
 function renderMarkdown(content: string): string {
   try {
-    const raw = marked.parse(content) as string
-    if (typeof raw !== 'string') return content
-    return DOMPurify.sanitize(raw, { ADD_ATTR: ['onclick', 'data-href', 'title'] })
+    return renderMarkdownWithLatex(content, marked, DOMPurify)
   } catch { return content }
 }
 
@@ -126,7 +125,8 @@ const activeProviderType = computed(() => aiStore.providers.find(p => p.id === a
 // Context text for preview
 const contextPreviewText = computed(() => {
   if (copilot.contextMode === 'fulltext') return copilot.paperFullText ?? ''
-  return copilot.paperAbstractText ?? ''
+  if (copilot.contextMode === 'abstract') return copilot.paperAbstractText ?? ''
+  return ''
 })
 
 // ─── Input state ──────────────────────────────────────────────────────────────
@@ -175,7 +175,7 @@ const showContextPreview = ref(false)
 const showSettingsPopover = ref(false)
 const settingsRoot = ref<HTMLElement>()
 
-async function setContextMode(mode: 'abstract' | 'fulltext') {
+async function setContextMode(mode: 'abstract' | 'fulltext' | 'none') {
   copilot.contextMode = mode
   if (mode === 'abstract') {
     copilot.prepareAbstractText(props.paper.title, props.paper.authors, props.paper.abstract)
@@ -452,7 +452,7 @@ onUnmounted(() => {
             >
               <Check v-if="copilot.defaultContextMode === 'abstract'" :size="10" />
               <span v-else class="sp-dot" />
-              摘要输入（推荐）
+              摘要输入
             </button>
             <button
               class="sp-option"
@@ -462,6 +462,15 @@ onUnmounted(() => {
               <Check v-if="copilot.defaultContextMode === 'fulltext'" :size="10" />
               <span v-else class="sp-dot" />
               全文输入
+            </button>
+            <button
+              class="sp-option"
+              :class="{ active: copilot.defaultContextMode === 'none' }"
+              @click="copilot.setDefaultContextMode('none')"
+            >
+              <Check v-if="copilot.defaultContextMode === 'none'" :size="10" />
+              <span v-else class="sp-dot" />
+              无上下文
             </button>
             <div class="sp-divider" />
             <div class="sp-title">话题生成模型</div>
@@ -567,7 +576,7 @@ onUnmounted(() => {
       <div v-else-if="messages.length === 0" class="cp-empty">
         <img :src="copilotIcon" class="empty-icon-copilot" alt="Copilot" />
         <p>基于此论文开始对话</p>
-        <p class="cp-empty-sub">当前使用「{{ copilot.contextMode === 'abstract' ? '摘要' : '全文' }}」模式注入上下文</p>
+        <p class="cp-empty-sub">当前使用「{{ copilot.contextMode === 'abstract' ? '摘要' : copilot.contextMode === 'fulltext' ? '全文' : '无上下文' }}」模式注入上下文</p>
       </div>
       <template v-else>
         <div v-for="(msg, i) in messages" :key="msg.id" class="cp-msg" :class="msg.role">
@@ -788,6 +797,11 @@ onUnmounted(() => {
         <div class="context-tabs">
           <button
             class="ctx-tab"
+            :class="{ active: copilot.contextMode === 'none' }"
+            @click="setContextMode('none')"
+          >无</button>
+          <button
+            class="ctx-tab"
             :class="{ active: copilot.contextMode === 'abstract' }"
             @click="setContextMode('abstract')"
           >摘要</button>
@@ -825,7 +839,7 @@ onUnmounted(() => {
           <span>{{ copilot.contextMode === 'abstract' ? '摘要内容' : '全文内容' }}（将注入为 System Prompt）</span>
           <button @click="showContextPreview = false"><X :size="11" /></button>
         </div>
-        <div class="ctx-preview-body">{{ contextPreviewText }}</div>
+        <div class="ctx-preview-body" v-html="renderLatexInText(contextPreviewText)"></div>
       </div>
 
       <!-- Pending files -->

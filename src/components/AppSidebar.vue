@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings, BookOpen } from 'lucide-vue-next'
+import toolIcon from '../assets/icons/tool.svg'
 import { apiPut } from '../services/api'
 import assistantIcon from '../assets/icons/AIAssistant@2x.svg'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -20,6 +21,7 @@ const navItems = computed(() => [
   { path: '/todo',      icon: CheckSquare,   labelKey: 'nav.todo',      avatar: false, iconSize: 18 },
   { path: '/ebook',     icon: BookOpen,      labelKey: 'nav.ebook',     avatar: false, iconSize: 20 },
   { path: '/travel',    icon: MapPin,        labelKey: 'nav.travel',    avatar: false },
+  { path: '/tools',     icon: null,          labelKey: 'nav.tools',     avatar: false, customIcon: toolIcon },
 ])
 
 const todoStore = useTodoStore()
@@ -446,8 +448,8 @@ onUnmounted(() => {
 }
 
 .nav-custom-icon {
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
   object-fit: contain;
   opacity: 0.55;
   transition: opacity 0.12s;

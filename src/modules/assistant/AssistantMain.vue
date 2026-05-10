@@ -14,6 +14,7 @@ import MessageItem from '../chat/components/MessageItem.vue'
 import PaperCopilot from './components/PaperCopilot.vue'
 import { usePaperCopilotStore } from '../../stores/paperCopilot'
 import copilotIcon from '../../assets/icons/copilot.svg'
+import { renderLatexInText, stripLatex } from '../../utils/latex'
 
 const assistant = useAssistantStore()
 const papers    = usePapersStore()
@@ -154,6 +155,11 @@ function formatPaperDate(iso: string): string {
 function authorsDisplay(authors: string[]): string {
   if (authors.length <= 3) return authors.join(', ')
   return authors.slice(0, 2).join(', ') + ` 等 ${authors.length} 人`
+}
+
+function abstractPreview(text: string): string {
+  const cleaned = stripLatex(text)
+  return cleaned.length > 160 ? cleaned.slice(0, 160) + '…' : cleaned
 }
 
 async function handleDelete(paper: Paper) {
@@ -553,7 +559,8 @@ watch(activePaper, (paper) => {
                 {{ paper.ai_summary }}
               </div>
               <div v-else-if="expandedCards.has(paper.id) || !paper.analyzed" class="paper-abstract">
-                {{ expandedCards.has(paper.id) ? paper.abstract : paper.abstract.slice(0, 160) + (paper.abstract.length > 160 ? '…' : '') }}
+                <span v-if="expandedCards.has(paper.id)" v-html="renderLatexInText(paper.abstract)"></span>
+                <span v-else>{{ abstractPreview(paper.abstract) }}</span>
               </div>
 
               <!-- Relevance reason -->

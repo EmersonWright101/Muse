@@ -24,6 +24,8 @@ import {
   restoreConvOnServer,
   trashConvOnServer,
 } from './chatSync'
+import { syncAllToolHistories, pushAllToolHistories } from './toolsSync'
+import { syncRemoveBgModels } from '../modules/tools/Media/RemoveBg/modelSync'
 import {
   readTextFile, writeTextFile, exists, mkdir, remove,
 } from '@tauri-apps/plugin-fs'
@@ -44,11 +46,11 @@ import {
   noteFingerprint, extractTravelImageFilenames,
 } from '../utils/travelStorage'
 import { useEbookStore } from '../stores/ebook'
+import { useTodoStore } from '../stores/todo'
 
 // ─── Lazy store accessors (avoid circular init) ──────────────────────────────
 
-async function getTodoStore() {
-  const { useTodoStore } = await import('../stores/todo')
+function getTodoStore() {
   return useTodoStore()
 }
 async function getAiStore() {
@@ -657,6 +659,8 @@ export async function syncAllFromServer(): Promise<void> {
       pushChatUiSettings().catch(() => {})
       // Push ebook library (settings, books, progress, etc.) since it uses its own endpoint
       useEbookStore().pushToServer().catch(() => {})
+      // Push tool histories (first-time migration)
+      pushAllToolHistories().catch(() => {})
     }
   } catch (err) {
     console.error('[Sync] Settings sync failed:', err)
@@ -682,9 +686,9 @@ export async function syncAllFromServer(): Promise<void> {
     firstErr ??= err
   }
 
-  // 3+4+5+6. Chat list + travel notes + todo + ebook (parallel)
-  setSyncModule('对话 / 旅行 / Todo / 图书')
-  const todoStore = await getTodoStore()
+  // 3+4+5+6+7. Chat list + travel notes + todo + ebook + tools (parallel)
+  setSyncModule('对话 / 旅行 / Todo / 图书 / 工具')
+  const todoStore = getTodoStore()
   const ebookStore = useEbookStore()
   const parallelResults = await Promise.allSettled([
     syncChatList().then(async () => {
@@ -698,6 +702,8 @@ export async function syncAllFromServer(): Promise<void> {
     syncTravelList(),
     todoStore.load(),
     ebookStore.syncFromServer(),
+    syncAllToolHistories(),
+    syncRemoveBgModels(),
   ])
   for (const result of parallelResults) {
     if (result.status === 'rejected') {

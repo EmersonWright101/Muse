@@ -14,6 +14,10 @@ export default defineConfig(async () => ({
     include: ['mermaid', 'epubjs'],
   },
 
+  worker: {
+    format: 'es',
+  },
+
   build: {
     chunkSizeWarningLimit: 1000,
     rollupOptions: {

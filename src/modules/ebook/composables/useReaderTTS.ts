@@ -47,6 +47,7 @@ export function useReaderTTS() {
   let _blobUrl: string | null = null
   let _pendingChunks: string[] = []
   let _isPlayingChunks = false
+  let _wasStopped = false
 
   function splitIntoChunks(text: string): string[] {
     const chunks: string[] = []
@@ -90,13 +91,21 @@ export function useReaderTTS() {
   }
 
   function releaseAudio() {
-    if (_audio) { _audio.pause(); _audio.src = ''; _audio = null }
+    if (_audio) {
+      _audio.onended = null
+      _audio.onerror = null
+      _audio.onpause = null
+      _audio.pause()
+      _audio.src = ''
+      _audio = null
+    }
     if (_blobUrl) { URL.revokeObjectURL(_blobUrl); _blobUrl = null }
   }
 
   async function playChunks(chunks: string[], cfg: TtsConfig) {
     _pendingChunks = chunks
     _isPlayingChunks = true
+    _wasStopped = false
 
     for (let i = 0; i < _pendingChunks.length; i++) {
       if (!_isPlayingChunks) break
@@ -113,13 +122,13 @@ export function useReaderTTS() {
           _audio!.onended = () => resolve()
           _audio!.onerror = () => {
             // Ignore errors caused by stop() clearing the src
-            if (!_isPlayingChunks) { resolve(); return }
+            if (!_isPlayingChunks || _wasStopped) { resolve(); return }
             reject(new Error('音频播放错误'))
           }
           _audio!.onpause = () => { if (!state.value.paused) resolve() }
           _audio!.play().catch((e) => {
             // Ignore abort errors from stop() during play()
-            if (!_isPlayingChunks) { resolve(); return }
+            if (!_isPlayingChunks || _wasStopped) { resolve(); return }
             reject(e)
           })
         })
@@ -142,6 +151,7 @@ export function useReaderTTS() {
       state.value.error = '请在设置 → 图书 中配置 TTS 服务地址'
       return
     }
+    _wasStopped = false
     stop()
     state.value.active = true
     state.value.error = null
@@ -158,6 +168,7 @@ export function useReaderTTS() {
     if (_audio && _audio.paused)  { _audio.play().catch(() => {}); state.value.paused = false }
   }
   function stop() {
+    _wasStopped = true
     _isPlayingChunks = false
     _pendingChunks = []
     releaseAudio()
@@ -175,6 +186,7 @@ export function useReaderTTS() {
     },
   ): Promise<void> {
     if (urls.length === 0) return
+    _wasStopped = false
     stop()
     state.value.active = true
     state.value.error = null
@@ -194,13 +206,13 @@ export function useReaderTTS() {
           _audio!.onended = () => resolve()
           _audio!.onerror = () => {
             // Ignore errors caused by stop() clearing the src
-            if (!_isPlayingChunks) { resolve(); return }
+            if (!_isPlayingChunks || _wasStopped) { resolve(); return }
             reject(new Error('音频播放错误'))
           }
           _audio!.onpause = () => { if (!state.value.paused) resolve() }
           _audio!.play().catch((e) => {
             // Ignore abort errors from stop() during play()
-            if (!_isPlayingChunks) { resolve(); return }
+            if (!_isPlayingChunks || _wasStopped) { resolve(); return }
             reject(e)
           })
         })

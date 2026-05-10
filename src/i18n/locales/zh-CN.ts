@@ -11,6 +11,7 @@ export default {
     ebook:       '阅读',
     statistics:  '统计',
     settings:    '设置',
+    tools:       '工具箱',
   },
   ebook: {
     sidebar: {

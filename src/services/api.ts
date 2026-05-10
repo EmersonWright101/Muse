@@ -7,6 +7,7 @@
 
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { getBackendConfig } from '../utils/backendConfig'
+export { getBackendConfig }
 
 export class ApiError extends Error {
   constructor(public readonly status: number, message: string) {

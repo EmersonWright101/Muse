@@ -11,6 +11,33 @@ import { getBackendConfig } from '../utils/backendConfig'
 import { apiPut } from '../services/api'
 import { ocrImage } from '../utils/ocr'
 import type { AttachmentMeta, MessageUsage, WebSearchResult } from '../utils/storage'
+import { resolveDataRoot } from '../utils/path'
+import { beginSyncOp, endSyncOp, failSyncOp, setSyncModule } from './syncStatus'
+
+// ─── Paper Copilot usage tracking ────────────────────────────────────────────
+
+export interface PaperCopilotDailyStat {
+  inputTokens: number
+  outputTokens: number
+  costUsd: number
+  requests: number
+}
+
+export async function recordPaperCopilotUsage(inputTokens: number, outputTokens: number, costUsd: number): Promise<void> {
+  try {
+    const path = `${await resolveDataRoot()}/paper-copilot-stats.json`
+    let stats: Record<string, PaperCopilotDailyStat> = {}
+    try { if (await exists(path)) stats = JSON.parse(await readTextFile(path)) } catch {}
+    const date = new Date().toISOString().slice(0, 10)
+    const s = stats[date] ?? { inputTokens: 0, outputTokens: 0, costUsd: 0, requests: 0 }
+    s.inputTokens  += inputTokens ?? 0
+    s.outputTokens += outputTokens ?? 0
+    s.costUsd      += costUsd ?? 0
+    s.requests     += 1
+    stats[date] = s
+    await writeTextFile(path, JSON.stringify(stats))
+  } catch { /* non-critical */ }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,6 +67,20 @@ export interface PaperChatMessage {
   webSearchResults?: WebSearchResult[]
 }
 
+export interface PaperConversation {
+  id: string
+  paperId: string
+  paperSource: string
+  title: string
+  providerId?: string
+  model?: string
+  createdAt: string
+  updatedAt: string
+  messageCount: number
+  messages: PaperChatMessage[]
+  contextCutoffPoints?: string[]
+}
+
 export interface PaperConversationMeta {
   id: string
   paperId: string
@@ -50,10 +91,7 @@ export interface PaperConversationMeta {
   createdAt: string
   updatedAt: string
   messageCount: number
-}
-
-export interface PaperConversation extends PaperConversationMeta {
-  messages: PaperChatMessage[]
+  messages?: PaperChatMessage[]
   contextCutoffPoints?: string[]
 }
 
@@ -61,8 +99,8 @@ export interface PaperConversation extends PaperConversationMeta {
 
 interface StreamChunkHandler {
   onToken:           (token: string) => void
-  onDone:            (usage: MessageUsage) => void
-  onError:           (err: string) => void
+  onDone:            (usage: MessageUsage) => void | Promise<void>
+  onError:           (err: string) => void | Promise<void>
   onReasoningToken?: (token: string) => void
 }
 
@@ -164,7 +202,7 @@ async function streamOpenAI(
       const trimmed = line.trim()
       if (!trimmed.startsWith('data: ')) continue
       const data = trimmed.slice(6)
-      if (data === '[DONE]') { handler.onDone(usage); return }
+      if (data === '[DONE]') { await handler.onDone(usage); return }
       try {
         const parsed = JSON.parse(data)
         const raw = parsed.choices?.[0]?.delta?.content
@@ -180,7 +218,7 @@ async function streamOpenAI(
       } catch { /* skip */ }
     }
   }
-  handler.onDone(usage)
+  await handler.onDone(usage)
 }
 
 async function streamDeepSeek(
@@ -213,7 +251,7 @@ async function streamDeepSeek(
       const trimmed = line.trim()
       if (!trimmed.startsWith('data: ')) continue
       const data = trimmed.slice(6)
-      if (data === '[DONE]') { handler.onDone(usage); return }
+      if (data === '[DONE]') { await handler.onDone(usage); return }
       try {
         const parsed = JSON.parse(data)
         const raw = parsed.choices?.[0]?.delta?.content
@@ -225,7 +263,7 @@ async function streamDeepSeek(
       } catch { /* skip */ }
     }
   }
-  handler.onDone(usage)
+  await handler.onDone(usage)
 }
 
 async function streamAnthropic(
@@ -268,11 +306,11 @@ async function streamAnthropic(
           if (parsed.delta?.type === 'thinking_delta' && handler.onReasoningToken) handler.onReasoningToken(parsed.delta.thinking)
           else if (parsed.delta?.type === 'text_delta') handler.onToken(parsed.delta.text)
         }
-        if (parsed.type === 'message_stop') { handler.onDone(usage); return }
+        if (parsed.type === 'message_stop') { await handler.onDone(usage); return }
       } catch { /* skip */ }
     }
   }
-  handler.onDone(usage)
+  await handler.onDone(usage)
 }
 
 async function streamGoogle(
@@ -322,7 +360,7 @@ async function streamGoogle(
       } catch { /* skip */ }
     }
   }
-  handler.onDone(usage)
+  await handler.onDone(usage)
 }
 
 async function streamOllama(
@@ -364,13 +402,13 @@ async function streamOllama(
           const usage: MessageUsage = {}
           if (parsed.prompt_eval_count != null) usage.inputTokens  = parsed.prompt_eval_count
           if (parsed.eval_count        != null) usage.outputTokens = parsed.eval_count
-          handler.onDone(usage)
+          await handler.onDone(usage)
           return
         }
       } catch { /* skip */ }
     }
   }
-  handler.onDone({})
+  await handler.onDone({})
 }
 
 async function _dispatchStream(
@@ -476,7 +514,14 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
   const activePaperSource = ref<string>('arxiv')
 
   // ── Conversation state ─────────────────────────────────────────────────────
+  // conversations holds ALL papers' conversations (single source of truth)
   const conversations     = ref<PaperConversationMeta[]>([])
+  // Filtered view for the currently active paper
+  const currentPaperConversations = computed(() =>
+    conversations.value
+      .filter(c => c.paperId === activePaperId.value && c.paperSource === activePaperSource.value)
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+  )
   const activeConvId      = ref<string | null>(null)
   const activeConv        = ref<PaperConversation | null>(null)
   const isLoadingConvs    = ref(false)
@@ -522,21 +567,49 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
   function setDefaultContextMode(mode: 'abstract' | 'fulltext') {
     defaultContextMode.value = mode
     localStorage.setItem(_DEFAULT_KEY, mode)
-    pushToServer().catch(() => {})
+    pushSettingsToServer().catch(() => {})
   }
 
-  async function pushToServer() {
+  async function pushSettingsToServer() {
     await apiPut('/api/settings/paperCopilot', {
       value: { defaultContextMode: defaultContextMode.value },
     }).catch(() => {})
   }
 
-  async function syncFromServer(allSettings: Record<string, unknown>) {
+  async function syncSettingsFromServer(allSettings: Record<string, unknown>) {
     const s = allSettings.paperCopilot as { defaultContextMode?: 'abstract' | 'fulltext' } | undefined
     if (!s?.defaultContextMode) return
     defaultContextMode.value = s.defaultContextMode
     contextMode.value = s.defaultContextMode
     localStorage.setItem(_DEFAULT_KEY, s.defaultContextMode)
+  }
+
+  // ─── Local persistence for conversations ─────────────────────────────────────
+
+  const LS_CONVERSATIONS = 'muse-paper-copilot-conversations'
+
+  function loadConversationsFromStorage(): PaperConversation[] {
+    try {
+      const raw = localStorage.getItem(LS_CONVERSATIONS)
+      if (!raw) return []
+      return JSON.parse(raw) as PaperConversation[]
+    } catch { return [] }
+  }
+
+  function saveConversationsToStorage() {
+    try {
+      localStorage.setItem(LS_CONVERSATIONS, JSON.stringify(conversations.value))
+    } catch { /* ignore */ }
+  }
+
+  // Initialize from localStorage - load ALL conversations, filter per paper in loadConversations()
+  const _storedConversations = loadConversationsFromStorage()
+  if (_storedConversations.length) {
+    conversations.value = _storedConversations.map(c => ({
+      ...c,
+      messages: c.messages ?? [],
+      contextCutoffPoints: c.contextCutoffPoints ?? [],
+    }))
   }
 
   // ── API helpers ────────────────────────────────────────────────────────────
@@ -568,7 +641,8 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
       activeConv.value       = null
       activeConvId.value     = null
       await loadConversations()
-      if (conversations.value.length > 0) await openConversation(conversations.value[0].id)
+      const paperConvs = currentPaperConversations.value
+      if (paperConvs.length > 0) await openConversation(paperConvs[0].id)
       else await createConversation()
     }
   }
@@ -580,13 +654,40 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
   async function loadConversations() {
     if (!activePaperId.value) return
     isLoadingConvs.value = true
+    beginSyncOp()
+    setSyncModule('论文 Copilot')
     try {
+      // Try backend first
       const resp = await tauriFetch(
         _url(`/${activePaperId.value}/conversations?source=${activePaperSource.value}`),
         { method: 'GET', headers: _headers() },
       )
-      if (resp.ok) conversations.value = await resp.json() as PaperConversationMeta[]
-    } catch { /* ignore */ } finally { isLoadingConvs.value = false }
+      if (resp.ok) {
+        const serverConvs = await resp.json() as PaperConversationMeta[]
+        // Merge server conversations into the global list (preserving other papers' data)
+        const localIds = new Set(conversations.value.map(c => c.id))
+        for (const sc of serverConvs) {
+          if (!localIds.has(sc.id)) {
+            conversations.value.push({ ...sc, messages: [], contextCutoffPoints: [] })
+          } else {
+            const idx = conversations.value.findIndex(c => c.id === sc.id)
+            if (idx >= 0 && sc.updatedAt > conversations.value[idx].updatedAt) {
+              // Preserve local messages if server meta is newer but has no messages
+              const localMessages = conversations.value[idx].messages
+              const localCutoffs = conversations.value[idx].contextCutoffPoints
+              conversations.value[idx] = {
+                ...conversations.value[idx],
+                ...sc,
+                messages: localMessages ?? [],
+                contextCutoffPoints: localCutoffs ?? [],
+              }
+            }
+          }
+        }
+        saveConversationsToStorage()
+      }
+      endSyncOp()
+    } catch (e) { failSyncOp(e) } finally { isLoadingConvs.value = false }
   }
 
   async function createConversation(): Promise<PaperConversation | null> {
@@ -601,16 +702,20 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
       title: '新对话', providerId: pid, model: mid,
       createdAt: now, updatedAt: now, messageCount: 0, messages: [],
     }
+    beginSyncOp()
+    setSyncModule('论文 Copilot')
     try {
       const resp = await tauriFetch(
         _url(`/${activePaperId.value}/conversations?source=${activePaperSource.value}`),
         { method: 'POST', headers: _headers(), body: JSON.stringify({ id, provider_id: pid, model: mid }) },
       )
       if (resp.ok) Object.assign(localConv, await resp.json() as PaperConversationMeta)
-    } catch { /* use local */ }
+      endSyncOp()
+    } catch (e) { failSyncOp(e) }
     conversations.value.unshift({ ...localConv })
     activeConv.value   = localConv
     activeConvId.value = localConv.id
+    saveConversationsToStorage()
     return localConv
   }
 
@@ -630,6 +735,9 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
     }
 
     isLoadingMessages.value = true
+    beginSyncOp()
+    setSyncModule('论文 Copilot')
+    let serverMessages: PaperChatMessage[] | null = null
     try {
       const resp = await tauriFetch(
         _url(`/${activePaperId.value}/conversations/${convId}?source=${activePaperSource.value}`),
@@ -638,7 +746,7 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
       if (resp.ok) {
         const data = await resp.json() as Record<string, unknown>
         const rawMsgs = (data.messages ?? []) as any[]
-        const messages: PaperChatMessage[] = rawMsgs.map((m: any) => ({
+        serverMessages = rawMsgs.map((m: any) => ({
           id: m.id, role: m.role, content: m.content ?? '',
           timestamp: m.created_at, model: m.model, providerId: m.provider_id,
           error: m.error ?? false, reasoning: m.reasoning,
@@ -649,7 +757,7 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
         }))
         // Restore attachment binaries from server (for multi-device sync).
         // Only user messages can have attachments; fetch each binary in parallel.
-        await Promise.all(messages.flatMap(msg =>
+        await Promise.all(serverMessages.flatMap(msg =>
           msg.role === 'user' && msg.attachments?.length
             ? msg.attachments.map(async att => {
                 try {
@@ -670,25 +778,45 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
               })
             : [],
         ))
-        const meta = conversations.value.find(c => c.id === convId)
-        activeConv.value   = { ...(meta as PaperConversationMeta), messages }
-        activeConvId.value = convId
       }
-    } catch { /* ignore */ } finally { isLoadingMessages.value = false }
+      endSyncOp()
+    } catch (e) { failSyncOp(e) }
+
+    // Use server messages if available, otherwise fall back to local messages
+    const idx = conversations.value.findIndex(c => c.id === convId)
+    const localMeta = idx >= 0 ? conversations.value[idx] : null
+    const messages = serverMessages ?? (localMeta?.messages ?? [])
+
+    if (localMeta) {
+      activeConv.value   = { ...localMeta, messages }
+      activeConvId.value = convId
+      // Update local storage with server messages (if fetched)
+      if (serverMessages) {
+        conversations.value[idx] = { ...localMeta, messages, messageCount: messages.length }
+        saveConversationsToStorage()
+      }
+    }
+
+    isLoadingMessages.value = false
   }
 
   async function deleteConversation(convId: string) {
+    beginSyncOp()
+    setSyncModule('论文 Copilot')
     try {
       await tauriFetch(
         _url(`/${activePaperId.value}/conversations/${convId}?source=${activePaperSource.value}`),
         { method: 'DELETE', headers: _headers() },
       )
-    } catch { /* ignore */ }
+      endSyncOp()
+    } catch (e) { failSyncOp(e) }
     conversations.value = conversations.value.filter(c => c.id !== convId)
+    saveConversationsToStorage()
     if (activeConvId.value === convId) {
       activeConv.value   = null
       activeConvId.value = null
-      if (conversations.value.length > 0) await openConversation(conversations.value[0].id)
+      const paperConvs = currentPaperConversations.value
+      if (paperConvs.length > 0) await openConversation(paperConvs[0].id)
       else await createConversation()
     }
   }
@@ -697,6 +825,8 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
 
   async function _syncMessages(convId: string, msgs: PaperChatMessage[]) {
     if (!activePaperId.value) return
+    beginSyncOp()
+    setSyncModule('论文 Copilot')
     try {
       await tauriFetch(
         _url(`/${activePaperId.value}/conversations/${convId}/messages?source=${activePaperSource.value}`),
@@ -716,39 +846,45 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
           }),
         },
       )
-    } catch { /* silently ignore */ }
+      endSyncOp()
+    } catch (e) { failSyncOp(e) }
   }
 
   async function _uploadAttachmentBinaries(convId: string, msgId: string, attachments: AttachmentMeta[]) {
     if (!activePaperId.value) return
     const paperId = activePaperId.value
     const source  = activePaperSource.value
-    for (const att of attachments) {
-      if (!att.data || _uploadedAttachmentIds.has(att.id)) continue
-      // Persist to disk before attempting upload so a restart can retry this.
-      await _persistPendingUpload(paperId, source, convId, msgId, att)
-      const binary = Uint8Array.from(atob(att.data), c => c.charCodeAt(0))
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          const form = new FormData()
-          form.append('file', new Blob([binary], { type: att.mimeType }), att.name)
-          form.append('attachment_id', att.id)
-          form.append('message_id', msgId)
-          form.append('name', att.name)
-          form.append('mime_type', att.mimeType)
-          if (att.extractedText) form.append('extracted_text', att.extractedText)
-          const r = await tauriFetch(
-            _url(`/${paperId}/conversations/${convId}/attachments?source=${source}`),
-            { method: 'POST', headers: { Authorization: `Bearer ${_conn().apiKey}` }, body: form },
-          )
-          if (r.ok) {
-            _uploadedAttachmentIds.add(att.id)
-            _clearPendingUpload(att.id).catch(() => {})
-            break
-          }
-        } catch { /* retry */ }
+    beginSyncOp()
+    setSyncModule('论文 Copilot')
+    try {
+      for (const att of attachments) {
+        if (!att.data || _uploadedAttachmentIds.has(att.id)) continue
+        // Persist to disk before attempting upload so a restart can retry this.
+        await _persistPendingUpload(paperId, source, convId, msgId, att)
+        const binary = Uint8Array.from(atob(att.data), c => c.charCodeAt(0))
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const form = new FormData()
+            form.append('file', new Blob([binary], { type: att.mimeType }), att.name)
+            form.append('attachment_id', att.id)
+            form.append('message_id', msgId)
+            form.append('name', att.name)
+            form.append('mime_type', att.mimeType)
+            if (att.extractedText) form.append('extracted_text', att.extractedText)
+            const r = await tauriFetch(
+              _url(`/${paperId}/conversations/${convId}/attachments?source=${source}`),
+              { method: 'POST', headers: { Authorization: `Bearer ${_conn().apiKey}` }, body: form },
+            )
+            if (r.ok) {
+              _uploadedAttachmentIds.add(att.id)
+              _clearPendingUpload(att.id).catch(() => {})
+              break
+            }
+          } catch { /* retry */ }
+        }
       }
-    }
+      endSyncOp()
+    } catch (e) { failSyncOp(e) }
   }
 
   async function retryPendingUploads(): Promise<void> {
@@ -756,8 +892,11 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
     let queue: PendingUpload[]
     try { queue = await _loadPendingQueue() } catch { return }
     if (queue.length === 0) return
+    beginSyncOp()
+    setSyncModule('论文 Copilot')
     const dir = await _pendingDir()
-    for (const item of queue) {
+    try {
+      for (const item of queue) {
       if (_uploadedAttachmentIds.has(item.att.id)) {
         _clearPendingUpload(item.att.id).catch(() => {})
         continue
@@ -788,17 +927,56 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
           } catch { /* retry */ }
         }
       } catch { /* skip this item */ }
-    }
+      }
+      endSyncOp()
+    } catch (e) { failSyncOp(e) }
   }
 
   async function _updateTitle(convId: string, title: string) {
     if (!activePaperId.value) return
+    beginSyncOp()
+    setSyncModule('论文 Copilot')
     try {
       await tauriFetch(
         _url(`/${activePaperId.value}/conversations/${convId}?source=${activePaperSource.value}`),
         { method: 'PUT', headers: _headers(), body: JSON.stringify({ title }) },
       )
+      endSyncOp()
+    } catch (e) { failSyncOp(e) }
+  }
+
+  async function _generateTitleWithAI(firstUserContent: string): Promise<string | null> {
+    const aiStore = useAiSettingsStore()
+    const pid = aiStore.titleGenProviderId
+    const mid = aiStore.titleGenModelId
+    if (!pid || !mid) return null
+    const provider = aiStore.providers.find(p => p.id === pid)
+    if (!provider || (!provider.apiKey && provider.type !== 'ollama')) return null
+
+    const prompt = `请为以下对话生成一个简短的标题（不超过15个字），直接返回标题文本，不要加引号或其他格式：\n\n用户问题：${firstUserContent.slice(0, 200)}`
+    try {
+      const resp = await tauriFetch(
+        `${provider.baseUrl}/chat/completions`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${provider.apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: mid,
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 30,
+            temperature: 0.5,
+          }),
+        },
+      )
+      if (!resp.ok) return null
+      const data = await resp.json() as any
+      const title = data.choices?.[0]?.message?.content?.trim()
+      if (title) {
+        // Clean up: remove quotes, limit length
+        return title.replace(/^["'"'「『]|["'"'」』]$/g, '').slice(0, 30)
+      }
     } catch { /* ignore */ }
+    return null
   }
 
   // ── Send message ───────────────────────────────────────────────────────────
@@ -827,6 +1005,17 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
       }
     } else if (contextMode.value === 'abstract' && paperAbstractText.value) {
       systemPrompt = `以下是论文的基本信息，请基于此内容回答用户的问题：\n\n${paperAbstractText.value}`
+    }
+
+    // Wait for fulltext extraction if in fulltext mode and text not ready yet
+    if (contextMode.value === 'fulltext' && !isPdfNative && !paperFullText.value && !fullTextError.value) {
+      // Try to extract and wait
+      try {
+        await extractFullText(activePaperId.value!, activePaperSource.value)
+        if (paperFullText.value) {
+          systemPrompt = `以下是论文的完整内容，请基于此内容回答用户的问题：\n\n${paperFullText.value}`
+        }
+      } catch { /* ignore, will proceed without full text */ }
     }
 
     // Web search injection
@@ -928,29 +1117,44 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
           if (c != null) usage.costUsd = c
         }
         assistantMsg.usage = { ...usage, durationMs: Date.now() - startedAt }
+        recordPaperCopilotUsage(usage.inputTokens ?? 0, usage.outputTokens ?? 0, usage.costUsd ?? 0).catch(() => {})
         _finishStream()
         if (conv.title === '新对话') {
           const first = conv.messages.find(m => m.role === 'user')
           if (first?.content) {
-            const title = first.content.slice(0, 30) + (first.content.length > 30 ? '…' : '')
+            // Try AI title generation first, fallback to first message truncation
+            const aiTitle = await _generateTitleWithAI(first.content)
+            const title = aiTitle ?? (first.content.slice(0, 30) + (first.content.length > 30 ? '…' : ''))
             conv.title = title
             const meta = conversations.value.find(c => c.id === conv.id)
             if (meta) meta.title = title
             _updateTitle(conv.id, title)
           }
         }
-        await _syncMessages(conv.id, [userMsg, assistantMsg])
+        await _syncMessages(conv.id, conv.messages)
         if (userMsg.attachments?.length) {
           _uploadAttachmentBinaries(conv.id, userMsg.id, userMsg.attachments).catch(() => {})
+        }
+        // Save to localStorage after each message exchange
+        const convIdx = conversations.value.findIndex(c => c.id === conv.id)
+        if (convIdx >= 0) {
+          conversations.value[convIdx] = { ...conversations.value[convIdx], messages: [...conv.messages], messageCount: conv.messages.length, updatedAt: conv.updatedAt, title: conv.title }
+          saveConversationsToStorage()
         }
       },
       async onError(err) {
         assistantMsg.content = `Error: ${err}`
         assistantMsg.error   = true
         _finishStream()
-        await _syncMessages(conv.id, [userMsg, assistantMsg])
+        await _syncMessages(conv.id, conv.messages)
         if (userMsg.attachments?.length) {
           _uploadAttachmentBinaries(conv.id, userMsg.id, userMsg.attachments).catch(() => {})
+        }
+        // Save error state to localStorage
+        const convIdx = conversations.value.findIndex(c => c.id === conv.id)
+        if (convIdx >= 0) {
+          conversations.value[convIdx] = { ...conversations.value[convIdx], messages: [...conv.messages], messageCount: conv.messages.length, updatedAt: conv.updatedAt }
+          saveConversationsToStorage()
         }
       },
     }
@@ -1155,14 +1359,27 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
           if (c != null) usage.costUsd = c
         }
         assistantMsg.usage = { ...usage, durationMs: Date.now() - startedAt }
+        recordPaperCopilotUsage(usage.inputTokens ?? 0, usage.outputTokens ?? 0, usage.costUsd ?? 0).catch(() => {})
         _finishStream()
-        await _syncMessages(conv.id, [assistantMsg])
+        await _syncMessages(conv.id, conv.messages)
+        // Save to localStorage
+        const convIdx = conversations.value.findIndex(c => c.id === conv.id)
+        if (convIdx >= 0) {
+          conversations.value[convIdx] = { ...conversations.value[convIdx], messages: [...conv.messages], messageCount: conv.messages.length, updatedAt: conv.updatedAt }
+          saveConversationsToStorage()
+        }
       },
       async onError(err) {
         assistantMsg.content = `Error: ${err}`
         assistantMsg.error   = true
         _finishStream()
-        await _syncMessages(conv.id, [assistantMsg])
+        await _syncMessages(conv.id, conv.messages)
+        // Save error state to localStorage
+        const convIdx = conversations.value.findIndex(c => c.id === conv.id)
+        if (convIdx >= 0) {
+          conversations.value[convIdx] = { ...conversations.value[convIdx], messages: [...conv.messages], messageCount: conv.messages.length, updatedAt: conv.updatedAt }
+          saveConversationsToStorage()
+        }
       },
     }
 
@@ -1181,6 +1398,7 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
     conv.messages = conv.messages.filter(m => m.id !== msgId)
     conv.messageCount = conv.messages.length
     await _syncMessages(conv.id, conv.messages)
+    saveConversationsToStorage()
   }
 
   async function editMessage(msgId: string, content: string) {
@@ -1190,6 +1408,7 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
     if (!msg) return
     msg.content = content
     await _syncMessages(conv.id, [msg])
+    saveConversationsToStorage()
   }
 
   async function editAndResend(msgId: string, content: string) {
@@ -1200,6 +1419,7 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
     if (idx < 0) return
     conv.messages[idx].content = content
     conv.messages.splice(idx + 1)
+    saveConversationsToStorage()
     await _restream(conv)
   }
 
@@ -1209,7 +1429,129 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
     if (!conv) return
     const idx = conv.messages.findIndex(m => m.id === msgId)
     if (idx < 0) return
+
+    // If regenerating with a different model, add as a variant instead of replacing
+    const msg = conv.messages[idx]
+    if (overrideProviderId && overrideModelId && (overrideProviderId !== msg.providerId || overrideModelId !== msg.model)) {
+      const variant = reactive<PaperMessageVariant>({
+        id: crypto.randomUUID(), content: '', model: overrideModelId, providerId: overrideProviderId,
+      })
+      if (!msg.variants) msg.variants = []
+      msg.variants.push(variant)
+      // Auto-switch to the new variant tab (component listens to msgTabIdx)
+      // We emit a custom event that the component can listen to
+      window.dispatchEvent(new CustomEvent('paper-copilot-variant-added', { detail: { msgId, variantIdx: msg.variants.length } }))
+
+      const aiStore = useAiSettingsStore()
+      const chatSettings = useChatSettingsStore()
+      const provider = aiStore.providers.find(p => p.id === overrideProviderId)
+      if (!provider || (!provider.apiKey && provider.type !== 'ollama')) return
+
+      // Build context (same as sendMessage)
+      const isPdfNative = provider.type === 'anthropic' || provider.type === 'google' || isOpenRouter(provider.baseUrl)
+      let systemPrompt: string | undefined
+      if (contextMode.value === 'fulltext') {
+        if (!isPdfNative && paperFullText.value) {
+          systemPrompt = `以下是论文的完整内容，请基于此内容回答用户的问题：\n\n${paperFullText.value}`
+        }
+      } else if (contextMode.value === 'abstract' && paperAbstractText.value) {
+        systemPrompt = `以下是论文的基本信息，请基于此内容回答用户的问题：\n\n${paperAbstractText.value}`
+      }
+
+      // Find user message
+      const before = conv.messages.slice(0, idx)
+      const userMsg = before[before.map(m => m.role).lastIndexOf('user')]
+      if (!userMsg) return
+
+      // Build payload from history up to this point
+      let msgsForApi = conv.messages.slice(0, idx)
+      if (conv.contextCutoffPoints?.length) {
+        const cutoffIdx = conv.messages.findIndex(m => conv.contextCutoffPoints!.includes(m.id))
+        if (cutoffIdx >= 0) msgsForApi = conv.messages.slice(cutoffIdx, idx)
+      }
+      if (contextMode.value === 'fulltext' && isPdfNative && paperFullTextBase64.value) {
+        msgsForApi = [
+          {
+            role: 'user',
+            content: '以下是一篇论文，请基于其内容回答后续问题。',
+            attachments: [{
+              id: 'paper-pdf', name: 'paper.pdf', mimeType: 'application/pdf',
+              data: paperFullTextBase64.value, extractedText: paperFullText.value || undefined,
+            }],
+          } as PaperChatMessage,
+          ...msgsForApi,
+        ]
+      }
+      const modelInfo = provider.models.find(m => m.id === overrideModelId)
+      const needsOcr = provider.type !== 'anthropic' && provider.type !== 'google'
+        && provider.type !== 'ollama' && !isOpenRouter(provider.baseUrl)
+        && !modelInfo?.multimodal && !modelInfo?.imageOutput
+      const processedMsgs = needsOcr ? await applyOcrToMessages(msgsForApi) : msgsForApi
+      const payload = buildPayload(processedMsgs, provider.type, provider.baseUrl)
+      const temperature = chatSettings.temperature
+      const maxTokens = chatSettings.maxTokens
+      const budgetMap = { low: 1024, medium: 8000, high: 32000 } as const
+      const thinkingBudget = useReasoning.value && provider.type === 'anthropic'
+        ? budgetMap[reasoningLevel.value] : undefined
+
+      streamingVariantMsgIds.add(msgId)
+      const ac2 = new AbortController()
+      _abortCtrl2.value = ac2
+      const startedAt2 = Date.now()
+
+      let localText2 = ''
+      let localReasoning2 = ''
+
+      const handler2: StreamChunkHandler = {
+        onToken(t) {
+          localText2 += t
+          variant.content = localText2
+          streamingVariantText.value = localText2
+        },
+        onReasoningToken(t) {
+          localReasoning2 += t
+          variant.reasoning = localReasoning2
+          streamingVariantReasoning.value = localReasoning2
+        },
+        onDone(usage) {
+          if (usage.costUsd == null) {
+            const c = calculateModelCost(aiStore.providers, overrideProviderId, overrideModelId, usage.inputTokens, usage.outputTokens)
+            if (c != null) usage.costUsd = c
+          }
+          variant.usage = { ...usage, durationMs: Date.now() - startedAt2 }
+          streamingVariantMsgIds.delete(msgId)
+          streamingVariantText.value = ''
+          streamingVariantReasoning.value = ''
+          _abortCtrl2.value = null
+          recordPaperCopilotUsage(usage.inputTokens ?? 0, usage.outputTokens ?? 0, usage.costUsd ?? 0).catch(() => {})
+          saveConversationsToStorage()
+        },
+        onError(err) {
+          variant.content = `Error: ${err}`
+          variant.error = true
+          streamingVariantMsgIds.delete(msgId)
+          streamingVariantText.value = ''
+          streamingVariantReasoning.value = ''
+          _abortCtrl2.value = null
+          saveConversationsToStorage()
+        },
+      }
+
+      try {
+        await _dispatchStream(provider, overrideModelId, payload, handler2, ac2.signal, systemPrompt, thinkingBudget, temperature, maxTokens)
+      } catch (e: unknown) {
+        if ((e as Error).name !== 'AbortError') handler2.onError(e instanceof Error ? e.message : String(e))
+        else {
+          streamingVariantMsgIds.delete(msgId)
+          _abortCtrl2.value = null
+        }
+      }
+      return
+    }
+
+    // Same-model regeneration: replace as before
     conv.messages.splice(idx)
+    saveConversationsToStorage()
     await _restream(conv, overrideProviderId, overrideModelId)
   }
 
@@ -1229,6 +1571,7 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
     if (!conv.contextCutoffPoints) conv.contextCutoffPoints = []
     if (!conv.contextCutoffPoints.includes(lastMsg.id)) conv.contextCutoffPoints.push(lastMsg.id)
     conv.updatedAt = new Date().toISOString()
+    saveConversationsToStorage()
   }
 
   function removeContextCutoff(msgId: string) {
@@ -1238,6 +1581,7 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
       conv.contextCutoffPoints = conv.contextCutoffPoints.filter(id => id !== msgId)
     }
     conv.updatedAt = new Date().toISOString()
+    saveConversationsToStorage()
   }
 
   // ── Paper text preparation ─────────────────────────────────────────────────
@@ -1283,7 +1627,7 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
 
   return {
     isOpen, activePaperId, activePaperSource,
-    conversations, activeConvId, activeConv,
+    conversations, currentPaperConversations, activeConvId, activeConv,
     isLoadingConvs, isLoadingMessages,
     isStreaming, streamingText, streamingReasoning, streamingMsgId,
     streamingVariantMsgIds, streamingVariantText, streamingVariantReasoning,
@@ -1293,7 +1637,7 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
     paperFullText, paperFullTextBase64, paperAbstractText, isExtractingText, fullTextError,
     openForPaper, close, setSecondModel,
     setReasoning, setReasoningLevel, setDefaultContextMode,
-    pushToServer, syncFromServer, retryPendingUploads,
+    pushToServer: pushSettingsToServer, syncFromServer: syncSettingsFromServer, retryPendingUploads,
     prepareAbstractText, extractFullText,
     loadConversations, createConversation, openConversation, deleteConversation,
     sendMessage, stopStreaming, clearContext, removeContextCutoff,

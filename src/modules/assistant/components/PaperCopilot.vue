@@ -1,19 +1,22 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted, reactive } from 'vue'
 import {
-  Send, Square, SquarePen, Plus, X, Trash2, Bot, FileText,
+  Send, Square, SquarePen, Plus, X, Trash2, FileText,
   ChevronDown, Globe, Brain, Paperclip, Check, Eraser,
-  Settings, Eye, Copy, Pencil, RefreshCw, AtSign, Clock,
+  Settings, Eye, Copy, Pencil, RefreshCw, AtSign,
+  Columns2, Rows3,
 } from 'lucide-vue-next'
 import { usePaperCopilotStore } from '../../../stores/paperCopilot'
 import type { PaperChatMessage } from '../../../stores/paperCopilot'
 import { useAiSettingsStore }   from '../../../stores/aiSettings'
 import { useWebSearchStore }    from '../../../stores/webSearch'
+import { useStatisticsStore }   from '../../../stores/statistics'
 import ModelSelector            from '../../chat/components/ModelSelector.vue'
 import type { Paper }           from '../../../stores/papers'
 import { processPdfFile }       from '../../../utils/pdf'
 import { marked, type Tokens }  from 'marked'
 import hljs                     from 'highlight.js/lib/core'
+import copilotIcon from '../../../assets/icons/copilot.svg'
 import javascript from 'highlight.js/lib/languages/javascript'
 import typescript from 'highlight.js/lib/languages/typescript'
 import python     from 'highlight.js/lib/languages/python'
@@ -50,6 +53,24 @@ const props = defineProps<{ paper: Paper }>()
 const copilot = usePaperCopilotStore()
 const aiStore = useAiSettingsStore()
 const wsStore = useWebSearchStore()
+const statsStore = useStatisticsStore()
+
+// ─── Model logo lookup ────────────────────────────────────────────────────────
+
+const modelSvgModules = import.meta.glob<{ default: string }>('/src/assets/models/*.svg', { eager: true })
+function buildSvgMap(mods: Record<string, { default: string }>): Record<string, string> {
+  const map: Record<string, string> = {}
+  for (const [path, mod] of Object.entries(mods)) map[path.replace(/^.*\//, '').replace(/\.svg$/, '')] = mod.default
+  return map
+}
+function lookupLogoUrl(model: string, providerId: string): string | null {
+  const mid = model.toLowerCase(); const pid = providerId.toLowerCase()
+  const svgMap = buildSvgMap(modelSvgModules)
+  if (mid.startsWith('gpt-') && svgMap['openai']) return svgMap['openai']
+  for (const name of Object.keys(svgMap)) { if (mid.includes(name)) return svgMap[name] }
+  for (const name of Object.keys(svgMap)) { if (pid.includes(name)) return svgMap[name] }
+  return null
+}
 
 // ─── Markdown rendering ────────────────────────────────────────────────────────
 
@@ -304,19 +325,33 @@ function handleMsgClick(e: MouseEvent) {
 
 // ─── Variant tabs ─────────────────────────────────────────────────────────────
 
+const variantLayout = ref<'tab' | 'horizontal'>('tab')
+const msgTabIdx = reactive<Record<string, number>>({})
+
 function getDisplay(msg: typeof messages.value[0]) {
-  if (msg.role !== 'assistant' || !msg.activeVariantIdx) return { content: msg.content, reasoning: msg.reasoning, model: msg.model, providerId: msg.providerId }
-  const v = msg.variants?.[msg.activeVariantIdx - 1]
+  if (msg.role !== 'assistant') return { content: msg.content, reasoning: msg.reasoning, model: msg.model, providerId: msg.providerId }
+  const idx = msgTabIdx[msg.id] ?? 0
+  if (!idx) return { content: msg.content, reasoning: msg.reasoning, model: msg.model, providerId: msg.providerId }
+  const v = msg.variants?.[idx - 1]
   return { content: v?.content ?? '', reasoning: v?.reasoning, model: v?.model, providerId: v?.providerId }
 }
-function setTab(msg: typeof messages.value[0], idx: number) { msg.activeVariantIdx = idx }
+function setTab(msg: typeof messages.value[0], idx: number) { msgTabIdx[msg.id] = idx }
+
+function getVariantSlots(msg: typeof messages.value[0]) {
+  return [
+    { model: msg.model ?? '', providerId: msg.providerId ?? '' },
+    ...(msg.variants ?? []).map(v => ({ model: v.model ?? '', providerId: v.providerId ?? '' })),
+  ]
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function modelLabel(pid?: string, mid?: string) {
   if (!pid || !mid) return ''
   const p = aiStore.providers.find(x => x.id === pid)
-  return p?.models.find(m => m.id === mid)?.name ?? mid
+  const modelName = p?.models.find(m => m.id === mid)?.name ?? mid
+  const providerName = p?.name ?? pid
+  return `${providerName} | ${modelName}`
 }
 
 // ─── Edit state ───────────────────────────────────────────────────────────────
@@ -359,9 +394,16 @@ function togglePicker(msgId: string) {
 function handlePickerOutside(e: MouseEvent) {
   if (pickerRoot.value && !pickerRoot.value.contains(e.target as Node)) pickerMsgId.value = null
 }
-function selectModelAndRegenerate(msgId: string, pid: string, mid: string) {
+function selectModelAndRegenerate(msg: PaperChatMessage, pid: string, mid: string) {
   pickerMsgId.value = null
-  copilot.regenerate(msgId, pid, mid)
+  copilot.regenerate(msg.id, pid, mid)
+}
+
+// ─── Variant auto-switch listener ─────────────────────────────────────────────
+
+function handleVariantAdded(e: Event) {
+  const detail = (e as CustomEvent).detail as { msgId: string; variantIdx: number }
+  msgTabIdx[detail.msgId] = detail.variantIdx
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
@@ -371,12 +413,14 @@ onMounted(() => {
   document.addEventListener('mousedown', handleReasoningOutside)
   document.addEventListener('mousedown', handleSettingsOutside)
   document.addEventListener('mousedown', handlePickerOutside)
+  window.addEventListener('paper-copilot-variant-added', handleVariantAdded)
 })
 onUnmounted(() => {
   document.removeEventListener('mousedown', handleSecondModelOutside)
   document.removeEventListener('mousedown', handleReasoningOutside)
   document.removeEventListener('mousedown', handleSettingsOutside)
   document.removeEventListener('mousedown', handlePickerOutside)
+  window.removeEventListener('paper-copilot-variant-added', handleVariantAdded)
 })
 </script>
 
@@ -389,7 +433,7 @@ onUnmounted(() => {
     <!-- ── Header ─────────────────────────────────────────────────────────── -->
     <div class="copilot-header">
       <div class="header-left">
-        <Bot :size="14" class="copilot-icon" />
+        <img :src="copilotIcon" class="copilot-header-icon" alt="Copilot" />
         <span class="copilot-title">AI Copilot</span>
         <span class="copilot-subtitle">· {{ paper.title.slice(0, 22) }}{{ paper.title.length > 22 ? '…' : '' }}</span>
       </div>
@@ -419,17 +463,38 @@ onUnmounted(() => {
               <span v-else class="sp-dot" />
               全文输入
             </button>
+            <div class="sp-divider" />
+            <div class="sp-title">话题生成模型</div>
+            <div class="sp-model-row">
+              <ModelSelector
+                compact
+                drop-down
+                :provider-id="aiStore.titleGenProviderId || aiStore.activeProviderId"
+                :model-id="aiStore.titleGenModelId || aiStore.activeModelId()"
+                save-to="titleGen"
+                @select="showSettingsPopover = false"
+              />
+              <button
+                v-if="aiStore.titleGenProviderId"
+                class="sp-clear-btn"
+                title="清除话题生成模型（使用第一句话作为标题）"
+                @click="aiStore.clearTitleGenModel(); showSettingsPopover = false"
+              >
+                <X :size="10" />
+              </button>
+            </div>
+            <div class="sp-hint">未配置时使用第一句话作为标题</div>
           </div>
         </div>
         <!-- Conversation switcher -->
         <div class="conv-wrap" style="position:relative">
           <button class="hdr-btn" title="新建对话" @click="newConv"><Plus :size="13" /></button>
-          <button v-if="copilot.conversations.length > 0" class="hdr-btn" title="切换对话" @click="showConvList = !showConvList">
+          <button v-if="copilot.currentPaperConversations.length > 0" class="hdr-btn" title="切换对话" @click="showConvList = !showConvList">
             <ChevronDown :size="13" :style="{ transform: showConvList ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }" />
           </button>
           <div v-if="showConvList" class="conv-dropdown">
             <div
-              v-for="conv in copilot.conversations"
+              v-for="conv in copilot.currentPaperConversations"
               :key="conv.id"
               class="conv-item"
               :class="{ active: conv.id === copilot.activeConvId }"
@@ -500,7 +565,7 @@ onUnmounted(() => {
         <div class="cp-dot" /><div class="cp-dot" style="animation-delay:.2s" /><div class="cp-dot" style="animation-delay:.4s" />
       </div>
       <div v-else-if="messages.length === 0" class="cp-empty">
-        <Bot :size="26" class="cp-empty-icon" />
+        <img :src="copilotIcon" class="empty-icon-copilot" alt="Copilot" />
         <p>基于此论文开始对话</p>
         <p class="cp-empty-sub">当前使用「{{ copilot.contextMode === 'abstract' ? '摘要' : '全文' }}」模式注入上下文</p>
       </div>
@@ -563,20 +628,52 @@ onUnmounted(() => {
           </template>
           <!-- Assistant -->
           <template v-else-if="msg.role === 'assistant'">
-            <div class="bubble-wrap">
-              <div class="cp-avatar"><Bot :size="11" /></div>
-              <div class="bubble asst-bubble">
-                <!-- Variant tabs -->
-                <div v-if="msg.variants?.length" class="var-tabs">
-                  <button class="var-tab" :class="{ active: !msg.activeVariantIdx }" @click="setTab(msg, 0)">
-                    {{ modelLabel(msg.providerId, msg.model) || '模型 1' }}
-                  </button>
-                  <button
-                    v-for="(v, vi) in msg.variants" :key="v.id"
-                    class="var-tab" :class="{ active: msg.activeVariantIdx === vi + 1 }"
-                    @click="setTab(msg, vi + 1)"
-                  >{{ modelLabel(v.providerId, v.model) || `模型 ${vi + 2}` }}</button>
+            <!-- Horizontal compare mode -->
+            <div v-if="msg.variants?.length && variantLayout === 'horizontal'" class="compare-cols">
+              <div class="compare-col" :class="{ streaming: copilot.streamingMsgId === msg.id }">
+                <div class="compare-col-header">
+                  <img v-if="lookupLogoUrl(msg.model ?? '', msg.providerId ?? '')"
+                       :src="lookupLogoUrl(msg.model ?? '', msg.providerId ?? '')!"
+                       class="compare-logo" alt="" />
+                  <img v-else :src="copilotIcon" class="compare-copilot-icon" alt="" />
+                  <span class="compare-model-name">{{ modelLabel(msg.providerId, msg.model) || '模型 1' }}</span>
+                  <span v-if="copilot.streamingMsgId === msg.id" class="compare-dot" />
                 </div>
+                <div class="msg-text markdown-body compare-content"
+                  :class="{ streaming: copilot.streamingMsgId === msg.id }"
+                  v-html="renderMarkdown(
+                    copilot.isStreaming && i === messages.length - 1 ? copilot.streamingText : msg.content
+                  )" />
+              </div>
+              <div v-for="v in msg.variants" :key="v.id" class="compare-col"
+                   :class="{ streaming: copilot.streamingVariantMsgIds.has(msg.id) }">
+                <div class="compare-col-header">
+                  <img v-if="lookupLogoUrl(v.model ?? '', v.providerId ?? '')"
+                       :src="lookupLogoUrl(v.model ?? '', v.providerId ?? '')!"
+                       class="compare-logo" alt="" />
+                  <img v-else :src="copilotIcon" class="compare-copilot-icon" alt="" />
+                  <span class="compare-model-name">{{ modelLabel(v.providerId, v.model) || '模型 2' }}</span>
+                  <span v-if="copilot.streamingVariantMsgIds.has(msg.id)" class="compare-dot" />
+                </div>
+                <div class="msg-text markdown-body compare-content"
+                  :class="{ streaming: copilot.streamingVariantMsgIds.has(msg.id) }"
+                  v-html="renderMarkdown(v.content)" />
+              </div>
+            </div>
+
+            <!-- Tab mode (single bubble) -->
+            <div v-else class="asst-msg-wrap">
+              <!-- Model header row: icon + name -->
+              <div class="asst-model-header">
+                <img v-if="lookupLogoUrl(getDisplay(msg).model ?? '', getDisplay(msg).providerId ?? '')"
+                     :src="lookupLogoUrl(getDisplay(msg).model ?? '', getDisplay(msg).providerId ?? '')!"
+                     class="asst-model-logo" alt="" />
+                <img v-else :src="copilotIcon" class="asst-model-copilot" alt="" />
+                <span class="asst-model-name">{{ modelLabel(getDisplay(msg).providerId, getDisplay(msg).model) }}</span>
+                <span v-if="copilot.isStreaming && i === messages.length - 1 && !(msgTabIdx[msg.id] ?? 0)" class="asst-streaming-dot" />
+                <span v-if="copilot.streamingVariantMsgIds.has(msg.id) && (msgTabIdx[msg.id] ?? 0)" class="asst-streaming-dot" />
+              </div>
+              <div class="bubble asst-bubble">
                 <!-- Reasoning -->
                 <details v-if="getDisplay(msg).reasoning" class="reasoning-block">
                   <summary><Brain :size="11" /> 思考过程</summary>
@@ -586,16 +683,16 @@ onUnmounted(() => {
                 <div
                   class="msg-text markdown-body"
                   v-html="renderMarkdown(
-                    copilot.isStreaming && i === messages.length - 1 && !msg.activeVariantIdx
+                    copilot.isStreaming && i === messages.length - 1 && !(msgTabIdx[msg.id] ?? 0)
                       ? copilot.streamingText
-                      : copilot.streamingVariantMsgIds.has(msg.id) && msg.activeVariantIdx
+                      : copilot.streamingVariantMsgIds.has(msg.id) && (msgTabIdx[msg.id] ?? 0)
                         ? copilot.streamingVariantText || getDisplay(msg).content
                         : getDisplay(msg).content
                   ) || (copilot.isStreaming && i === messages.length - 1 && !copilot.streamingText ? '' : undefined)"
                 />
                 <span
-                  v-if="(copilot.isStreaming && i === messages.length - 1 && !msg.activeVariantIdx && !copilot.streamingText)
-                    || (copilot.streamingVariantMsgIds.has(msg.id) && msg.activeVariantIdx && !copilot.streamingVariantText)"
+                  v-if="(copilot.isStreaming && i === messages.length - 1 && !(msgTabIdx[msg.id] ?? 0) && !copilot.streamingText)
+                    || (copilot.streamingVariantMsgIds.has(msg.id) && (msgTabIdx[msg.id] ?? 0) && !copilot.streamingVariantText)"
                   class="cursor-blink"
                 />
                 <div v-if="msg.attachments?.length" class="att-row">
@@ -623,11 +720,14 @@ onUnmounted(() => {
                     <AtSign :size="12" />
                   </button>
                   <div v-if="pickerMsgId === msg.id" class="model-picker-popup">
-                    <div v-for="p in configuredProviders" :key="p.id" class="picker-group">
-                      <div class="picker-group-label">{{ p.name }}</div>
-                      <button v-for="m in p.models" :key="m.id" class="picker-model-item"
-                        @click="selectModelAndRegenerate(msg.id, p.id, m.id)">{{ m.name || m.id }}</button>
-                    </div>
+                    <div v-if="configuredProviders.length === 0" class="picker-empty">请先配置 API Key</div>
+                    <template v-else>
+                      <div v-for="p in configuredProviders" :key="p.id" class="picker-group">
+                        <div class="picker-group-label">{{ p.name }}</div>
+                        <button v-for="m in p.models" :key="m.id" class="picker-model-item"
+                          @click="selectModelAndRegenerate(msg, p.id, m.id)">{{ m.name || m.id }}</button>
+                      </div>
+                    </template>
                   </div>
                 </div>
                 <button v-if="!copilot.isStreaming" class="action-btn danger" title="删除" @click="copilot.deleteMessage(msg.id)">
@@ -635,21 +735,36 @@ onUnmounted(() => {
                 </button>
               </div>
               <!-- Usage stats -->
-              <div v-if="(!copilot.isStreaming || copilot.streamingMsgId !== msg.id) && (getDisplay(msg).model || msg.usage)" class="msg-usage">
-                <span v-if="getDisplay(msg).model" class="msg-model-name">
-                  <Bot :size="10" />
-                  {{ modelLabel(getDisplay(msg).providerId, getDisplay(msg).model) }}
-                </span>
-                <template v-if="msg.usage">
-                  <span v-if="msg.usage.inputTokens != null">↑{{ msg.usage.inputTokens }}</span>
-                  <span v-if="msg.usage.outputTokens != null">↓{{ msg.usage.outputTokens }}</span>
-                  <span v-if="msg.usage.outputTokens != null && msg.usage.durationMs != null && msg.usage.durationMs > 0">
-                    {{ Math.round(msg.usage.outputTokens / (msg.usage.durationMs / 1000)) }} t/s
-                  </span>
-                  <span v-if="msg.usage.durationMs != null" class="msg-duration">
-                    <Clock :size="9" />{{ (msg.usage.durationMs / 1000).toFixed(1) }}s
-                  </span>
-                </template>
+              <div v-if="(!copilot.isStreaming || copilot.streamingMsgId !== msg.id) && msg.usage" class="msg-usage">
+                <span v-if="msg.usage.inputTokens != null" class="usage-tokens">↑{{ msg.usage.inputTokens }}</span>
+                <span v-if="msg.usage.outputTokens != null" class="usage-tokens">↓{{ msg.usage.outputTokens }}</span>
+                <span v-if="msg.usage.costUsd != null" class="msg-cost">{{ statsStore.formatCost(msg.usage.costUsd) }}</span>
+              </div>
+            </div>
+
+            <!-- Variant bar: layout toggle + model icon tabs -->
+            <div v-if="msg.variants?.length" class="var-bar">
+              <button class="var-layout-btn"
+                      :title="variantLayout === 'tab' ? '分栏对比' : '标签切换'"
+                      @click="variantLayout = variantLayout === 'tab' ? 'horizontal' : 'tab'">
+                <Columns2 v-if="variantLayout === 'tab'" :size="13" />
+                <Rows3 v-else :size="13" />
+              </button>
+              <div v-for="(slot, idx) in getVariantSlots(msg)" :key="idx" class="var-slot">
+                <button
+                  class="var-btn"
+                  :class="{
+                    active: variantLayout === 'tab' && (msgTabIdx[msg.id] ?? 0) === idx,
+                    streaming: idx === 0 ? copilot.streamingMsgId === msg.id : copilot.streamingVariantMsgIds.has(msg.id),
+                  }"
+                  @click="variantLayout === 'tab' ? setTab(msg, idx) : null"
+                >
+                  <img v-if="lookupLogoUrl(slot.model, slot.providerId)"
+                       :src="lookupLogoUrl(slot.model, slot.providerId)!"
+                       class="var-btn-logo" alt="" />
+                  <span v-else class="var-btn-letter">{{ slot.model.charAt(0).toUpperCase() }}</span>
+                </button>
+                <span class="var-tooltip">{{ modelLabel(slot.providerId, slot.model) || slot.model }}</span>
               </div>
             </div>
             <!-- Edit mode for assistant -->
@@ -881,7 +996,7 @@ onUnmounted(() => {
 /* ── Header ───────────────────────────────────────────────────────────────── */
 .copilot-header {
   height: 44px;
-  padding: 0 8px 0 14px;
+  padding: 0 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -893,7 +1008,7 @@ onUnmounted(() => {
 .header-left {
   display: flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; flex: 1;
 }
-.copilot-icon { color: #4a7bc8; flex-shrink: 0; }
+.copilot-header-icon { width: 16px; height: 16px; flex-shrink: 0; opacity: 0.7; }
 .copilot-title { font-size: 12.5px; font-weight: 600; color: #1c1c1e; flex-shrink: 0; }
 .copilot-subtitle { font-size: 11px; color: #8e8e93; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .header-right { display: flex; align-items: center; gap: 1px; flex-shrink: 0; }
@@ -930,6 +1045,22 @@ onUnmounted(() => {
 .sp-option:hover { background: rgba(0,0,0,0.04); }
 .sp-option.active { color: #4a7bc8; }
 .sp-dot { width: 10px; height: 10px; flex-shrink: 0; }
+.sp-divider { height: 1px; background: rgba(0,0,0,0.06); margin: 6px 10px; }
+.sp-model-row {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 10px;
+}
+.sp-clear-btn {
+  width: 22px; height: 22px;
+  border: none; background: transparent; color: #c7c7cc;
+  border-radius: 5px; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; flex-shrink: 0;
+}
+.sp-clear-btn:hover { background: rgba(0,0,0,0.06); color: #ff3b30; }
+.sp-hint {
+  padding: 2px 12px 6px;
+  font-size: 10px; color: #aeaeb2;
+}
 
 /* Conversation dropdown */
 .conv-wrap { position: relative; display: flex; }
@@ -963,7 +1094,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 12px;
+  padding: 5px 12px 5px 14px;
   background: rgba(255,255,255,0.7);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid rgba(0,0,0,0.05);
@@ -1037,7 +1168,7 @@ onUnmounted(() => {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   flex: 1; padding: 24px 12px; text-align: center; color: #aeaeb2; gap: 6px;
 }
-.cp-empty-icon { color: #d1d1d6; }
+.empty-icon-copilot { width: 28px; height: 28px; opacity: 0.35; margin-bottom: 4px; }
 .cp-empty p { margin: 0; font-size: 12.5px; }
 .cp-empty-sub { font-size: 11px !important; color: #c7c7cc !important; }
 
@@ -1065,24 +1196,88 @@ onUnmounted(() => {
   padding: 8px 12px 5px; max-width: 88%;
   border: 1px solid rgba(0, 0, 0, 0.06);
 }
-.bubble-wrap { display: flex; align-items: flex-start; gap: 7px; max-width: 96%; width: 100%; }
+.bubble-wrap { display: flex; align-items: flex-start; gap: 5px; max-width: 96%; width: 100%; }
 .cp-avatar {
-  width: 22px; height: 22px; border-radius: 6px;
-  background: linear-gradient(135deg, #4a7bc8, #264178);
-  display: flex; align-items: center; justify-content: center;
-  color: white; flex-shrink: 0; margin-top: 1px;
+  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; margin-top: 2px; color: #8e8e93;
 }
+.cp-avatar-logo { width: 22px; height: 22px; object-fit: contain; }
+.cp-avatar-copilot { width: 22px; height: 22px; opacity: 0.6; }
 .bubble.asst-bubble {
   display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1;
 }
 
-/* Variant tabs */
-.var-tabs { display: flex; gap: 3px; margin-bottom: 2px; }
-.var-tab {
-  padding: 2px 8px; border: 1px solid rgba(0,0,0,0.08); border-radius: 5px;
-  background: transparent; font-size: 10.5px; color: #6e6e73; cursor: pointer;
+/* ─── Assistant message with model header ──────────────────────────────── */
+.asst-msg-wrap { display: flex; flex-direction: column; gap: 4px; max-width: 96%; width: 100%; }
+.asst-model-header {
+  display: flex; align-items: center; gap: 5px;
+  padding-left: 0; margin-bottom: 2px;
 }
-.var-tab.active { background: rgba(74,123,200,0.1); border-color: rgba(74,123,200,0.25); color: #4a7bc8; }
+.asst-model-logo { width: 21px; height: 21px; object-fit: contain; flex-shrink: 0; }
+.asst-model-copilot { width: 14px; height: 14px; opacity: 0.6; flex-shrink: 0; }
+.asst-model-name { font-size: 11.5px; color: #6e6e73; font-weight: 500; }
+
+.asst-streaming-dot {
+  width: 5px; height: 5px; border-radius: 50%; background: #4a7bc8;
+  animation: cp-blink 1s step-end infinite;
+}
+
+/* ─── Horizontal compare layout ─────────────────────────────────────────── */
+.compare-cols {
+  display: flex; gap: 8px; width: 100%; min-width: 0;
+}
+.compare-col {
+  flex: 1; min-width: 0; border: 1px solid rgba(0,0,0,0.08); border-radius: 10px;
+  background: #fff; overflow: hidden;
+}
+.compare-col-header {
+  display: flex; align-items: center; gap: 5px; padding: 6px 10px;
+  background: rgba(0,0,0,0.025); border-bottom: 1px solid rgba(0,0,0,0.06);
+  font-size: 11px; color: #6e6e73;
+}
+.compare-logo { width: 13px; height: 13px; object-fit: contain; flex-shrink: 0; }
+.compare-copilot-icon { width: 12px; height: 12px; opacity: 0.6; }
+.compare-model-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: #6e6e73; }
+.compare-dot { width: 6px; height: 6px; border-radius: 50%; background: #4a7bc8; flex-shrink: 0; animation: cp-blink 1s step-end infinite; }
+.compare-content { padding: 8px 10px; font-size: 13px; }
+
+/* ─── Variant bar ────────────────────────────────────────────────────────── */
+.var-bar {
+  display: flex; align-items: center; gap: 4px; padding-left: 29px; margin-top: 4px;
+  padding-top: 6px; border-top: 1px solid rgba(0,0,0,0.06);
+}
+.var-layout-btn {
+  width: 22px; height: 22px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.10);
+  background: transparent; color: #8e8e93; display: flex; align-items: center;
+  justify-content: center; cursor: pointer; transition: background 0.12s, color 0.12s;
+  flex-shrink: 0; margin-right: 2px;
+}
+.var-layout-btn:hover { background: rgba(0,0,0,0.06); color: #3c3c43; }
+
+.var-slot { position: relative; }
+.var-btn {
+  width: 26px; height: 26px; border-radius: 8px; border: 2px solid transparent;
+  background: rgba(0,0,0,0.04); padding: 0; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color 0.12s, background 0.12s; overflow: hidden;
+}
+.var-btn:hover { background: rgba(0,0,0,0.08); }
+.var-btn.active { border-color: #4a7bc8; background: rgba(74,123,200,0.08); }
+@keyframes var-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(74,123,200,0.4); }
+  70%  { box-shadow: 0 0 0 4px rgba(74,123,200,0); }
+  100% { box-shadow: 0 0 0 0 rgba(74,123,200,0); }
+}
+.var-btn.streaming { animation: var-pulse 1.2s ease-out infinite; }
+.var-btn-logo { width: 20px; height: 20px; object-fit: contain; }
+.var-btn-letter { font-size: 11px; font-weight: 700; color: #8e8e93; }
+.var-tooltip {
+  position: absolute; bottom: calc(100% + 5px); left: 50%; transform: translateX(-50%);
+  background: rgba(28,28,30,0.88); color: white; font-size: 10px; white-space: nowrap;
+  padding: 3px 7px; border-radius: 5px; pointer-events: none; opacity: 0;
+  transition: opacity 0.08s; z-index: 10;
+}
+.var-slot:hover .var-tooltip { opacity: 1; }
 
 /* Reasoning */
 .reasoning-block {
@@ -1105,6 +1300,13 @@ onUnmounted(() => {
 .bubble.asst-bubble .msg-text.markdown-body {
   background: transparent;
   border-radius: 4px 14px 14px 14px; padding: 10px 13px;
+}
+.compare-content.streaming::after {
+  content: '▋';
+  display: inline-block;
+  animation: cp-blink 0.7s step-end infinite;
+  color: #4a7bc8;
+  margin-left: 2px;
 }
 
 .cursor-blink {
@@ -1372,19 +1574,21 @@ onUnmounted(() => {
   align-items: center;
   min-height: 22px;
   gap: 4px;
+  padding-left: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+  justify-content: space-between;
 }
-.user-footer { justify-content: flex-end; }
-.asst-footer { padding-left: 29px; }
+.cp-msg.assistant:hover .msg-footer { opacity: 1; }
+.user-footer { justify-content: flex-end; padding-left: 0; padding-right: 2px; opacity: 0; transition: opacity 0.15s; }
+.cp-msg.user:hover .user-footer { opacity: 1; }
 
 .msg-actions {
   display: flex;
   align-items: center;
   gap: 2px;
-  opacity: 0;
-  transition: opacity 0.1s;
   flex-shrink: 0;
 }
-.cp-msg:hover .msg-actions { opacity: 1; }
 
 .action-btn {
   width: 24px; height: 24px;
@@ -1436,11 +1640,18 @@ onUnmounted(() => {
 /* Usage stats */
 .msg-usage {
   display: flex; align-items: center; flex-wrap: wrap; gap: 5px;
-  font-size: 10.5px; color: #aeaeb2; margin-left: auto; padding-left: 4px;
+  font-size: 10.5px; color: #aeaeb2;
+  margin-left: auto;
+  padding-left: 8px;
+  justify-content: flex-end;
+  flex: 1;
 }
 .msg-model-name {
   display: inline-flex; align-items: center; gap: 3px; color: #c7c7cc;
 }
+.msg-model-logo { width: 11px; height: 11px; object-fit: contain; opacity: 0.7; }
+.msg-model-copilot { width: 11px; height: 11px; opacity: 0.4; }
+.msg-cost { color: #f59e0b; }
 .msg-duration {
   display: inline-flex; align-items: center; gap: 2px;
 }

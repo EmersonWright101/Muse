@@ -6,6 +6,7 @@ import { resolveDataRoot, normalizePath } from '../utils/path'
 import { readTextFile, writeTextFile, exists, mkdir } from '@tauri-apps/plugin-fs'
 import type { CopilotDailyStat } from './travelCopilot'
 import type { EbookCopilotDailyStat } from './ebook'
+import type { PaperCopilotDailyStat } from './paperCopilot'
 import { loadPosterStatsFile } from './home'
 
 async function loadCopilotStatsFile(): Promise<Record<string, CopilotDailyStat>> {
@@ -21,6 +22,14 @@ async function loadEbookCopilotStatsFile(): Promise<Record<string, EbookCopilotD
     const path = `${await resolveDataRoot()}/ebook-copilot-stats.json`
     if (!(await exists(path))) return {}
     return JSON.parse(await readTextFile(path)) as Record<string, EbookCopilotDailyStat>
+  } catch { return {} }
+}
+
+async function loadPaperCopilotStatsFile(): Promise<Record<string, PaperCopilotDailyStat>> {
+  try {
+    const path = `${await resolveDataRoot()}/paper-copilot-stats.json`
+    if (!(await exists(path))) return {}
+    return JSON.parse(await readTextFile(path)) as Record<string, PaperCopilotDailyStat>
   } catch { return {} }
 }
 
@@ -691,6 +700,45 @@ export const useStatisticsStore = defineStore('statistics', () => {
         }
       }
       if (ebookCopilotTotal) merged.modelStats.push(ebookCopilotTotal)
+
+      // Merge paper copilot stats as a virtual model entry
+      const paperCopilotDailyStats = await loadPaperCopilotStatsFile()
+      const PAPER_COPILOT_MODEL_ID = '__paper_copilot__'
+      let paperCopilotTotal: ModelStat | undefined
+      for (const [date, cs] of Object.entries(paperCopilotDailyStats)) {
+        if (!cs.requests) continue
+        if (!paperCopilotTotal) {
+          paperCopilotTotal = { modelId: PAPER_COPILOT_MODEL_ID, modelName: '论文：Copilot', provider: 'Paper', inputTokens: 0, outputTokens: 0, totalTokens: 0, uploadsMB: 0, downloadsMB: 0, cost: 0, requests: 0 }
+        }
+        paperCopilotTotal.inputTokens  += cs.inputTokens
+        paperCopilotTotal.outputTokens += cs.outputTokens
+        paperCopilotTotal.totalTokens  += cs.inputTokens + cs.outputTokens
+        paperCopilotTotal.cost         += cs.costUsd
+        paperCopilotTotal.requests     += cs.requests
+
+        let ds = merged.dailyStatsAll.find(d => d.date === date)
+        if (!ds) {
+          ds = { date, inputTokens: 0, outputTokens: 0, totalTokens: 0, uploadsMB: 0, downloadsMB: 0, cost: 0, requests: 0, models: [] }
+          merged.dailyStatsAll.push(ds)
+          merged.dailyStatsAll.sort((a, b) => a.date.localeCompare(b.date))
+        }
+        ds.inputTokens  += cs.inputTokens
+        ds.outputTokens += cs.outputTokens
+        ds.totalTokens  += cs.inputTokens + cs.outputTokens
+        ds.cost         += cs.costUsd
+        ds.requests     += cs.requests
+        const existing = ds.models.find(m => m.modelId === PAPER_COPILOT_MODEL_ID)
+        if (existing) {
+          existing.inputTokens  += cs.inputTokens
+          existing.outputTokens += cs.outputTokens
+          existing.totalTokens  += cs.inputTokens + cs.outputTokens
+          existing.cost         += cs.costUsd
+          existing.requests     += cs.requests
+        } else {
+          ds.models.push({ modelId: PAPER_COPILOT_MODEL_ID, modelName: '论文：Copilot', inputTokens: cs.inputTokens, outputTokens: cs.outputTokens, totalTokens: cs.inputTokens + cs.outputTokens, uploadsMB: 0, downloadsMB: 0, cost: cs.costUsd, requests: cs.requests })
+        }
+      }
+      if (paperCopilotTotal) merged.modelStats.push(paperCopilotTotal)
 
       // Merge poster stats as a virtual "poster" model entry
       const posterDailyStats = await loadPosterStatsFile()

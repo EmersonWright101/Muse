@@ -5,7 +5,7 @@ import {
 import {
   Send, Square, MessageSquare, SquarePen, Eraser, X,
   BookOpen, ExternalLink, FileText, ChevronDown, ChevronUp, ChevronLeft,
-  ThumbsUp, ThumbsDown, Download, Eye, Trash2, Star, Bot,
+  ThumbsUp, ThumbsDown, Download, Eye, Trash2, Star,
 } from 'lucide-vue-next'
 import { useAssistantStore } from '../../stores/assistant'
 import { usePapersStore } from '../../stores/papers'
@@ -13,6 +13,7 @@ import type { Paper } from '../../stores/papers'
 import MessageItem from '../chat/components/MessageItem.vue'
 import PaperCopilot from './components/PaperCopilot.vue'
 import { usePaperCopilotStore } from '../../stores/paperCopilot'
+import copilotIcon from '../../assets/icons/copilot.svg'
 
 const assistant = useAssistantStore()
 const papers    = usePapersStore()
@@ -254,7 +255,7 @@ watch(activePaper, (paper) => {
             :class="{ active: copilot.activePaperId === activePaper.id && copilot.isOpen }"
             @click="openCopilot(activePaper, $event)"
           >
-            <Bot :size="13" />
+            <img :src="copilotIcon" class="btn-copilot-icon" alt="" />
             AI Copilot
           </button>
         </div>
@@ -642,7 +643,7 @@ watch(activePaper, (paper) => {
                   :class="{ active: copilot.activePaperId === paper.id && copilot.isOpen }"
                   @click.stop="openCopilot(paper, $event)"
                 >
-                  <Bot :size="11" />
+                  <img :src="copilotIcon" class="btn-copilot-icon-sm" alt="" />
                   AI Copilot
                 </button>
               </div>
@@ -982,7 +983,7 @@ watch(activePaper, (paper) => {
 }
 
 .detail-topbar {
-  height: 52px;
+  height: 44px;
   padding: 0 24px;
   display: flex;
   align-items: center;
@@ -1014,19 +1015,21 @@ watch(activePaper, (paper) => {
 .detail-copilot-btn {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   border: 1px solid rgba(74, 123, 200, 0.3);
   background: rgba(74, 123, 200, 0.07);
   color: #4a7bc8;
   font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
-  padding: 5px 11px;
+  padding: 4px 10px;
   border-radius: 7px;
   transition: background 0.12s, border-color 0.12s;
 }
 .detail-copilot-btn:hover { background: rgba(74, 123, 200, 0.14); border-color: rgba(74, 123, 200, 0.5); }
 .detail-copilot-btn.active { background: rgba(74, 123, 200, 0.18); border-color: #4a7bc8; color: #2d5fa8; }
+.btn-copilot-icon { width: 14px; height: 14px; opacity: 0.85; }
+.btn-copilot-icon-sm { width: 12px; height: 12px; opacity: 0.85; }
 
 .detail-scroll {
   flex: 1;

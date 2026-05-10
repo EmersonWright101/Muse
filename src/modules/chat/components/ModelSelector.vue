@@ -11,7 +11,7 @@ const props = defineProps<{
   /** When set, the selector uses this modelId instead of the global active one. */
   modelId?: string;
   /** When set, model selection is saved to this key instead of global active. */
-  saveTo?: 'ebook' | 'paper';
+  saveTo?: 'ebook' | 'paper' | 'titleGen';
 }>()
 const emit = defineEmits<{ (e: 'select', providerId: string, modelId: string): void }>()
 
@@ -36,6 +36,8 @@ function selectModel(providerId: string, modelId: string) {
     ai.setEbookDefaultModel(providerId, modelId)
   } else if (props.saveTo === 'paper') {
     ai.setPaperDefaultModel(providerId, modelId)
+  } else if (props.saveTo === 'titleGen') {
+    ai.setTitleGenModel(providerId, modelId)
   } else {
     ai.setActiveProvider(providerId)
     ai.setModelForProvider(providerId, modelId)

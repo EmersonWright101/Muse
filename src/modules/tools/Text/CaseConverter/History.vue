@@ -219,7 +219,7 @@ function formatTime(iso: string): string {
 
 function restoreRecord(record: HistoryRecord) {
   router.push({
-    path: '/text',
+    path: '/tools/text/case-converter',
     query: { input: record.inputText, mode: record.mode },
   });
 }

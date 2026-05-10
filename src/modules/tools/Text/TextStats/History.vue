@@ -208,7 +208,7 @@ function formatTime(iso: string): string {
 
 function restoreRecord(record: TextStatsRecord) {
   router.push({
-    path: '/text/stats',
+    path: '/tools/text/stats',
     query: { input: record.inputText },
   });
 }

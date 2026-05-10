@@ -134,68 +134,142 @@ export const useAssistantStore = defineStore('assistant', () => {
     await apiDelete(`/api/private-assistant/conversations/${id}`).catch(() => {})
   }
 
+  function getFingerprint(conv: AssistantConversation): string {
+    const firstUserMsg = conv.messages.find(m => m.role === 'user')
+    const firstUserContent = firstUserMsg?.content ?? ''
+    if (conv.title === '新对话') return firstUserContent
+    return `${conv.title}|${firstUserContent}`
+  }
+
   async function syncFromServer() {
     if (!isBackendConfigured()) return
     try {
       const remote = await apiGet<RemoteAssistantConversation[]>('/api/private-assistant/conversations?include_deleted=true')
       if (!remote) return
-      let activeRemote = remote.filter(r => !remoteDeletedAt(r)).map(remoteToLocal).filter(c => c.id)
-      let trashRemote = remote.filter(r => remoteDeletedAt(r)).map(r => ({
+
+      const activeRemote = remote.filter(r => !remoteDeletedAt(r)).map(remoteToLocal).filter(c => c.id)
+      const trashRemote = remote.filter(r => remoteDeletedAt(r)).map(r => ({
         ...remoteToLocal(r),
         deletedAt: remoteDeletedAt(r)!,
       })).filter(c => c.id)
 
-      const localActiveMap = new Map(_conversations.value.map(c => [c.id, c]))
-      const localTrashMap = new Map(trashedConversations.value.map(c => [c.id, c]))
+      type ConvWithOrigin = (AssistantConversation | TrashedConv) & { _isRemote: boolean }
+      const all: ConvWithOrigin[] = [
+        ..._conversations.value.map(c => ({ ...c, _isRemote: false as const })),
+        ...trashedConversations.value.map(c => ({ ...c, _isRemote: false as const })),
+        ...activeRemote.map(c => ({ ...c, _isRemote: true as const })),
+        ...trashRemote.map(c => ({ ...c, _isRemote: true as const })),
+      ]
 
-      activeRemote = activeRemote.filter(rc => {
-        const localTrash = localTrashMap.get(rc.id)
-        if (!localTrash) return true
-        if (localTrash.deletedAt >= rc.updatedAt) {
-          trashConversationRemote(rc.id, localTrash.deletedAt).catch(() => {})
-          return false
+      const groups = new Map<string, ConvWithOrigin[]>()
+      for (const conv of all) {
+        const fp = getFingerprint(conv)
+        if (!groups.has(fp)) groups.set(fp, [])
+        groups.get(fp)!.push(conv)
+      }
+
+      const mergedActive: AssistantConversation[] = []
+      const mergedTrash: TrashedConv[] = []
+      const remoteIdsToDelete: string[] = []
+      const localIdReplacements = new Map<string, string>()
+      const remoteCanonicalIds = new Set<string>()
+
+      for (const group of groups.values()) {
+        const ids = group.map(c => c.id).sort()
+        const canonicalId = ids[0]
+        const hasRemote = group.some(c => c._isRemote)
+        const canonicalIsRemote = group.find(c => c.id === canonicalId)!._isRemote
+
+        if (hasRemote) {
+          remoteIdsToDelete.push(...group.filter(c => c._isRemote && c.id !== canonicalId).map(c => c.id))
+          if (canonicalIsRemote) remoteCanonicalIds.add(canonicalId)
         }
-        localTrashMap.delete(rc.id)
-        return true
-      })
 
-      trashRemote = trashRemote.filter(rt => {
-        const localActive = localActiveMap.get(rt.id)
-        if (localActive && localActive.updatedAt > rt.deletedAt) {
-          restoreConversationRemote(rt.id).catch(() => {})
-          pushConversation(localActive).catch(() => {})
-          return false
+        for (const c of group.filter(c => !c._isRemote && c.id !== canonicalId)) {
+          localIdReplacements.set(c.id, canonicalId)
         }
-        return true
-      })
 
-      if (activeRemote.length === 0 && trashRemote.length === 0 && _conversations.value.length > 0) {
-        for (const c of _conversations.value) pushConversation(c).catch(() => {})
-        for (const c of localTrashMap.values()) trashConversationRemote(c.id, c.deletedAt).catch(() => {})
-        return
+        const messageMap = new Map<string, AssistantMessage>()
+        for (const conv of group) {
+          for (const msg of conv.messages) {
+            const existing = messageMap.get(msg.id)
+            if (!existing || new Date(msg.createdAt) >= new Date(existing.createdAt)) {
+              messageMap.set(msg.id, { ...msg })
+            }
+          }
+        }
+        const mergedMessages = [...messageMap.values()].sort((a, b) =>
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        )
+
+        const updatedAt = group.map(c => c.updatedAt).sort().reverse()[0]
+        const createdAt = group.map(c => c.createdAt).sort()[0]
+        const pinned = group.some(c => c.pinned)
+
+        const deletedAts = group
+          .filter(c => 'deletedAt' in c && c.deletedAt)
+          .map(c => (c as TrashedConv).deletedAt)
+        const deletedAt = deletedAts.length > 0 ? deletedAts.sort().reverse()[0] : undefined
+
+        const canonicalConv = group.find(c => c.id === canonicalId)!
+
+        const base: AssistantConversation = {
+          id: canonicalId,
+          title: canonicalConv.title,
+          preview: canonicalConv.preview,
+          messages: mergedMessages,
+          createdAt,
+          updatedAt,
+          pinned,
+          contextCutoffMsgId: canonicalConv.contextCutoffMsgId,
+          contextCutoffPoints: canonicalConv.contextCutoffPoints,
+        }
+
+        if (deletedAt) {
+          mergedTrash.push({ ...base, deletedAt })
+        } else {
+          mergedActive.push(base)
+        }
       }
 
-      const remoteIds = new Set([...activeRemote, ...trashRemote].map(c => c.id))
-      for (const local of _conversations.value) {
-        if (!remoteIds.has(local.id)) pushConversation(local).catch(() => {})
+      if (activeConvId.value && localIdReplacements.has(activeConvId.value)) {
+        const newId = localIdReplacements.get(activeConvId.value)!
+        activeConvId.value = mergedActive.some(c => c.id === newId) ? newId : (mergedActive[0]?.id ?? null)
       }
-      for (const localTrash of localTrashMap.values()) {
-        if (!remoteIds.has(localTrash.id)) trashConversationRemote(localTrash.id, localTrash.deletedAt).catch(() => {})
+      const nextStreaming = new Set<string>()
+      for (const id of streamingConvIds.value) {
+        nextStreaming.add(localIdReplacements.get(id) ?? id)
+      }
+      streamingConvIds.value = nextStreaming
+      const nextSelected = new Set<string>()
+      for (const id of selectedConvIds.value) {
+        nextSelected.add(localIdReplacements.get(id) ?? id)
+      }
+      selectedConvIds.value = nextSelected
+      if (previewTrashedConv.value && localIdReplacements.has(previewTrashedConv.value.id)) {
+        const newId = localIdReplacements.get(previewTrashedConv.value.id)!
+        previewTrashedConv.value = mergedTrash.find(c => c.id === newId) ?? null
       }
 
-      const activeMap = new Map(_conversations.value.map(c => [c.id, c]))
-      for (const rc of activeRemote) {
-        const lc = activeMap.get(rc.id)
-        activeMap.set(rc.id, !lc || rc.updatedAt >= lc.updatedAt ? rc : lc)
-      }
-      _conversations.value = [...activeMap.values()].filter(c => !trashRemote.some(t => t.id === c.id))
-
-      const trashMap = new Map(localTrashMap)
-      for (const rt of trashRemote) trashMap.set(rt.id, rt)
-      trashedConversations.value = [...trashMap.values()]
-
+      _conversations.value = mergedActive
+      trashedConversations.value = mergedTrash
       persist()
       persistTrash()
+
+      for (const id of remoteIdsToDelete) {
+        deleteConversationRemote(id).catch(() => {})
+      }
+
+      for (const conv of mergedActive) {
+        if (!remoteCanonicalIds.has(conv.id)) {
+          pushConversation(conv).catch(() => {})
+        }
+      }
+      for (const conv of mergedTrash) {
+        if (!remoteCanonicalIds.has(conv.id)) {
+          trashConversationRemote(conv.id, conv.deletedAt).catch(() => {})
+        }
+      }
     } catch { /* ignore */ }
   }
 

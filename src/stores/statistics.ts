@@ -7,7 +7,9 @@ import { readTextFile, writeTextFile, exists, mkdir } from '@tauri-apps/plugin-f
 import type { CopilotDailyStat } from './travelCopilot'
 import type { EbookCopilotDailyStat } from './ebook'
 import type { PaperCopilotDailyStat } from './paperCopilot'
+import { loadPaperCopilotStatsFromServer } from './paperCopilot'
 import { loadPosterStatsFile } from './home'
+import { apiPut } from '../services/api'
 
 async function loadCopilotStatsFile(): Promise<Record<string, CopilotDailyStat>> {
   try {
@@ -702,7 +704,8 @@ export const useStatisticsStore = defineStore('statistics', () => {
       if (ebookCopilotTotal) merged.modelStats.push(ebookCopilotTotal)
 
       // Merge paper copilot stats as a virtual model entry
-      const paperCopilotDailyStats = await loadPaperCopilotStatsFile()
+      // Try backend first, fall back to local file
+      const paperCopilotDailyStats = await loadPaperCopilotStatsFromServer() ?? await loadPaperCopilotStatsFile()
       const PAPER_COPILOT_MODEL_ID = '__paper_copilot__'
       let paperCopilotTotal: ModelStat | undefined
       for (const [date, cs] of Object.entries(paperCopilotDailyStats)) {
@@ -790,6 +793,21 @@ export const useStatisticsStore = defineStore('statistics', () => {
   function setCurrency(c: Currency) {
     currency.value = c
     localStorage.setItem(LS_CURRENCY_KEY, c)
+    pushToServer().catch(() => {})
+  }
+
+  async function pushToServer(): Promise<void> {
+    await apiPut('/api/settings/statistics', {
+      value: { currency: currency.value },
+    }).catch(() => {})
+  }
+
+  async function syncFromServer(allSettings: Record<string, unknown>): Promise<void> {
+    const s = allSettings.statistics as { currency?: Currency } | undefined
+    if (s?.currency) {
+      currency.value = s.currency
+      localStorage.setItem(LS_CURRENCY_KEY, s.currency)
+    }
   }
 
   function formatCost(amountUsd: number): string {
@@ -826,5 +844,7 @@ export const useStatisticsStore = defineStore('statistics', () => {
     setSortBy,
     setCurrency,
     formatCost,
+    pushToServer,
+    syncFromServer,
   }
 })

@@ -13,6 +13,7 @@ import { ocrImage } from '../utils/ocr'
 import type { AttachmentMeta, MessageUsage, WebSearchResult } from '../utils/storage'
 import { resolveDataRoot } from '../utils/path'
 import { beginSyncOp, endSyncOp, failSyncOp, setSyncModule } from './syncStatus'
+import { setClientUsage, getClientUsage } from '../services/clientUsage'
 
 // ─── Paper Copilot usage tracking ────────────────────────────────────────────
 
@@ -22,6 +23,8 @@ export interface PaperCopilotDailyStat {
   costUsd: number
   requests: number
 }
+
+const PAPER_COPILOT_STATS_KEY = 'paper-copilot-stats'
 
 export async function recordPaperCopilotUsage(inputTokens: number, outputTokens: number, costUsd: number): Promise<void> {
   try {
@@ -36,7 +39,13 @@ export async function recordPaperCopilotUsage(inputTokens: number, outputTokens:
     s.requests     += 1
     stats[date] = s
     await writeTextFile(path, JSON.stringify(stats))
+    // Also push to backend via client-usage
+    await setClientUsage(PAPER_COPILOT_STATS_KEY, stats)
   } catch { /* non-critical */ }
+}
+
+export async function loadPaperCopilotStatsFromServer(): Promise<Record<string, PaperCopilotDailyStat> | null> {
+  return getClientUsage<Record<string, PaperCopilotDailyStat>>(PAPER_COPILOT_STATS_KEY)
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -649,6 +658,83 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
 
   function close() { isOpen.value = false }
 
+  // ── Content-based dedup helpers ───────────────────────────────────────────
+
+  function _getConversationFingerprint(conv: PaperConversationMeta): string {
+    const firstUser = conv.messages?.find(m => m.role === 'user')
+    const firstUserContent = firstUser?.content ?? ''
+    if (conv.title === '新对话') {
+      return `${conv.paperId}|${conv.paperSource}|${firstUserContent}`
+    }
+    return `${conv.paperId}|${conv.paperSource}|${conv.title}|${firstUserContent}`
+  }
+
+  function _mergeConversationGroup(group: PaperConversationMeta[]): PaperConversationMeta {
+    // Keep lexicographically smallest id
+    const sorted = [...group].sort((a, b) => a.id.localeCompare(b.id))
+    const canonical = sorted[0]
+
+    // Deduplicate messages by id, keep latest content
+    const messageMap = new Map<string, PaperChatMessage>()
+    for (const conv of group) {
+      for (const msg of conv.messages ?? []) {
+        const existing = messageMap.get(msg.id)
+        if (!existing) {
+          messageMap.set(msg.id, { ...msg })
+        } else {
+          if (msg.timestamp > existing.timestamp) {
+            messageMap.set(msg.id, { ...msg })
+          } else if (msg.timestamp === existing.timestamp) {
+            // Prefer message with attachment binary data
+            const hasData = (m: PaperChatMessage) => m.attachments?.some(a => a.data)
+            if (hasData(msg) && !hasData(existing)) {
+              messageMap.set(msg.id, { ...msg })
+            }
+          }
+        }
+      }
+    }
+
+    const mergedMessages = Array.from(messageMap.values()).sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    )
+
+    const latestUpdatedAt = group.reduce((latest, c) => c.updatedAt > latest ? c.updatedAt : latest, group[0].updatedAt)
+
+    return {
+      ...canonical,
+      messages: mergedMessages,
+      messageCount: mergedMessages.length,
+      updatedAt: latestUpdatedAt,
+      contextCutoffPoints: canonical.contextCutoffPoints ?? [],
+    }
+  }
+
+  async function _fetchMessagesForConv(convId: string): Promise<PaperChatMessage[] | null> {
+    if (!activePaperId.value) return null
+    try {
+      const resp = await tauriFetch(
+        _url(`/${activePaperId.value}/conversations/${convId}?source=${activePaperSource.value}`),
+        { method: 'GET', headers: _headers() },
+      )
+      if (!resp.ok) return null
+      const data = await resp.json() as Record<string, unknown>
+      const rawMsgs = (data.messages ?? []) as any[]
+      return rawMsgs.map((m: any) => ({
+        id: m.id, role: m.role, content: m.content ?? '',
+        timestamp: m.created_at, model: m.model, providerId: m.provider_id,
+        error: m.error ?? false, reasoning: m.reasoning,
+        usage: m.usage ? { inputTokens: m.usage.input_tokens, outputTokens: m.usage.output_tokens, costUsd: m.usage.cost } : undefined,
+        attachments: (m.attachments ?? []).map((a: any) => ({
+          id: a.id, name: a.name, mimeType: a.mime_type, size: a.size, pageCount: a.page_count,
+        })),
+      }))
+    } catch { return null }
+  }
+
+  // Remap table: discarded id -> canonical id
+  const _idRemap = new Map<string, string>()
+
   // ── Conversations CRUD ─────────────────────────────────────────────────────
 
   async function loadConversations() {
@@ -665,10 +751,10 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
       if (resp.ok) {
         const serverConvs = await resp.json() as PaperConversationMeta[]
         // Merge server conversations into the global list (preserving other papers' data)
-        const localIds = new Set(conversations.value.map(c => c.id))
+        const origLocalIds = new Set(conversations.value.map(c => c.id))
         for (const sc of serverConvs) {
-          if (!localIds.has(sc.id)) {
-            conversations.value.push({ ...sc, messages: [], contextCutoffPoints: [] })
+          if (!origLocalIds.has(sc.id)) {
+            conversations.value.push({ ...sc, messages: sc.messages ?? [], contextCutoffPoints: sc.contextCutoffPoints ?? [] })
           } else {
             const idx = conversations.value.findIndex(c => c.id === sc.id)
             if (idx >= 0 && sc.updatedAt > conversations.value[idx].updatedAt) {
@@ -684,6 +770,71 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
             }
           }
         }
+
+        // ── Content-based deduplication ──────────────────────────────────────
+        // Fetch messages for remote conversations that don't have them yet
+        for (const conv of conversations.value) {
+          if (!origLocalIds.has(conv.id) && (!conv.messages || conv.messages.length === 0)) {
+            const msgs = await _fetchMessagesForConv(conv.id)
+            if (msgs) {
+              const idx = conversations.value.findIndex(c => c.id === conv.id)
+              if (idx >= 0) {
+                conversations.value[idx] = { ...conversations.value[idx], messages: msgs }
+              }
+            }
+          }
+        }
+
+        // Group by content fingerprint
+        const groups = new Map<string, PaperConversationMeta[]>()
+        for (const conv of conversations.value) {
+          const fp = _getConversationFingerprint(conv)
+          if (!groups.has(fp)) groups.set(fp, [])
+          groups.get(fp)!.push(conv)
+        }
+
+        const canonicalConvs: PaperConversationMeta[] = []
+        const discardedRemoteIds: string[] = []
+        _idRemap.clear()
+
+        for (const group of groups.values()) {
+          if (group.length === 1) {
+            canonicalConvs.push(group[0])
+            continue
+          }
+          const merged = _mergeConversationGroup(group)
+          canonicalConvs.push(merged)
+
+          for (const c of group) {
+            if (c.id !== merged.id) {
+              _idRemap.set(c.id, merged.id)
+              if (!origLocalIds.has(c.id)) {
+                discardedRemoteIds.push(c.id)
+              }
+            }
+          }
+        }
+
+        // Update active conversation if its ID was remapped
+        if (activeConvId.value && _idRemap.has(activeConvId.value)) {
+          const newId = _idRemap.get(activeConvId.value)!
+          activeConvId.value = newId
+          if (activeConv.value) {
+            activeConv.value.id = newId
+          }
+        }
+
+        // Delete discarded remote conversations
+        for (const id of discardedRemoteIds) {
+          try {
+            await tauriFetch(
+              _url(`/${activePaperId.value}/conversations/${id}?source=${activePaperSource.value}`),
+              { method: 'DELETE', headers: _headers() },
+            )
+          } catch { /* ignore */ }
+        }
+
+        conversations.value = canonicalConvs
         saveConversationsToStorage()
       }
       endSyncOp()
@@ -720,6 +871,11 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
   }
 
   async function openConversation(convId: string) {
+    convId = _idRemap.get(convId) ?? convId
+    if (activeConvId.value && _idRemap.has(activeConvId.value)) {
+      activeConvId.value = _idRemap.get(activeConvId.value)!
+      if (activeConv.value) activeConv.value.id = activeConvId.value
+    }
     if (convId === activeConvId.value) return
 
     // Before switching away, retry any binary uploads that failed earlier this session.

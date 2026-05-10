@@ -74,6 +74,7 @@ export interface TravelNote {
   cover: string
   status: 'visited' | 'upcoming'
   content: string // raw markdown including frontmatter
+  createdAt?: string
   updatedAt?: string
   deletedAt?: string // only set for trash items
 }
@@ -111,6 +112,7 @@ function parseFrontmatter(raw: string): { meta: Partial<TravelNote>; body: strin
       case 'date':       meta.date = val; break
       case 'cover':      meta.cover = val; break
       case 'status':     meta.status = val as 'visited' | 'upcoming'; break
+      case 'createdAt':  meta.createdAt = val; break
       case 'updatedAt':  meta.updatedAt = val; break
       case 'deletedAt':  meta.deletedAt = val; break
     }
@@ -138,6 +140,7 @@ function stringifyFrontmatter(note: TravelNote): string {
     `cover: ${note.cover || ''}`,
     `status: ${note.status || 'visited'}`,
   ]
+  if (note.createdAt) lines.push(`createdAt: ${note.createdAt}`)
   if (note.updatedAt) lines.push(`updatedAt: ${note.updatedAt}`)
   if (note.deletedAt) lines.push(`deletedAt: ${note.deletedAt}`)
   lines.push('---', '', note.content.replace(/^---[\s\S]*?---\s*\n?/, '').trimStart())
@@ -288,6 +291,7 @@ export async function loadTravelNote(id: string): Promise<TravelNote | null> {
       cover,
       status: meta.status ?? 'visited',
       content: raw,
+      createdAt: meta.createdAt,
       updatedAt: meta.updatedAt ?? meta.date ?? new Date().toISOString(),
     }
   } catch {
@@ -467,6 +471,7 @@ export async function restoreNoteFromTrash(id: string, opts: { sync?: boolean } 
     cover: meta.cover ?? '',
     status: meta.status ?? 'visited',
     content: raw,
+    createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
     // deletedAt intentionally omitted — restored note has no deletedAt
   }
@@ -638,10 +643,16 @@ export function createEmptyNote(): TravelNote {
     cover: randomTravelEmoji(),
     status: 'visited',
     content: '',
+    createdAt: now,
   }
 }
 
 /** Rebuild the content field with current metadata so that frontmatter is updated. */
 export function rebuildContent(note: TravelNote): string {
   return stringifyFrontmatter(note)
+}
+
+/** Content fingerprint for deduplication: title + first 200 chars of markdown. */
+export function noteFingerprint(note: TravelNote): string {
+  return `${note.title}|${note.content.slice(0, 200)}`
 }

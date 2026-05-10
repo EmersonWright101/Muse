@@ -132,6 +132,10 @@ export const useAssistantsStore = defineStore('assistants', () => {
     await load()
   }
 
+  function fingerprint(a: { name: string; systemPrompt: string; color: string; defaultProviderId?: string; defaultModelId?: string }): string {
+    return `${a.name}|${a.systemPrompt}|${a.color}|${a.defaultProviderId ?? ''}|${a.defaultModelId ?? ''}`
+  }
+
   async function syncFromServer() {
     if (!isBackendConfigured()) return
     try {
@@ -148,11 +152,12 @@ export const useAssistantsStore = defineStore('assistants', () => {
         updatedAt:         a.updatedAt,
       } as Assistant))
 
+      const localAll = await listAssistants()
+
       // Check if backend is empty → migrate local data
       if (active.length === 0) {
-        const local = await listAssistants()
-        if (local.length > 0) {
-          for (const a of local) {
+        if (localAll.length > 0) {
+          for (const a of localAll) {
             await apiPost('/api/assistants', {
               id:                 a.id,
               name:               a.name,
@@ -164,35 +169,62 @@ export const useAssistantsStore = defineStore('assistants', () => {
               updated_at:         a.updatedAt,
             }).catch(() => {})
           }
-          assistants.value = local
+          assistants.value = localAll
           return
         }
       }
 
-      for (const a of active) await saveAssistant(a)
-      assistants.value = active
-
-      // Push local assistants not on remote at all (handles failed uploads)
-      const remoteIds = new Set(remote.map(a => a.id))
-      const localAll = await listAssistants()
-      const newlyPushed: Assistant[] = []
+      const byFp = new Map<string, { locals: Assistant[]; remotes: Assistant[] }>()
       for (const a of localAll) {
-        if (remoteIds.has(a.id)) continue
-        apiPost('/api/assistants', {
-          id:                  a.id,
-          name:                a.name,
-          system_prompt:       a.systemPrompt,
-          color:               a.color,
-          default_provider_id: a.defaultProviderId,
-          default_model_id:    a.defaultModelId,
-          created_at:          a.createdAt,
-          updated_at:          a.updatedAt,
-        }).catch(() => {})
-        newlyPushed.push(a)
+        const fp = fingerprint(a)
+        const entry = byFp.get(fp) ?? { locals: [], remotes: [] }
+        entry.locals.push(a)
+        byFp.set(fp, entry)
       }
-      if (newlyPushed.length > 0) {
-        assistants.value = [...assistants.value, ...newlyPushed]
+      for (const a of active) {
+        const fp = fingerprint(a)
+        const entry = byFp.get(fp) ?? { locals: [], remotes: [] }
+        entry.remotes.push(a)
+        byFp.set(fp, entry)
       }
+
+      const merged: Assistant[] = []
+      for (const [, entry] of byFp) {
+        if (entry.locals.length > 0 && entry.remotes.length > 0) {
+          const all = [...entry.locals, ...entry.remotes]
+          const smallestId = all.map(a => a.id).sort()[0]
+          const latestUpdatedAt = all.map(a => a.updatedAt).sort().pop()!
+          const base = all.find(a => a.id === smallestId)!
+          const mergedAssistant: Assistant = {
+            ...base,
+            id: smallestId,
+            updatedAt: latestUpdatedAt,
+          }
+          await saveAssistant(mergedAssistant)
+          merged.push(mergedAssistant)
+        } else if (entry.remotes.length > 0) {
+          const rep = entry.remotes[0]
+          await saveAssistant(rep)
+          merged.push(rep)
+        } else {
+          for (const a of entry.locals) {
+            await apiPost('/api/assistants', {
+              id:                  a.id,
+              name:                a.name,
+              system_prompt:       a.systemPrompt,
+              color:               a.color,
+              default_provider_id: a.defaultProviderId,
+              default_model_id:    a.defaultModelId,
+              created_at:          a.createdAt,
+              updated_at:          a.updatedAt,
+            }).catch(() => {})
+            await saveAssistant(a)
+            merged.push(a)
+          }
+        }
+      }
+
+      assistants.value = merged
     } catch { /* ignore */ }
   }
 

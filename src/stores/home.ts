@@ -45,6 +45,19 @@ export interface PosterDailyStat {
   requests: number
 }
 
+export interface RemotePoster {
+  id: string
+  date: string
+  animalName: string
+  description: string
+  prompt: string
+  generatedAt: string
+  modelId: string
+  providerId: string
+  costUsd: number
+  deletedAt: string | null
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const LS_KEY             = 'muse-home-settings'
@@ -127,6 +140,10 @@ export const FREQUENCY_OPTIONS: Array<{ value: HomeSettings['frequency']; labelZ
   { value: 'every3days', labelZh: '每3天',   labelEn: 'Every 3 days', days: 3 },
   { value: 'weekly',     labelZh: '每周',    labelEn: 'Weekly',       days: 7 },
 ]
+
+function posterFingerprint(p: AnimalPoster | RemotePoster): string {
+  return `${p.animalName}|${p.description}|${p.prompt}`
+}
 
 // ─── File helpers ─────────────────────────────────────────────────────────────
 
@@ -304,6 +321,160 @@ export const useHomeStore = defineStore('home', () => {
   // Prevents duplicate backend sync within the same app session
   let _backendSynced = false
 
+  async function _syncPostersWithServer() {
+    beginSyncOp()
+    try {
+      const remote = await apiGet<RemotePoster[]>('/api/home/posters')
+      if (!remote) return
+
+      const remoteActive = remote.filter(r => !r.deletedAt)
+
+      // Reload local files to ensure freshness
+      const localIds = await listPosterIds()
+      const localLoaded: AnimalPoster[] = []
+      for (const id of localIds) {
+        const p = await loadPosterFile(id)
+        if (p) localLoaded.push(p)
+      }
+
+      if (remoteActive.length === 0) {
+        // Backend empty → upload all local posters
+        for (const p of localLoaded) {
+          if (!p.imageBase64) continue
+          try {
+            const binary = Uint8Array.from(atob(p.imageBase64), c => c.charCodeAt(0))
+            const form = new FormData()
+            form.append('meta', JSON.stringify({ id: p.id, date: p.date, animal_name: p.animalName, description: p.description, prompt: p.prompt, generated_at: p.generatedAt, model_id: p.modelId, provider_id: p.providerId, cost_usd: p.costUsd }))
+            form.append('image', new Blob([binary], { type: 'image/png' }), `${p.id}.png`)
+            await apiPostForm<{ id: string }>('/api/home/posters', form)
+          } catch { /* ignore */ }
+        }
+        return
+      }
+
+      const localByFp = new Map<string, AnimalPoster>()
+      for (const p of localLoaded) {
+        const fp = posterFingerprint(p)
+        const existing = localByFp.get(fp)
+        if (!existing || p.id < existing.id) {
+          localByFp.set(fp, p)
+        }
+      }
+
+      // Remove local duplicate files that lost the dedup
+      const keptLocalIds = new Set([...localByFp.values()].map(p => p.id))
+      for (const p of localLoaded) {
+        if (!keptLocalIds.has(p.id)) {
+          try {
+            const dir = await getPostersDir()
+            await remove(`${dir}/${p.id}.json`)
+          } catch { /* ignore */ }
+        }
+      }
+
+      const remoteByFp = new Map<string, RemotePoster>()
+      for (const r of remoteActive) {
+        const fp = posterFingerprint(r)
+        const existing = remoteByFp.get(fp)
+        if (!existing || r.id < existing.id) {
+          remoteByFp.set(fp, r)
+        }
+      }
+
+      const deletedMap = getDeletedPosters()
+      const merged: AnimalPoster[] = []
+      const allFps = new Set([...localByFp.keys(), ...remoteByFp.keys()])
+
+      for (const fp of allFps) {
+        const localP = localByFp.get(fp)
+        const remoteP = remoteByFp.get(fp)
+
+        if (localP && remoteP) {
+          const mergedId = localP.id < remoteP.id ? localP.id : remoteP.id
+          const mergedGeneratedAt = localP.generatedAt < remoteP.generatedAt ? localP.generatedAt : remoteP.generatedAt
+          let imageBase64 = localP.imageBase64
+          if (!imageBase64) {
+            const binary = await apiGetBinary(`/api/home/posters/${remoteP.id}/image`)
+            if (binary) {
+              let bin = ''
+              for (let i = 0; i < binary.length; i += 8192) {
+                bin += String.fromCharCode(...Array.from(binary.subarray(i, i + 8192)))
+              }
+              imageBase64 = btoa(bin)
+            }
+          }
+
+          const mergedPoster: AnimalPoster = {
+            ...localP,
+            id: mergedId,
+            generatedAt: mergedGeneratedAt,
+            imageBase64: imageBase64 || localP.imageBase64,
+          }
+
+          if (mergedId !== localP.id) {
+            try {
+              const dir = await getPostersDir()
+              await remove(`${dir}/${localP.id}.json`)
+            } catch { /* ignore */ }
+          }
+          await writePosterFile(mergedPoster)
+          merged.push(mergedPoster)
+        } else if (localP) {
+          merged.push(localP)
+        } else if (remoteP) {
+          if (deletedMap[remoteP.id]) {
+            apiDelete(`/api/home/posters/${remoteP.id}`).catch(() => {})
+            continue
+          }
+          let imageBase64 = ''
+          const binary = await apiGetBinary(`/api/home/posters/${remoteP.id}/image`)
+          if (binary) {
+            let bin = ''
+            for (let i = 0; i < binary.length; i += 8192) {
+              bin += String.fromCharCode(...Array.from(binary.subarray(i, i + 8192)))
+            }
+            imageBase64 = btoa(bin)
+          }
+
+          const poster: AnimalPoster = {
+            id: remoteP.id,
+            date: remoteP.date,
+            animalName: remoteP.animalName,
+            description: remoteP.description,
+            imageBase64,
+            prompt: remoteP.prompt,
+            generatedAt: remoteP.generatedAt,
+            modelId: remoteP.modelId,
+            providerId: remoteP.providerId,
+            costUsd: remoteP.costUsd,
+          }
+
+          await writePosterFile(poster)
+          merged.push(poster)
+        }
+      }
+
+      merged.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt))
+      posters.value = merged
+      posterIds.value = merged.map(p => p.id)
+
+      // Upload local-only posters
+      for (const [fp, localP] of localByFp) {
+        if (!remoteByFp.has(fp)) {
+          if (!localP.imageBase64) continue
+          try {
+            const binary = Uint8Array.from(atob(localP.imageBase64), c => c.charCodeAt(0))
+            const form = new FormData()
+            form.append('meta', JSON.stringify({ id: localP.id, date: localP.date, animal_name: localP.animalName, description: localP.description, prompt: localP.prompt, generated_at: localP.generatedAt, model_id: localP.modelId, provider_id: localP.providerId, cost_usd: localP.costUsd }))
+            form.append('image', new Blob([binary], { type: 'image/png' }), `${localP.id}.png`)
+            await apiPostForm<{ id: string }>('/api/home/posters', form)
+          } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
+    finally { endSyncOp() }
+  }
+
   async function loadPosters() {
     // Step 1: load from local files immediately (always fast)
     const localIds = await listPosterIds()
@@ -316,84 +487,10 @@ export const useHomeStore = defineStore('home', () => {
     posters.value = localLoaded
     posterIds.value = localLoaded.map(p => p.id)
 
-    // Step 2: background sync — only once per session, only missing posters
+    // Step 2: background sync — only once per session
     if (!isBackendConfigured() || _backendSynced) return
     _backendSynced = true
-    beginSyncOp()
-    ;(async () => {
-      try {
-        interface RemotePoster { id: string; date: string; animalName: string; description: string; prompt: string; generatedAt: string; modelId: string; providerId: string; costUsd: number; deletedAt: string | null }
-        const remote = await apiGet<RemotePoster[]>('/api/home/posters')
-        if (!remote) return
-
-        const localIdSet = new Set(localIds)
-        const remoteActive = remote.filter(r => !r.deletedAt)
-
-        if (remoteActive.length === 0) {
-          // Backend empty → upload all local posters
-          for (const id of localIds) {
-            const p = await loadPosterFile(id)
-            if (!p?.imageBase64) continue
-            try {
-              const binary = Uint8Array.from(atob(p.imageBase64), c => c.charCodeAt(0))
-              const form = new FormData()
-              form.append('meta', JSON.stringify({ id: p.id, date: p.date, animal_name: p.animalName, description: p.description, prompt: p.prompt, generated_at: p.generatedAt, model_id: p.modelId, provider_id: p.providerId, cost_usd: p.costUsd }))
-              form.append('image', new Blob([binary], { type: 'image/png' }), `${p.id}.png`)
-              await apiPostForm<{ id: string }>('/api/home/posters', form)
-            } catch { /* ignore */ }
-          }
-          return
-        }
-
-        // Download remote posters not cached locally
-        const deletedMap = getDeletedPosters()
-        const newPosters: AnimalPoster[] = []
-        for (const rp of remoteActive) {
-          if (localIdSet.has(rp.id)) continue
-          if (deletedMap[rp.id]) {
-            // Was deleted locally but server still has it — retry the delete
-            apiDelete(`/api/home/posters/${rp.id}`).catch(() => {})
-            continue
-          }
-          const binary = await apiGetBinary(`/api/home/posters/${rp.id}/image`)
-          if (!binary) continue
-          let bin = ''
-          for (let i = 0; i < binary.length; i += 8192) {
-            bin += String.fromCharCode(...Array.from(binary.subarray(i, i + 8192)))
-          }
-          const poster: AnimalPoster = {
-            id: rp.id, date: rp.date, animalName: rp.animalName,
-            description: rp.description, imageBase64: btoa(bin),
-            prompt: rp.prompt, generatedAt: rp.generatedAt,
-            modelId: rp.modelId, providerId: rp.providerId, costUsd: rp.costUsd,
-          }
-          await writePosterFile(poster)
-          newPosters.push(poster)
-        }
-        if (newPosters.length > 0) {
-          const merged = [...posters.value, ...newPosters]
-          merged.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt))
-          posters.value = merged
-          posterIds.value = merged.map(p => p.id)
-        }
-
-        // Upload local-only posters to backend
-        const remoteIdSet = new Set(remote.map(r => r.id))
-        for (const id of localIds) {
-          if (remoteIdSet.has(id)) continue
-          const p = await loadPosterFile(id)
-          if (!p?.imageBase64) continue
-          try {
-            const binary = Uint8Array.from(atob(p.imageBase64), c => c.charCodeAt(0))
-            const form = new FormData()
-            form.append('meta', JSON.stringify({ id: p.id, date: p.date, animal_name: p.animalName, description: p.description, prompt: p.prompt, generated_at: p.generatedAt, model_id: p.modelId, provider_id: p.providerId, cost_usd: p.costUsd }))
-            form.append('image', new Blob([binary], { type: 'image/png' }), `${p.id}.png`)
-            await apiPostForm<{ id: string }>('/api/home/posters', form)
-          } catch { /* ignore */ }
-        }
-      } catch { /* ignore */ }
-      finally { endSyncOp() }
-    })()
+    _syncPostersWithServer().catch(() => {})
   }
 
   // ─── Image generation ─────────────────────────────────────────────────────
@@ -650,6 +747,7 @@ export const useHomeStore = defineStore('home', () => {
         }
         localStorage.setItem(LS_KEY, JSON.stringify({ ...settings.value, animals: animals.value }))
       }
+      await _syncPostersWithServer()
     } catch { /* ignore */ }
   }
 

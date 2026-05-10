@@ -18,15 +18,16 @@ import { setSyncState, beginSyncOp, endSyncOp, failSyncOp, setSyncModule } from 
 import {
   fetchConvListFromServer,
   fetchConvFromServer,
+  mergeConversationsByContent,
   migrateConvsToServer,
   pushConvToServer,
   restoreConvOnServer,
   trashConvOnServer,
 } from './chatSync'
 import {
-  readTextFile, writeTextFile, exists, mkdir,
+  readTextFile, writeTextFile, exists, mkdir, remove,
 } from '@tauri-apps/plugin-fs'
-import { conversationsDir } from '../utils/path'
+import { conversationsDir, travelNotesDir } from '../utils/path'
 import type { ConversationMeta, Conversation } from '../utils/storage'
 import {
   saveConversationLocalOnly,
@@ -35,11 +36,12 @@ import {
   listTrashedConversations,
   restoreConversationFromTrash,
 } from '../utils/storage'
-import type { TravelNote, TravelNoteMeta, TravelTrashMeta } from '../utils/travelStorage'
+import type { TravelNote, TravelTrashMeta } from '../utils/travelStorage'
 import {
   saveTravelNote, listTravelNotes, loadTravelNote,
   listTrashItems, moveNoteToTrash, restoreNoteFromTrash,
   cacheTravelImagesForContent, uploadReferencedTravelImages,
+  noteFingerprint, extractTravelImageFilenames,
 } from '../utils/travelStorage'
 import { useEbookStore } from '../stores/ebook'
 
@@ -80,6 +82,10 @@ async function getTravelCopilotStore() {
 async function getPaperCopilotStore() {
   const { usePaperCopilotStore } = await import('../stores/paperCopilot')
   return usePaperCopilotStore()
+}
+async function getStatisticsStore() {
+  const { useStatisticsStore } = await import('../stores/statistics')
+  return useStatisticsStore()
 }
 async function getHomeStore() {
   const { useHomeStore } = await import('../stores/home')
@@ -160,9 +166,93 @@ async function syncChatList() {
   const localTrashMap = new Map(localTrash.map(m => [m.id, m]))
   const activeRemote = remoteMetas.filter(rm => !rm.trashedAt)
 
-  // Add missing remote entries, and reconcile newer records for existing entries.
-  let changed = false
+  const DEFAULT_TITLE = '新对话'
+
+  // ── Title-based deduplication merge ──────────────────────────────────────────
+  const titleGroups = new Map<string, { local: ConversationMeta[]; remote: typeof activeRemote }>()
+  for (const meta of localIndex) {
+    if (meta.title === DEFAULT_TITLE) continue
+    const g = titleGroups.get(meta.title) ?? { local: [], remote: [] }
+    g.local.push(meta)
+    titleGroups.set(meta.title, g)
+  }
   for (const rm of activeRemote) {
+    if (rm.title === DEFAULT_TITLE) continue
+    const g = titleGroups.get(rm.title) ?? { local: [], remote: [] }
+    g.remote.push(rm)
+    titleGroups.set(rm.title, g)
+  }
+
+  let changed = false
+  const dedupedRemoteIds = new Set<string>()
+
+  for (const [title, group] of titleGroups) {
+    if (group.local.length + group.remote.length < 2) continue
+
+    const localConvs: Conversation[] = []
+    for (const meta of group.local) {
+      const conv = await readJsonFile<Conversation>(`${dir}/${meta.id}.json`)
+      if (conv) localConvs.push(conv)
+    }
+    const remoteConvs: Conversation[] = []
+    for (const rm of group.remote) {
+      const conv = await fetchConvFromServer(rm.id)
+      if (conv) remoteConvs.push(conv)
+    }
+
+    const mergedList = mergeConversationsByContent(localConvs, remoteConvs)
+    const merged = mergedList.find(c => c.title === title)
+    if (!merged) continue
+
+    const canonicalId = merged.id
+
+    for (const meta of group.local) {
+      if (meta.id === canonicalId) continue
+      try {
+        const p = `${dir}/${meta.id}.json`
+        if (await exists(p)) await remove(p)
+      } catch { /* ignore */ }
+    }
+
+    for (const rm of group.remote) {
+      if (rm.id === canonicalId) continue
+      const now = new Date().toISOString()
+      trashConvOnServer(rm.id, now, buildTrashExpiry(now)).catch(() => {})
+      dedupedRemoteIds.add(rm.id)
+    }
+
+    localIndex = localIndex.filter(m => {
+      if (m.title !== title) return true
+      return m.id === canonicalId
+    })
+    const idx = localIndex.findIndex(m => m.id === canonicalId)
+    if (idx >= 0) {
+      localIndex[idx] = { ...localIndex[idx], updatedAt: merged.updatedAt }
+    } else {
+      localIndex.unshift({
+        id: canonicalId,
+        title: merged.title,
+        createdAt: merged.createdAt,
+        updatedAt: merged.updatedAt,
+        preview: '',
+        model: merged.model,
+        providerId: merged.providerId,
+        pinned: merged.pinned,
+        assistantId: merged.assistantId,
+      })
+    }
+
+    await atomicWrite(`${dir}/${canonicalId}.json`, JSON.stringify(merged, null, 2))
+    pushConvToServer(merged).catch(() => {})
+    changed = true
+  }
+
+  if (changed) await atomicWrite(indexPath, JSON.stringify(localIndex, null, 2))
+
+  const remainingRemote = activeRemote.filter(rm => !dedupedRemoteIds.has(rm.id))
+
+  // Add missing remote entries, and reconcile newer records for existing entries.
+  for (const rm of remainingRemote) {
     const trashedLocal = localTrashMap.get(rm.id)
     if (trashedLocal) {
       if (trashedLocal.deletedAt >= rm.updatedAt) {
@@ -307,6 +397,7 @@ async function fetchFullTravelNote(id: string): Promise<TravelNote | null> {
     content:   pickRemote<string>(full, 'content', 'content', ''),
     updatedAt: meta.updatedAt,
     deletedAt: meta.deletedAt ?? undefined,
+    createdAt: pickRemote<string | undefined>(full, 'createdAt', 'created_at', undefined),
   }
 }
 
@@ -315,73 +406,151 @@ async function syncTravelList() {
     const remoteRaw = await apiGet<Array<Record<string, unknown>>>('/api/travel/notes?include_deleted=true')
     if (!remoteRaw) return
 
-    const remote = remoteRaw.map(normalizeRemoteTravelMeta).filter(r => r.id)
-    const remoteIds = new Set(remote.map(r => r.id))
-    const activeRemote = remote.filter(r => !r.deletedAt)
-    const deletedRemote = remote.filter(r => r.deletedAt)
+    const remoteAll = remoteRaw.map(normalizeRemoteTravelMeta).filter(r => r.id)
+    const remoteIds = new Set(remoteAll.map(r => r.id))
+    const activeRemote = remoteAll.filter(r => !r.deletedAt)
+    const deletedRemote = remoteAll.filter(r => r.deletedAt)
 
+    // Load full local notes with content
     const localMetas = await listTravelNotes()
-    const localMap = new Map<string, TravelNoteMeta>(localMetas.map(n => [n.id, n]))
+    const localNotes: TravelNote[] = []
+    for (const meta of localMetas) {
+      const note = await loadTravelNote(meta.id)
+      if (note) localNotes.push(note)
+    }
     const localTrash = await listTrashItems()
     const localTrashMap = new Map<string, TravelTrashMeta>(localTrash.map(n => [n.id, n]))
 
     // Remote trash → local trash, unless the local active note is newer.
     for (const rm of deletedRemote) {
       try {
-        const local = localMap.get(rm.id)
+        const local = localNotes.find(n => n.id === rm.id)
         if (!local) continue
-        if (!rm.deletedAt || local.updatedAt > rm.deletedAt) {
-          const note = await loadTravelNote(rm.id)
-          if (note) {
-            await apiPost(`/api/travel/notes/${rm.id}/restore`, {}).catch(() => {})
-            await saveTravelNote(note, { preserveUpdatedAt: true })
-          }
+        if (!rm.deletedAt || local.updatedAt! > rm.deletedAt) {
+          await apiPost(`/api/travel/notes/${rm.id}/restore`, {}).catch(() => {})
+          await saveTravelNote(local, { preserveUpdatedAt: true })
         } else {
           await moveNoteToTrash(rm.id, { sync: false, deletedAt: rm.deletedAt })
         }
       } catch { /* skip this note, continue with others */ }
     }
 
-    // Remote active → local, local trash conflict handling, or local newer → remote.
+    // Refresh local notes after possible trash operations
+    const currentLocalNotes: TravelNote[] = []
+    for (const meta of await listTravelNotes()) {
+      const note = await loadTravelNote(meta.id)
+      if (note) currentLocalNotes.push(note)
+    }
+
+    // Fetch full content for all active remote notes
+    const remoteNotes: TravelNote[] = []
     for (const rm of activeRemote) {
-      try {
-        const trashedLocal = localTrashMap.get(rm.id)
-        if (trashedLocal) {
-          if (trashedLocal.deletedAt >= rm.updatedAt) {
-            apiDelete(`/api/travel/notes/${rm.id}`).catch(() => {})
-            continue
-          }
-          await restoreNoteFromTrash(rm.id, { sync: false }).catch(() => {})
+      const full = await fetchFullTravelNote(rm.id)
+      if (full) remoteNotes.push(full)
+    }
+
+    // ── Content-based deduplication merge ──────────────────────────────────────
+    const groups = new Map<string, { local: TravelNote[]; remote: TravelNote[] }>()
+    for (const note of currentLocalNotes) {
+      const fp = noteFingerprint(note)
+      const g = groups.get(fp) ?? { local: [], remote: [] }
+      g.local.push(note)
+      groups.set(fp, g)
+    }
+    for (const note of remoteNotes) {
+      const fp = noteFingerprint(note)
+      const g = groups.get(fp) ?? { local: [], remote: [] }
+      g.remote.push(note)
+      groups.set(fp, g)
+    }
+
+    for (const [, group] of groups) {
+      const hasLocal = group.local.length > 0
+      const hasRemote = group.remote.length > 0
+
+      if (hasLocal && hasRemote) {
+        // Same fingerprint → merge into canonical note
+        const allNotes = [...group.local, ...group.remote]
+        const canonicalId = allNotes.map(n => n.id).sort()[0]
+        const canonicalNote = allNotes.find(n => n.id === canonicalId)!
+        const mergedNote: TravelNote = { ...canonicalNote }
+
+        // updatedAt → latest
+        const updatedAts = allNotes.map(n => n.updatedAt).filter((v): v is string => !!v)
+        if (updatedAts.length) {
+          mergedNote.updatedAt = updatedAts.sort()[updatedAts.length - 1]
         }
 
-        const local = localMap.get(rm.id)
-        if (!local || rm.updatedAt > local.updatedAt || trashedLocal) {
-          const full = await fetchFullTravelNote(rm.id)
-          if (!full) continue
-          await saveTravelNote(full, { sync: false, preserveUpdatedAt: true })
-          cacheTravelImagesForContent(full.content).catch(() => {})
-        } else if (local.updatedAt > rm.updatedAt) {
-          const note = await loadTravelNote(rm.id)
-          if (!note) continue
+        // createdAt → earliest
+        const createdAts = allNotes.map(n => n.createdAt).filter((v): v is string => !!v)
+        if (createdAts.length) {
+          mergedNote.createdAt = createdAts.sort()[0]
+        }
+
+        // Images: union of referenced image filenames
+        const allImages = new Set<string>()
+        for (const n of allNotes) {
+          for (const img of extractTravelImageFilenames(n.content)) {
+            allImages.add(img)
+          }
+        }
+        const canonicalImages = new Set(extractTravelImageFilenames(mergedNote.content))
+        let mergedContent = mergedNote.content
+        for (const img of allImages) {
+          if (!canonicalImages.has(img)) {
+            mergedContent += `\n\n![image](images/${img})`
+          }
+        }
+        mergedNote.content = mergedContent
+
+        // Save canonical note locally and push to server
+        await saveTravelNote(mergedNote, { preserveUpdatedAt: true })
+        cacheTravelImagesForContent(mergedNote.content).catch(() => {})
+        uploadReferencedTravelImages(mergedNote.id, mergedNote.content).catch(() => {})
+
+        // Delete duplicate local files
+        for (const n of group.local) {
+          if (n.id === canonicalId) continue
+          try {
+            const dir = await travelNotesDir()
+            const path = `${dir}/${n.id}.md`
+            if (await exists(path)) await remove(path)
+          } catch { /* ignore */ }
+        }
+
+        // Delete duplicate remote notes on server
+        for (const n of group.remote) {
+          if (n.id === canonicalId) continue
+          apiDelete(`/api/travel/notes/${n.id}`).catch(() => {})
+        }
+      } else if (hasLocal && !hasRemote) {
+        // Fingerprint only in local → push to server
+        for (const note of group.local) {
           await saveTravelNote(note, { preserveUpdatedAt: true })
           uploadReferencedTravelImages(note.id, note.content).catch(() => {})
         }
-      } catch { /* skip this note, continue with others */ }
-    }
-
-    // Local active notes absent from all remote records → push.
-    for (const meta of localMetas) {
-      if (remoteIds.has(meta.id)) continue
-      try {
-        const note = await loadTravelNote(meta.id)
-        if (!note) continue
-        await saveTravelNote(note, { preserveUpdatedAt: true })
-        uploadReferencedTravelImages(note.id, note.content).catch(() => {})
-      } catch { /* skip this note, continue with others */ }
+      } else if (!hasLocal && hasRemote) {
+        // Fingerprint only in remote → add to local
+        for (const note of group.remote) {
+          try {
+            const trashedLocal = localTrashMap.get(note.id)
+            if (trashedLocal) {
+              if (trashedLocal.deletedAt >= note.updatedAt!) {
+                apiDelete(`/api/travel/notes/${note.id}`).catch(() => {})
+                continue
+              }
+              await restoreNoteFromTrash(note.id, { sync: false }).catch(() => {})
+            }
+            await saveTravelNote(note, { sync: false, preserveUpdatedAt: true })
+            cacheTravelImagesForContent(note.content).catch(() => {})
+          } catch { /* skip this note */ }
+        }
+      }
     }
 
     // Local trash absent remotely → keep server tombstone if possible.
-    for (const item of localTrash) {
+    const currentLocalTrash = await listTrashItems()
+    for (const item of currentLocalTrash) {
       if (remoteIds.has(item.id)) continue
       apiDelete(`/api/travel/notes/${item.id}`).catch(() => {})
     }
@@ -442,7 +611,7 @@ export async function syncAllFromServer(): Promise<void> {
     // 1. Pull all settings in one request
     setSyncModule('设置')
     const allSettings = await apiGet<Record<string, unknown>>('/api/settings')
-    const [aiStore, chatSettingsStore, webSearchStore, homeStore, privateAssistantSettings, travelCopilotStore, paperCopilotStore] = await Promise.all([
+    const [aiStore, chatSettingsStore, webSearchStore, homeStore, privateAssistantSettings, travelCopilotStore, paperCopilotStore, statisticsStore] = await Promise.all([
       getAiStore(),
       getChatSettingsStore(),
       getWebSearchStore(),
@@ -450,8 +619,9 @@ export async function syncAllFromServer(): Promise<void> {
       getPrivateAssistantSettingsStore(),
       getTravelCopilotStore(),
       getPaperCopilotStore(),
+      getStatisticsStore(),
     ])
-    if (allSettings && (allSettings.ai || allSettings.chat || allSettings.webSearch || allSettings.home || allSettings.general || allSettings.privateAssistant || allSettings.travelCopilot || allSettings.paperCopilot || allSettings.profile || allSettings.chatUi)) {
+    if (allSettings && (allSettings.ai || allSettings.chat || allSettings.webSearch || allSettings.home || allSettings.general || allSettings.privateAssistant || allSettings.travelCopilot || allSettings.paperCopilot || allSettings.profile || allSettings.chatUi || allSettings.statistics)) {
       // Backend has settings → apply them
       await aiStore.syncFromServer(allSettings)
       await chatSettingsStore.syncFromServer(allSettings)
@@ -460,6 +630,7 @@ export async function syncAllFromServer(): Promise<void> {
       await privateAssistantSettings.syncFromServer(allSettings)
       await travelCopilotStore.syncFromServer(allSettings)
       await paperCopilotStore.syncFromServer(allSettings)
+      await statisticsStore.syncFromServer(allSettings)
       if (allSettings.general) {
         applyGeneralSettings(allSettings.general as GeneralSettings)
       }
@@ -480,6 +651,7 @@ export async function syncAllFromServer(): Promise<void> {
       privateAssistantSettings.pushToServer().catch(() => {})
       travelCopilotStore.pushToServer().catch(() => {})
       paperCopilotStore.pushToServer().catch(() => {})
+      statisticsStore.pushToServer().catch(() => {})
       pushGeneralSettings().catch(() => {})
       pushProfileSettings().catch(() => {})
       pushChatUiSettings().catch(() => {})

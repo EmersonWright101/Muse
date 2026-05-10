@@ -47,6 +47,68 @@ function loadPending(): PendingOp[] {
   catch { return [] }
 }
 
+// ─── Content-based deduplication helpers ─────────────────────────────────────
+
+function projectFingerprint(p: TodoProject): string {
+  return `${p.name}\x00${p.color}`
+}
+
+function taskFingerprint(t: TodoTask): string {
+  return `${t.title}\x00${t.notes}\x00${t.dueDate ?? ''}\x00${t.projectId ?? ''}`
+}
+
+function dedupProjects(projects: TodoProject[]): { projects: TodoProject[]; remap: Map<string, string> } {
+  const groups = new Map<string, TodoProject[]>()
+  for (const p of projects) {
+    const fp = projectFingerprint(p)
+    const arr = groups.get(fp) ?? []
+    arr.push(p)
+    groups.set(fp, arr)
+  }
+  const deduped: TodoProject[] = []
+  const remap = new Map<string, string>()
+  for (const group of groups.values()) {
+    group.sort((a, b) => a.id.localeCompare(b.id))
+    const kept = group[0]
+    deduped.push(kept)
+    for (let i = 1; i < group.length; i++) {
+      remap.set(group[i].id, kept.id)
+    }
+  }
+  return { projects: deduped, remap }
+}
+
+function dedupTasks(tasks: TodoTask[]): { tasks: TodoTask[]; discardedIds: Set<string> } {
+  const groups = new Map<string, TodoTask[]>()
+  for (const t of tasks) {
+    const fp = taskFingerprint(t)
+    const arr = groups.get(fp) ?? []
+    arr.push(t)
+    groups.set(fp, arr)
+  }
+  const deduped: TodoTask[] = []
+  const discardedIds = new Set<string>()
+  for (const group of groups.values()) {
+    group.sort((a, b) => a.id.localeCompare(b.id))
+    const kept = { ...group[0] }
+    for (let i = 1; i < group.length; i++) {
+      discardedIds.add(group[i].id)
+      const other = group[i]
+      if (other.completed && !kept.completed) {
+        kept.completed = true
+        if (other.completedAt && (!kept.completedAt || other.completedAt > kept.completedAt)) {
+          kept.completedAt = other.completedAt
+        }
+      }
+      if (other.updatedAt > kept.updatedAt) {
+        kept.updatedAt = other.updatedAt
+      }
+    }
+    deduped.push(kept)
+  }
+  return { tasks: deduped, discardedIds }
+}
+
 // ─── Store ────────────────────────────────────────────────────────────────────
 
 export const useTodoStore = defineStore('todo', () => {
@@ -206,46 +268,121 @@ export const useTodoStore = defineStore('todo', () => {
       const c = cfg()
       if (c) {
         try {
-          // Read local state before overwriting, so we can detect local-only items
           const localData = await loadTodos()
 
           await _syncPending(c)
           const remote = await apiLoadAll(c)
 
-          // Upload local tasks/projects that don't exist on this backend (e.g. after server switch).
-          // Await each upload so we use the server-assigned ID (some backends ignore client IDs),
-          // preventing the same task from being re-uploaded on every subsequent load() call.
-          const remoteTaskIds    = new Set(remote.tasks.map(t => t.id))
+          // Merge by ID: remote wins for same IDs
+          const projectById = new Map<string, TodoProject>()
+          for (const p of remote.projects) projectById.set(p.id, p)
+          for (const p of localData.projects) if (!projectById.has(p.id)) projectById.set(p.id, p)
+
+          const taskById = new Map<string, TodoTask>()
+          for (const t of remote.tasks) taskById.set(t.id, t)
+          for (const t of localData.tasks) if (!taskById.has(t.id)) taskById.set(t.id, t)
+
+          // 1. Deduplicate projects by name|color
+          const { projects: dedupedProjects, remap: projectRemap } = dedupProjects(Array.from(projectById.values()))
+
+          // 2. Remap task projectIds to kept project
+          const remappedTasks = Array.from(taskById.values()).map(t => {
+            if (t.projectId && projectRemap.has(t.projectId)) {
+              return { ...t, projectId: projectRemap.get(t.projectId)! }
+            }
+            return t
+          })
+
+          // 3. Deduplicate tasks by title|description|dueDate|projectId
+          const { tasks: dedupedTasks, discardedIds: discardedTaskIds } = dedupTasks(remappedTasks)
+
           const remoteProjectIds = new Set(remote.projects.map(p => p.id))
+          const remoteTaskIds = new Set(remote.tasks.map(t => t.id))
+          const remoteTaskMap = new Map(remote.tasks.map(t => [t.id, t]))
 
-          const localOnlyTasks    = localData.tasks.filter(t => !remoteTaskIds.has(t.id))
-          const localOnlyProjects = localData.projects.filter(p => !remoteProjectIds.has(p.id))
+          // Push project changes back to server
+          const projectDeletions = Array.from(projectRemap.keys())
+            .filter(oldId => remoteProjectIds.has(oldId))
+            .map(oldId => apiDeleteProject(c, oldId).catch(() => {}))
 
-          const uploadedTasks:    typeof localOnlyTasks    = []
-          const uploadedProjects: typeof localOnlyProjects = []
+          const projectCreationMap = new Map<string, TodoProject>()
+          const projectCreations = dedupedProjects
+            .filter(p => !remoteProjectIds.has(p.id))
+            .map(async p => {
+              try {
+                const created = await apiCreateProject(c, p)
+                projectCreationMap.set(p.id, created)
+              } catch (e) {
+                console.warn('[todo-api] createProject during dedup:', e instanceof Error ? e.message : e)
+              }
+            })
 
-          await Promise.allSettled([
-            ...localOnlyProjects.map(async p => {
-              try { uploadedProjects.push(await apiCreateProject(c, p)) } catch { uploadedProjects.push(p) }
-            }),
-            ...localOnlyTasks.map(async t => {
-              try { uploadedTasks.push(await apiCreateTask(c, t)) } catch { uploadedTasks.push(t) }
-            }),
-          ])
+          await Promise.allSettled([...projectDeletions, ...projectCreations])
 
-          // Use server-returned versions (which carry the authoritative server ID) for the merge.
-          // Filter out any that already exist in remote (handles server returning same IDs).
-          const finalTasks    = uploadedTasks.filter(t => !remoteTaskIds.has(t.id))
-          const finalProjects = uploadedProjects.filter(p => !remoteProjectIds.has(p.id))
+          // Capture any server-assigned project ID changes
+          const projectIdChanges = new Map<string, string>()
+          for (let i = 0; i < dedupedProjects.length; i++) {
+            const p = dedupedProjects[i]
+            if (!remoteProjectIds.has(p.id)) {
+              const created = projectCreationMap.get(p.id)
+              if (created) {
+                if (created.id !== p.id) projectIdChanges.set(p.id, created.id)
+                dedupedProjects[i] = created
+              }
+            }
+          }
 
-          const mergedProjects = [...remote.projects, ...finalProjects]
-          const mergedTasks    = [...remote.tasks,    ...finalTasks]
+          // Apply any project ID changes to tasks
+          const finalTasks = dedupedTasks.map(t => {
+            if (t.projectId && projectIdChanges.has(t.projectId)) {
+              return { ...t, projectId: projectIdChanges.get(t.projectId)! }
+            }
+            return t
+          })
 
-          projects.value  = mergedProjects
-          tasks.value     = mergedTasks
+          // Push task changes back to server
+          const taskDeletions = Array.from(discardedTaskIds)
+            .filter(id => remoteTaskIds.has(id))
+            .map(id => apiDeleteTask(c, id).catch(() => {}))
+
+          const taskCreationMap = new Map<string, TodoTask>()
+          const taskCreations = finalTasks
+            .filter(t => !remoteTaskIds.has(t.id))
+            .map(async t => {
+              try {
+                const created = await apiCreateTask(c, t)
+                taskCreationMap.set(t.id, created)
+              } catch (e) {
+                console.warn('[todo-api] createTask during dedup:', e instanceof Error ? e.message : e)
+              }
+            })
+
+          const taskUpdates = finalTasks
+            .filter(t => remoteTaskIds.has(t.id))
+            .filter(t => {
+              const orig = remoteTaskMap.get(t.id)!
+              return t.completed !== orig.completed || t.updatedAt !== orig.updatedAt || t.projectId !== orig.projectId
+            })
+            .map(t => apiUpdateTask(c, t).catch(e => {
+              console.warn('[todo-api] updateTask during dedup:', e instanceof Error ? e.message : e)
+            }))
+
+          await Promise.allSettled([...taskDeletions, ...taskCreations, ...taskUpdates])
+
+          // Update finalTasks with server-returned versions for newly created tasks
+          for (let i = 0; i < finalTasks.length; i++) {
+            const t = finalTasks[i]
+            if (!remoteTaskIds.has(t.id)) {
+              const created = taskCreationMap.get(t.id)
+              if (created) finalTasks[i] = created
+            }
+          }
+
+          projects.value = dedupedProjects
+          tasks.value = finalTasks
           apiStatus.value = 'connected'
-          apiError.value  = null
-          await saveTodos({ version: 1, projects: mergedProjects, tasks: mergedTasks })
+          apiError.value = null
+          await saveTodos({ version: 1, projects: dedupedProjects, tasks: finalTasks })
           return
         } catch (e) {
           _onApiError(e, 'load')

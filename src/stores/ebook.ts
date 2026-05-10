@@ -703,6 +703,45 @@ export const useEbookStore = defineStore('ebook', () => {
     } catch { /* non-critical */ }
   }
 
+  // ─── Merge helpers ─────────────────────────────────────────────────────────────
+
+  function bookFingerprint(b: Book): string {
+    return `${b.title}|${b.author}|${b.filePath}`
+  }
+
+  function readStatusRank(s: ReadStatus): number {
+    if (s === 'finished') return 3
+    if (s === 'reading') return 2
+    if (s === 'want_to_read') return 1
+    return 0
+  }
+
+  function collectionFingerprint(c: Collection): string {
+    return c.name
+  }
+
+  function annotationFingerprint(a: BookAnnotation): string {
+    return `${a.chapterTitle}|${a.text}|${a.note}`
+  }
+
+  function sessionFingerprint(s: ReadingSession): string {
+    return `${s.bookId}|${s.startedAt}`
+  }
+
+  function mergeBooks(local: Book, remote: Book): Book {
+    const keptId = local.id < remote.id ? local.id : remote.id
+    return {
+      ...remote,
+      ...local,
+      id: keptId,
+      filePath: local.filePath,
+      lastReadAt: Math.max(local.lastReadAt ?? 0, remote.lastReadAt ?? 0) || null,
+      totalProgress: Math.max(local.totalProgress, remote.totalProgress),
+      readStatus: readStatusRank(local.readStatus) >= readStatusRank(remote.readStatus) ? local.readStatus : remote.readStatus,
+      collectionIds: [...new Set([...(local.collectionIds ?? []), ...(remote.collectionIds ?? [])])],
+    }
+  }
+
   async function syncFromServer(): Promise<void> {
     if (!isBackendConfigured()) return
     try {
@@ -712,68 +751,197 @@ export const useEbookStore = defineStore('ebook', () => {
         return
       }
       const r = remote.value
-      // Merge books: remote wins for existing, add missing
-      const serverBookIds = new Set((r.books ?? []).map((rb: Book) => rb.id))
-      const localIds = new Set(books.value.map(b => b.id))
-      const newRemoteBooks: Book[] = []
-      for (const rb of r.books ?? []) {
-        if (!localIds.has(rb.id)) {
-          books.value.push(rb)
-          newRemoteBooks.push(rb)
+
+      // Work with plain copies to avoid mid-merge reactivity side-effects
+      let localBooks: Book[] = JSON.parse(JSON.stringify(books.value))
+      const remoteBooks: Book[] = JSON.parse(JSON.stringify(r.books ?? []))
+      let localCollections: Collection[] = JSON.parse(JSON.stringify(collections.value))
+      const remoteCollections: Collection[] = JSON.parse(JSON.stringify(r.collections ?? []))
+      let localAnnotations: BookAnnotation[] = JSON.parse(JSON.stringify(annotations.value))
+      const remoteAnnotations: BookAnnotation[] = JSON.parse(JSON.stringify(r.annotations ?? []))
+      let localSessions: ReadingSession[] = JSON.parse(JSON.stringify(sessions.value))
+      const remoteSessions: ReadingSession[] = JSON.parse(JSON.stringify(r.sessions ?? []))
+      let localProgress: Record<string, ReadingProgress> = JSON.parse(JSON.stringify(progress.value))
+      const remoteProgress: Record<string, ReadingProgress> = JSON.parse(JSON.stringify(r.progress ?? {}))
+      let localCopilot: CopilotSession[] = JSON.parse(JSON.stringify(copilotSessions.value))
+      const remoteCopilot: CopilotSession[] = JSON.parse(JSON.stringify(r.copilotSessions ?? []))
+
+      // ─── 1. Merge collections by name ──────────────────────────────────────────
+      const collectionIdRemap = new Map<string, string>()
+      const mergedCollections: Collection[] = []
+      const localColByName = new Map<string, Collection>()
+      for (const c of localCollections) localColByName.set(collectionFingerprint(c), c)
+
+      for (const rc of remoteCollections) {
+        const fp = collectionFingerprint(rc)
+        const lc = localColByName.get(fp)
+        if (lc) {
+          const keptId = lc.id < rc.id ? lc.id : rc.id
+          const discardedId = lc.id < rc.id ? rc.id : lc.id
+          if (keptId !== discardedId) {
+            collectionIdRemap.set(discardedId, keptId)
+          }
+          if (!mergedCollections.find(c => c.id === keptId)) {
+            mergedCollections.push(keptId === lc.id ? lc : rc)
+          }
         } else {
-          const idx = books.value.findIndex(b => b.id === rb.id)
-          if (idx >= 0 && rb.lastReadAt && rb.lastReadAt > (books.value[idx].lastReadAt ?? 0)) {
-            books.value[idx] = { ...books.value[idx], ...rb, filePath: books.value[idx].filePath }
+          mergedCollections.push(rc)
+        }
+      }
+      for (const lc of localCollections) {
+        if (!mergedCollections.find(c => c.id === lc.id)) {
+          mergedCollections.push(lc)
+        }
+      }
+
+      // Apply collection remapping to books
+      function remapCollectionIds(ids: string[]): string[] {
+        return [...new Set(ids.map(id => collectionIdRemap.get(id) ?? id))]
+      }
+      for (const b of localBooks) b.collectionIds = remapCollectionIds(b.collectionIds ?? [])
+      for (const b of remoteBooks) b.collectionIds = remapCollectionIds(b.collectionIds ?? [])
+
+      // ─── 2. Merge books by fingerprint ─────────────────────────────────────────
+      const bookIdRemap = new Map<string, string>()
+      const mergedBooks: Book[] = []
+      const localBookByFp = new Map<string, Book>()
+      for (const b of localBooks) localBookByFp.set(bookFingerprint(b), b)
+
+      for (const rb of remoteBooks) {
+        const fp = bookFingerprint(rb)
+        const lb = localBookByFp.get(fp)
+        if (lb) {
+          const merged = mergeBooks(lb, rb)
+          if (merged.id !== lb.id) bookIdRemap.set(lb.id, merged.id)
+          if (merged.id !== rb.id) bookIdRemap.set(rb.id, merged.id)
+          const idx = localBooks.indexOf(lb)
+          if (idx >= 0) localBooks[idx] = merged
+          if (!mergedBooks.find(b => b.id === merged.id)) {
+            mergedBooks.push(merged)
+          }
+        } else {
+          if (!mergedBooks.find(b => b.id === rb.id)) {
+            mergedBooks.push(rb)
           }
         }
       }
-      // Push books that exist locally but are missing from the server (e.g. upload failed earlier).
-      const localOnlyBooks = books.value.filter(b => !serverBookIds.has(b.id))
+      for (const lb of localBooks) {
+        if (!mergedBooks.find(b => b.id === lb.id)) {
+          mergedBooks.push(lb)
+        }
+      }
+
+      function remapBookId(id: string): string {
+        return bookIdRemap.get(id) ?? id
+      }
+
+      // ─── 3. Merge progress ─────────────────────────────────────────────────────
+      const mergedProgress: Record<string, ReadingProgress> = {}
+      for (const [bid, lp] of Object.entries(localProgress)) {
+        const newId = remapBookId(bid)
+        mergedProgress[newId] = { ...lp, bookId: newId }
+      }
+      for (const [bid, rp] of Object.entries(remoteProgress)) {
+        const newId = remapBookId(bid)
+        const lp = mergedProgress[newId]
+        if (!lp || rp.percentage > lp.percentage || (rp.percentage === lp.percentage && rp.updatedAt > lp.updatedAt)) {
+          mergedProgress[newId] = { ...rp, bookId: newId }
+        }
+      }
+
+      // ─── 4. Merge annotations ──────────────────────────────────────────────────
+      const annByFp = new Map<string, BookAnnotation>()
+      for (const la of localAnnotations) {
+        const newBookId = remapBookId(la.bookId)
+        const fp = annotationFingerprint({ ...la, bookId: newBookId })
+        const existing = annByFp.get(fp)
+        if (!existing || la.id < existing.id) {
+          annByFp.set(fp, { ...la, bookId: newBookId })
+        }
+      }
+      for (const ra of remoteAnnotations) {
+        const newBookId = remapBookId(ra.bookId)
+        const fp = annotationFingerprint({ ...ra, bookId: newBookId })
+        const existing = annByFp.get(fp)
+        if (!existing || ra.id < existing.id) {
+          annByFp.set(fp, { ...ra, bookId: newBookId })
+        }
+      }
+      const mergedAnnotations = Array.from(annByFp.values())
+
+      // ─── 5. Merge sessions ─────────────────────────────────────────────────────
+      const sessByFp = new Map<string, ReadingSession>()
+      for (const ls of localSessions) {
+        const newBookId = remapBookId(ls.bookId)
+        const fp = sessionFingerprint({ ...ls, bookId: newBookId })
+        const existing = sessByFp.get(fp)
+        if (!existing || ls.id < existing.id) {
+          sessByFp.set(fp, { ...ls, bookId: newBookId })
+        }
+      }
+      for (const rs of remoteSessions) {
+        const newBookId = remapBookId(rs.bookId)
+        const fp = sessionFingerprint({ ...rs, bookId: newBookId })
+        const existing = sessByFp.get(fp)
+        if (!existing || rs.id < existing.id) {
+          sessByFp.set(fp, { ...rs, bookId: newBookId })
+        }
+      }
+      const mergedSessions = Array.from(sessByFp.values())
+      if (mergedSessions.length > MAX_SESSIONS) {
+        mergedSessions.sort((a, b) => a.startedAt - b.startedAt)
+        mergedSessions.splice(0, mergedSessions.length - MAX_SESSIONS)
+      }
+
+      // ─── 6. Merge copilot sessions (by id, remote wins if newer) ───────────────
+      const mergedCopilot: CopilotSession[] = [...localCopilot]
+      const localCpById = new Map(mergedCopilot.map((s, i) => [s.id, i]))
+      for (const rc of remoteCopilot) {
+        const remapped = { ...rc, bookId: remapBookId(rc.bookId) }
+        const idx = localCpById.get(remapped.id)
+        if (idx === undefined) {
+          mergedCopilot.push(remapped)
+        } else if (remapped.updatedAt > mergedCopilot[idx].updatedAt) {
+          mergedCopilot[idx] = remapped
+        }
+      }
+
+      // ─── 7. Remap activeBookId if needed ───────────────────────────────────────
+      if (activeBookId.value && bookIdRemap.has(activeBookId.value)) {
+        activeBookId.value = bookIdRemap.get(activeBookId.value)!
+      }
+
+      // ─── 8. Update state and persist ───────────────────────────────────────────
+      books.value = mergedBooks
+      collections.value = mergedCollections
+      progress.value = mergedProgress
+      annotations.value = mergedAnnotations
+      sessions.value = mergedSessions
+      copilotSessions.value = mergedCopilot
+
+      save(LS_BOOKS, books.value)
+      save(LS_COLLECTIONS, collections.value)
+      save(LS_PROGRESS, progress.value)
+      save(LS_ANNOTATIONS, annotations.value)
+      save(LS_SESSIONS, sessions.value)
+      save(LS_COPILOT, copilotSessions.value)
+
+      // Pre-download EPUB files for newly discovered remote books
+      const remoteBookFps = new Set(remoteBooks.map(bookFingerprint))
+      for (const b of mergedBooks) {
+        if (remoteBookFps.has(bookFingerprint(b))) {
+          readBookFile(b).catch(() => {})
+        }
+      }
+
+      // Push books that exist locally but are missing from the server
+      const localOnlyBooks = localBooks.filter(lb => !remoteBooks.some(rb => bookFingerprint(rb) === bookFingerprint(lb)))
       if (localOnlyBooks.length > 0) {
         pushToServer().catch(() => {})
         for (const b of localOnlyBooks) pushBookFileToServer(b).catch(() => {})
       }
-      // Pre-download EPUB files for newly discovered remote books in the background.
-      for (const rb of newRemoteBooks) {
-        readBookFile(rb).catch(() => {})
-      }
-      // Merge progress (remote wins if newer)
-      for (const [bid, rp] of Object.entries(r.progress ?? {})) {
-        const lp = progress.value[bid]
-        if (!lp || rp.updatedAt > lp.updatedAt) {
-          progress.value[bid] = rp
-        }
-      }
-      // Merge annotations (add missing)
-      const localAnnIds = new Set(annotations.value.map(a => a.id))
-      for (const ra of r.annotations ?? []) {
-        if (!localAnnIds.has(ra.id)) annotations.value.push(ra)
-      }
-      // Merge reading sessions (add missing by id)
-      const localSessIds = new Set(sessions.value.map(s => s.id))
-      for (const rs of r.sessions ?? []) {
-        if (!localSessIds.has(rs.id)) sessions.value.push(rs)
-      }
-      if (sessions.value.length > MAX_SESSIONS) {
-        sessions.value = sessions.value.slice(-MAX_SESSIONS)
-      }
-      // Merge collections
-      const localColIds = new Set(collections.value.map(c => c.id))
-      for (const rc of r.collections ?? []) {
-        if (!localColIds.has(rc.id)) collections.value.push(rc)
-      }
-      // Merge copilot sessions (add missing by id, remote wins if newer)
-      const localCpIds = new Set(copilotSessions.value.map(s => s.id))
-      for (const rc of r.copilotSessions ?? []) {
-        if (!localCpIds.has(rc.id)) {
-          copilotSessions.value.push(rc)
-        } else {
-          const idx = copilotSessions.value.findIndex(s => s.id === rc.id)
-          if (idx >= 0 && rc.updatedAt > copilotSessions.value[idx].updatedAt) {
-            copilotSessions.value[idx] = rc
-          }
-        }
-      }
+
+      // Settings (remote wins)
       if (r.ttsSettings) {
         ttsSettings.value = { ...DEFAULT_TTS_SETTINGS, ...r.ttsSettings }
         save(LS_TTS_SETTINGS, ttsSettings.value)
@@ -782,8 +950,12 @@ export const useEbookStore = defineStore('ebook', () => {
         settings.value = normalizeSettings(r.settings)
         save(LS_SETTINGS, settings.value)
       }
-      if (r.ttsJobStates) {
-        ttsJobStates.value = { ...ttsJobStates.value, ...r.ttsJobStates }
+      if (r.ttsJobStates && typeof r.ttsJobStates === 'object') {
+        const remappedJobs: Record<string, BookTtsJobState> = {}
+        for (const [key, val] of Object.entries({ ...ttsJobStates.value, ...r.ttsJobStates })) {
+          remappedJobs[remapBookId(key)] = val
+        }
+        ttsJobStates.value = remappedJobs
         save(LS_TTS_JOBS, ttsJobStates.value)
       }
       // Merge ebook copilot daily stats (take max for each date)
@@ -808,18 +980,16 @@ export const useEbookStore = defineStore('ebook', () => {
           await writeTextFile(statsPath, JSON.stringify(localStats))
         } catch { /* non-critical */ }
       }
-      // Merge TTS playback positions (remote wins per book)
+      // Merge TTS playback positions (local wins per book, with remapping)
       if (r.ttsPlaybackPos && typeof r.ttsPlaybackPos === 'object') {
-        ttsPlaybackPos.value = { ...r.ttsPlaybackPos, ...ttsPlaybackPos.value }
+        const remappedPlayback: Record<string, TtsPlaybackPos> = {}
+        for (const [key, val] of Object.entries({ ...r.ttsPlaybackPos, ...ttsPlaybackPos.value })) {
+          remappedPlayback[remapBookId(key)] = val
+        }
+        ttsPlaybackPos.value = remappedPlayback
         save(LS_TTS_PLAYBACK, ttsPlaybackPos.value)
       }
       storageUsed.value = remote.storageUsed ?? 0
-      save(LS_BOOKS, books.value)
-      save(LS_PROGRESS, progress.value)
-      save(LS_ANNOTATIONS, annotations.value)
-      save(LS_SESSIONS, sessions.value)
-      save(LS_COLLECTIONS, collections.value)
-      save(LS_COPILOT, copilotSessions.value)
     } catch { /* ignore */ }
   }
 

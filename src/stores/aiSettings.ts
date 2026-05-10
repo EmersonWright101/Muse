@@ -555,6 +555,30 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     })
   }
 
+  // ── Content-based provider merge helpers ───────────────────────────────────
+
+  function _providerFingerprint(p: { name: string; type: string; baseUrl: string; enabled: boolean; models: AIModel[] }): string {
+    const modelKey = p.models.map(m => `${m.id}|${m.name}`).sort().join(',')
+    return `${p.name}|${p.type}|${p.baseUrl}|${p.enabled}|${modelKey}`
+  }
+
+  function _providerContentEqual(a: AIProvider, b: AIProvider): boolean {
+    return _providerFingerprint(a) === _providerFingerprint(b)
+  }
+
+  /** Remap an old provider id to a new one in all id-referencing fields. */
+  function _remapProviderId(oldId: string, newId: string) {
+    if (activeProviderId.value === oldId) activeProviderId.value = newId
+    if (defaultProviderId.value === oldId) defaultProviderId.value = newId
+    if (ebookDefaultProviderId.value === oldId) ebookDefaultProviderId.value = newId
+    if (ebookDefaultModelId.value && providers.value.find(p => p.id === oldId)?.selectedModelId === ebookDefaultModelId.value) {
+      // modelId stays the same, providerId changes
+    }
+    if (paperDefaultProviderId.value === oldId) paperDefaultProviderId.value = newId
+    if (titleGenProviderId.value === oldId) titleGenProviderId.value = newId
+    // Also remap inside each provider's selectedModelId? No, model IDs are provider-scoped.
+  }
+
   async function syncFromServer(allSettings: Record<string, unknown>): Promise<void> {
     await _initPromise  // wait for local init to finish
     const s = allSettings.ai as (PersistedSettings & { deletedProviders?: Record<string, string> }) | undefined
@@ -564,31 +588,76 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     if (s.deletedProviders) applyRemoteDeletedProviders(s.deletedProviders)
     const deletedMap = getDeletedProviders()
 
-    // Server-wins: if server has providers, replace local entirely (prevents cross-device duplication)
-    if (s.providers?.length) {
-      const newProviders: AIProvider[] = []
-      for (const sp of s.providers) {
-        if (!sp.name || deletedMap[sp.id]) continue
-        let apiKey = ''
-        if (sp.apiKeyEnc && srvKey) {
-          try { apiKey = await decryptFromServer(sp.apiKeyEnc, srvKey) } catch { /* skip */ }
-        }
-        newProviders.push({
-          id:              sp.id,
-          type:            sp.type            ?? 'custom',
-          name:            sp.name,
-          apiKey,
-          baseUrl:         sp.baseUrl         ?? '',
-          models:          sp.customModels?.length ? sp.customModels : [{ id: 'default', name: '默认模型' }],
-          enabled:         sp.enabled         ?? true,
-          selectedModelId: sp.selectedModelId ?? '',
-          builtIn:         sp.builtIn         ?? false,
-          updatedAt:       sp.updatedAt,
-        })
+    // Convert remote providers to AIProvider[]
+    const remoteProviders: AIProvider[] = []
+    for (const sp of (s.providers ?? [])) {
+      if (!sp.name || deletedMap[sp.id]) continue
+      let apiKey = ''
+      if (sp.apiKeyEnc && srvKey) {
+        try { apiKey = await decryptFromServer(sp.apiKeyEnc, srvKey) } catch { /* skip */ }
       }
-      // Temporarily suppress the watch-triggered server push during bulk replace
-      providers.value = newProviders
+      remoteProviders.push({
+        id:              sp.id,
+        type:            sp.type            ?? 'custom',
+        name:            sp.name,
+        apiKey,
+        baseUrl:         sp.baseUrl         ?? '',
+        models:          sp.customModels?.length ? sp.customModels : [{ id: 'default', name: '默认模型' }],
+        enabled:         sp.enabled         ?? true,
+        selectedModelId: sp.selectedModelId ?? '',
+        builtIn:         sp.builtIn         ?? false,
+        updatedAt:       sp.updatedAt,
+      })
     }
+
+    // Content-based merge: same content → keep one (deterministic id = lexicographically smallest)
+    const merged: AIProvider[] = []
+    const remoteMatched = new Set<string>()
+    const idRemap = new Map<string, string>() // oldId -> keepId
+
+    // 1. Process local providers
+    for (const local of providers.value) {
+      const remoteIdx = remoteProviders.findIndex(r => _providerContentEqual(local, r) && !remoteMatched.has(r.id))
+      if (remoteIdx >= 0) {
+        const remote = remoteProviders[remoteIdx]
+        remoteMatched.add(remote.id)
+        // Content is identical → keep one. Use lexicographically smallest id for cross-device convergence.
+        const keepId = local.id < remote.id ? local.id : remote.id
+        const discardId = keepId === local.id ? remote.id : local.id
+        if (discardId !== keepId) idRemap.set(discardId, keepId)
+        merged.push({
+          ...local,
+          id: keepId,
+          // Merge apiKey: prefer local plaintext, fall back to remote decrypted
+          apiKey: local.apiKey || remote.apiKey,
+          // Merge selectedModelId: prefer non-empty
+          selectedModelId: local.selectedModelId || remote.selectedModelId,
+          // Use latest updatedAt
+          updatedAt: (local.updatedAt && remote.updatedAt)
+            ? (local.updatedAt > remote.updatedAt ? local.updatedAt : remote.updatedAt)
+            : (local.updatedAt || remote.updatedAt),
+        })
+      } else {
+        // Local-only (content not found remotely)
+        merged.push(local)
+      }
+    }
+
+    // 2. Add remote-only providers
+    for (const remote of remoteProviders) {
+      if (!remoteMatched.has(remote.id)) {
+        merged.push(remote)
+      }
+    }
+
+    // 3. Apply id remaps to all referencing fields
+    for (const [oldId, newId] of idRemap) {
+      _remapProviderId(oldId, newId)
+    }
+
+    // Temporarily suppress the watch-triggered server push during bulk replace
+    providers.value = merged
+
     if (s.activeProviderId)  activeProviderId.value  = s.activeProviderId
     if (s.defaultProviderId) defaultProviderId.value = s.defaultProviderId
     if (s.defaultModelId)    defaultModelId.value    = s.defaultModelId

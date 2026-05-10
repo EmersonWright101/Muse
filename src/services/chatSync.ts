@@ -14,6 +14,7 @@
 import { apiPost, apiPut, apiGet, apiPostForm, apiGetBinary, apiDelete, isBackendConfigured } from './api'
 import { beginSyncOp, endSyncOp, failSyncOp } from '../stores/syncStatus'
 import type { Conversation, ChatMessage } from '../utils/storage'
+import { mergeMessages } from '../utils/storage'
 
 interface AttachmentUploadResult { id: string }
 
@@ -310,6 +311,57 @@ export async function fetchConvListFromServer(includeDeleted = false): Promise<R
   } catch {
     return null
   }
+}
+
+const DEFAULT_TITLE = '新对话'
+
+/**
+ * Merge local and remote conversations by title (excluding default titles).
+ * Conversations with the same title are merged into one:
+ * - lexicographically smallest id is kept
+ * - latest updatedAt wins
+ * - messages are deduplicated by id and sorted by timestamp
+ */
+export function mergeConversationsByContent(localConvs: Conversation[], remoteConvs: Conversation[]): Conversation[] {
+  const all = [...localConvs, ...remoteConvs]
+  const byTitle = new Map<string, Conversation[]>()
+  const result: Conversation[] = []
+
+  for (const conv of all) {
+    if (conv.title === DEFAULT_TITLE) {
+      result.push(conv)
+      continue
+    }
+    const list = byTitle.get(conv.title) ?? []
+    list.push(conv)
+    byTitle.set(conv.title, list)
+  }
+
+  for (const group of byTitle.values()) {
+    if (group.length === 1) {
+      result.push(group[0])
+      continue
+    }
+
+    const canonicalId = group.map(c => c.id).sort((a, b) => a.localeCompare(b))[0]
+    const latestUpdatedAt = group.reduce((max, c) => (c.updatedAt > max ? c.updatedAt : max), group[0].updatedAt)
+
+    let mergedMessages: ChatMessage[] = []
+    for (const conv of group) {
+      mergedMessages = mergeMessages(mergedMessages, conv.messages)
+    }
+
+    const newest = group.reduce((latest, c) => (c.updatedAt > latest.updatedAt ? c : latest), group[0])
+
+    result.push({
+      ...newest,
+      id: canonicalId,
+      updatedAt: latestUpdatedAt,
+      messages: mergedMessages,
+    })
+  }
+
+  return result
 }
 
 /**

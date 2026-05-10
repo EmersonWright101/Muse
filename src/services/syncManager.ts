@@ -14,7 +14,7 @@
  */
 
 import { apiGet, apiDelete, apiPost, apiPut, isBackendConfigured } from './api'
-import { setSyncState, beginSyncOp, endSyncOp, failSyncOp, setSyncModule } from '../stores/syncStatus'
+import { setSyncState, beginSyncOp, endSyncOp, failSyncOp, setSyncModule, setSyncAction, addSyncAction, removeSyncAction } from '../stores/syncStatus'
 import {
   fetchConvListFromServer,
   fetchConvFromServer,
@@ -42,7 +42,7 @@ import type { TravelNote, TravelTrashMeta } from '../utils/travelStorage'
 import {
   saveTravelNote, listTravelNotes, loadTravelNote,
   listTrashItems, moveNoteToTrash, restoreNoteFromTrash,
-  cacheTravelImagesForContent, uploadReferencedTravelImages,
+  cacheTravelImagesForContent,
   noteFingerprint, extractTravelImageFilenames,
 } from '../utils/travelStorage'
 import { useEbookStore } from '../stores/ebook'
@@ -137,7 +137,9 @@ function buildTrashExpiry(deletedAt: string): string | null {
 // ─── Chat conversation list merge ─────────────────────────────────────────────
 
 async function syncChatList() {
+  addSyncAction('正在从服务器拉取远程对话列表与元数据…')
   const remote = await fetchConvListFromServer(true)
+  removeSyncAction('正在从服务器拉取远程对话列表与元数据…')
   if (!remote) return
 
   const dir = await conversationsDir()
@@ -171,6 +173,7 @@ async function syncChatList() {
   const DEFAULT_TITLE = '新对话'
 
   // ── Title-based deduplication merge ──────────────────────────────────────────
+  addSyncAction('正在按标题去重并合并本地与远程对话内容…')
   const titleGroups = new Map<string, { local: ConversationMeta[]; remote: typeof activeRemote }>()
   for (const meta of localIndex) {
     if (meta.title === DEFAULT_TITLE) continue
@@ -249,8 +252,10 @@ async function syncChatList() {
     changed = true
   }
 
+  removeSyncAction('正在按标题去重并合并本地与远程对话内容…')
   if (changed) await atomicWrite(indexPath, JSON.stringify(localIndex, null, 2))
 
+  addSyncAction('正在将本地独有对话及消息历史上传到服务器…')
   const remainingRemote = activeRemote.filter(rm => !dedupedRemoteIds.has(rm.id))
 
   // Add missing remote entries, and reconcile newer records for existing entries.
@@ -345,6 +350,7 @@ async function syncChatList() {
       for (const conv of localConvs) pushConvToServer(conv).catch(() => {})
     }
   }
+  removeSyncAction('正在将本地独有对话及消息历史上传到服务器…')
 }
 
 // ─── Travel notes list merge ──────────────────────────────────────────────────
@@ -405,7 +411,9 @@ async function fetchFullTravelNote(id: string): Promise<TravelNote | null> {
 
 async function syncTravelList() {
   try {
+    addSyncAction('正在从服务器拉取远程旅行笔记列表与完整内容…')
     const remoteRaw = await apiGet<Array<Record<string, unknown>>>('/api/travel/notes?include_deleted=true')
+    removeSyncAction('正在从服务器拉取远程旅行笔记列表与完整内容…')
     if (!remoteRaw) return
 
     const remoteAll = remoteRaw.map(normalizeRemoteTravelMeta).filter(r => r.id)
@@ -452,6 +460,7 @@ async function syncTravelList() {
     }
 
     // ── Content-based deduplication merge ──────────────────────────────────────
+    addSyncAction('正在按内容指纹去重并合并本地与远程旅行笔记…')
     const groups = new Map<string, { local: TravelNote[]; remote: TravelNote[] }>()
     for (const note of currentLocalNotes) {
       const fp = noteFingerprint(note)
@@ -505,10 +514,13 @@ async function syncTravelList() {
         }
         mergedNote.content = mergedContent
 
-        // Save canonical note locally and push to server
-        await saveTravelNote(mergedNote, { preserveUpdatedAt: true })
+        // Save canonical note locally and push to server only if something actually changed
+        const canonicalContent = canonicalNote.content
+        const contentChanged = mergedNote.content !== canonicalContent || mergedNote.updatedAt !== canonicalNote.updatedAt
+        if (contentChanged) {
+          await saveTravelNote(mergedNote, { preserveUpdatedAt: true })
+        }
         cacheTravelImagesForContent(mergedNote.content).catch(() => {})
-        uploadReferencedTravelImages(mergedNote.id, mergedNote.content).catch(() => {})
 
         // Delete duplicate local files
         for (const n of group.local) {
@@ -529,7 +541,6 @@ async function syncTravelList() {
         // Fingerprint only in local → push to server
         for (const note of group.local) {
           await saveTravelNote(note, { preserveUpdatedAt: true })
-          uploadReferencedTravelImages(note.id, note.content).catch(() => {})
         }
       } else if (!hasLocal && hasRemote) {
         // Fingerprint only in remote → add to local
@@ -550,6 +561,7 @@ async function syncTravelList() {
       }
     }
 
+    removeSyncAction('正在按内容指纹去重并合并本地与远程旅行笔记…')
     // Local trash absent remotely → keep server tombstone if possible.
     const currentLocalTrash = await listTrashItems()
     for (const item of currentLocalTrash) {
@@ -612,6 +624,7 @@ export async function syncAllFromServer(): Promise<void> {
   try {
     // 1. Pull all settings in one request
     setSyncModule('设置')
+    setSyncAction('正在同步设置…')
     const allSettings = await apiGet<Record<string, unknown>>('/api/settings')
     const [aiStore, chatSettingsStore, webSearchStore, homeStore, privateAssistantSettings, travelCopilotStore, paperCopilotStore, statisticsStore] = await Promise.all([
       getAiStore(),
@@ -623,42 +636,66 @@ export async function syncAllFromServer(): Promise<void> {
       getPaperCopilotStore(),
       getStatisticsStore(),
     ])
-    if (allSettings && (allSettings.ai || allSettings.chat || allSettings.webSearch || allSettings.home || allSettings.general || allSettings.privateAssistant || allSettings.travelCopilot || allSettings.paperCopilot || allSettings.profile || allSettings.chatUi || allSettings.statistics)) {
+    const ebookStore = useEbookStore()
+    if (allSettings && (allSettings.ai || allSettings.chat || allSettings.webSearch || allSettings.home || allSettings.general || allSettings.privateAssistant || allSettings.travelCopilot || allSettings.paperCopilot || allSettings.profile || allSettings.chatUi || allSettings.statistics || allSettings.ebookTts)) {
       // Backend has settings → apply them
+      setSyncAction('正在同步 AI 提供商与模型配置（含 API 密钥加密）…')
       await aiStore.syncFromServer(allSettings)
+      setSyncAction('正在同步聊天界面与标题生成模型配置…')
       await chatSettingsStore.syncFromServer(allSettings)
+      setSyncAction('正在同步网络搜索提供商与模型配置…')
       await webSearchStore.syncFromServer(allSettings)
+      setSyncAction('正在同步主页快捷入口与海报配置…')
       await homeStore.syncFromServer(allSettings)
+      setSyncAction('正在同步私人助手的默认模型与参数配置…')
       await privateAssistantSettings.syncFromServer(allSettings)
+      setSyncAction('正在同步旅行助手的默认模型与开关状态…')
       await travelCopilotStore.syncFromServer(allSettings)
+      setSyncAction('正在同步论文助手的默认模型与开关状态…')
       await paperCopilotStore.syncFromServer(allSettings)
+      setSyncAction('正在同步统计数据与货币单位设置…')
       await statisticsStore.syncFromServer(allSettings)
       if (allSettings.general) {
+        setSyncAction('正在同步通用设置（界面语言 / 货币单位 / 回收站保留天数）…')
         applyGeneralSettings(allSettings.general as GeneralSettings)
       }
       if (allSettings.profile) {
+        setSyncAction('正在同步用户个人资料（头像）…')
         const avatar = (allSettings.profile as { avatar?: unknown }).avatar
         if (typeof avatar === 'string') localStorage.setItem('muse-user-avatar', avatar)
         else if (avatar === null) localStorage.removeItem('muse-user-avatar')
       }
       if (allSettings.chatUi && typeof (allSettings.chatUi as { variantLayout?: unknown }).variantLayout === 'object') {
+        setSyncAction('正在同步聊天变体布局设置（标签页 / 横向）…')
         localStorage.setItem('muse-variant-layout', JSON.stringify((allSettings.chatUi as { variantLayout: unknown }).variantLayout))
       }
+      // Sync ebook TTS settings independently
+      setSyncAction('正在同步电子书朗读设置（TTS 提供商 / 音色 / 语速 / 模型）…')
+      await ebookStore.syncTtsSettingsFromServer()
     } else if (allSettings) {
       // Backend returned {} (first time) → push all local settings to backend
+      setSyncAction('首次同步：正在推送 AI 提供商与模型配置（含 API 密钥加密）…')
       aiStore.pushToServer().catch(() => {})
+      setSyncAction('首次同步：正在推送聊天界面与标题生成模型配置…')
       chatSettingsStore.pushToServer().catch(() => {})
+      setSyncAction('首次同步：正在推送网络搜索提供商与模型配置…')
       webSearchStore.pushToServer().catch(() => {})
+      setSyncAction('首次同步：正在推送主页快捷入口与海报配置…')
       homeStore.pushToServer()
+      setSyncAction('首次同步：正在推送私人助手默认模型与参数配置…')
       privateAssistantSettings.pushToServer().catch(() => {})
+      setSyncAction('首次同步：正在推送旅行助手默认模型与开关状态…')
       travelCopilotStore.pushToServer().catch(() => {})
+      setSyncAction('首次同步：正在推送论文助手默认模型与开关状态…')
       paperCopilotStore.pushToServer().catch(() => {})
+      setSyncAction('首次同步：正在推送统计数据与货币单位设置…')
       statisticsStore.pushToServer().catch(() => {})
       pushGeneralSettings().catch(() => {})
       pushProfileSettings().catch(() => {})
       pushChatUiSettings().catch(() => {})
       // Push ebook library (settings, books, progress, etc.) since it uses its own endpoint
-      useEbookStore().pushToServer().catch(() => {})
+      ebookStore.pushToServer().catch(() => {})
+      ebookStore.pushTtsSettingsToServer().catch(() => {})
       // Push tool histories (first-time migration)
       pushAllToolHistories().catch(() => {})
     }
@@ -670,6 +707,7 @@ export async function syncAllFromServer(): Promise<void> {
   // 2. Sync assistants
   try {
     setSyncModule('助手')
+    setSyncAction('正在同步助手列表、系统提示词与参数配置…')
     const assistantsStore = await getAssistantsStore()
     await assistantsStore.syncFromServer()
   } catch (err) {
@@ -679,6 +717,7 @@ export async function syncAllFromServer(): Promise<void> {
 
   try {
     setSyncModule('私人助手')
+    setSyncAction('正在同步私人助手对话记录与消息历史…')
     const privateAssistantStore = await getPrivateAssistantStore()
     await privateAssistantStore.syncFromServer()
   } catch (err) {
@@ -687,23 +726,31 @@ export async function syncAllFromServer(): Promise<void> {
   }
 
   // 3+4+5+6+7. Chat list + travel notes + todo + ebook + tools (parallel)
-  setSyncModule('对话 / 旅行 / Todo / 图书 / 工具')
+  setSyncModule(null)
+  setSyncAction(null)
+  addSyncAction('正在同步对话列表、消息内容与阅读进度…')
+  addSyncAction('正在同步旅行笔记、地图标记、图片与分类标签…')
+  addSyncAction('正在同步待办事项列表、分类与完成状态…')
+  addSyncAction('正在同步书库、阅读进度、批注与收藏分类…')
+  addSyncAction('正在同步各工具的使用历史记录…')
+  addSyncAction('正在同步 RemoveBg AI 模型权重文件…')
   const todoStore = getTodoStore()
   const ebookStore = useEbookStore()
   const parallelResults = await Promise.allSettled([
     syncChatList().then(async () => {
+      removeSyncAction('正在同步对话列表、消息内容与阅读进度…')
       // After updating local index.json, tell the chat store to reload its in-memory list
       // so the UI immediately shows synced titles and conversation order.
       try {
         const { useChatStore } = await import('../stores/chat')
         useChatStore().loadList()
       } catch { /* non-critical */ }
-    }),
-    syncTravelList(),
-    todoStore.load(),
-    ebookStore.syncFromServer(),
-    syncAllToolHistories(),
-    syncRemoveBgModels(),
+    }).catch((err) => { removeSyncAction('正在同步对话列表、消息内容与阅读进度…'); throw err }),
+    syncTravelList().then(() => removeSyncAction('正在同步旅行笔记、地图标记、图片与分类标签…')).catch((err) => { removeSyncAction('正在同步旅行笔记、地图标记、图片与分类标签…'); throw err }),
+    todoStore.load().then(() => removeSyncAction('正在同步待办事项列表、分类与完成状态…')).catch((err) => { removeSyncAction('正在同步待办事项列表、分类与完成状态…'); throw err }),
+    ebookStore.syncFromServer().then(() => removeSyncAction('正在同步书库、阅读进度、批注与收藏分类…')).catch((err) => { removeSyncAction('正在同步书库、阅读进度、批注与收藏分类…'); throw err }),
+    syncAllToolHistories().then(() => removeSyncAction('正在同步各工具的使用历史记录…')).catch((err) => { removeSyncAction('正在同步各工具的使用历史记录…'); throw err }),
+    syncRemoveBgModels().then(() => removeSyncAction('正在同步 RemoveBg AI 模型权重文件…')).catch((err) => { removeSyncAction('正在同步 RemoveBg AI 模型权重文件…'); throw err }),
   ])
   for (const result of parallelResults) {
     if (result.status === 'rejected') {

@@ -208,15 +208,21 @@ export async function cacheTravelImagesForContent(content: string): Promise<void
   await Promise.all(extractTravelImageFilenames(content).map(filename => fetchAndCacheTravelImage(filename)))
 }
 
+// In-memory guard to avoid re-uploading the same image in the same app session.
+const _uploadedImages = new Set<string>()
+
 export async function uploadReferencedTravelImages(noteId: string, content: string): Promise<void> {
   if (!isBackendConfigured()) return
   const dir = await travelNotesDir()
   await Promise.all(extractTravelImageFilenames(content).map(async filename => {
+    const cacheKey = `${noteId}:${filename}`
+    if (_uploadedImages.has(cacheKey)) return
     try {
       const path = `${dir}/images/${filename}`
       if (!(await exists(path))) return
       const data = await readFile(path)
       await uploadTravelImage(filename, noteId, data, mimeFromFilename(filename))
+      _uploadedImages.add(cacheKey)
     } catch { /* ignore individual image failures */ }
   }))
 }
@@ -306,6 +312,16 @@ export async function saveTravelNote(
   await ensureDir()
   const path = await notePath(note.id)
   if (!opts.preserveUpdatedAt) note.updatedAt = new Date().toISOString()
+
+  // Read old content to detect whether image references actually changed.
+  let oldContent = ''
+  try { if (await exists(path)) oldContent = await readTextFile(path) } catch { /* ignore */ }
+  const oldImages = extractTravelImageFilenames(oldContent)
+  const newImages = extractTravelImageFilenames(note.content)
+  const imagesChanged =
+    oldImages.length !== newImages.length ||
+    !oldImages.every(img => newImages.includes(img))
+
   const tmp = `${path}.tmp`
   await writeTextFile(tmp, stringifyFrontmatter(note))
   await rename(tmp, path)
@@ -345,7 +361,10 @@ export async function saveTravelNote(
         }).catch(() => {})
       }
     })
-    uploadReferencedTravelImages(note.id, note.content).catch(() => {})
+    // Only upload images when the image references actually changed.
+    if (imagesChanged) {
+      uploadReferencedTravelImages(note.id, note.content).catch(() => {})
+    }
   }
 }
 

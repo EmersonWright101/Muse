@@ -36,11 +36,19 @@ const syncIconTitle = computed(() => {
 
 const showStatusText = ref(false)
 const statusText = computed(() => {
-  if (syncStatus.state === 'syncing' && syncStatus.currentModule) {
-    return `正在同步：${syncStatus.currentModule}`
+  if (syncStatus.state === 'syncing') {
+    if (syncStatus.currentAction) {
+      return syncStatus.currentAction
+    }
+    if (syncStatus.currentModule) {
+      return `正在同步：${syncStatus.currentModule}`
+    }
+    return '正在同步…'
   }
   if (syncStatus.state === 'done') return '同步完成'
-  if (syncStatus.state === 'error') return '同步失败'
+  if (syncStatus.state === 'error') {
+    return `同步失败：${syncStatus.lastError ?? '未知错误'}`
+  }
   return ''
 })
 
@@ -58,10 +66,13 @@ watch(() => syncStatus.state, (state) => {
   if (state === 'syncing') {
     showStatusText.value = true
     if (_hideTimer) { clearTimeout(_hideTimer); _hideTimer = null }
-  } else if (state === 'done' || state === 'error') {
+  } else if (state === 'done') {
     showStatusText.value = true
     if (_hideTimer) clearTimeout(_hideTimer)
     _hideTimer = setTimeout(() => { showStatusText.value = false }, 3000)
+  } else if (state === 'error') {
+    showStatusText.value = true
+    if (_hideTimer) { clearTimeout(_hideTimer); _hideTimer = null }
   } else if (state === 'idle') {
     showStatusText.value = false
     if (_hideTimer) { clearTimeout(_hideTimer); _hideTimer = null }

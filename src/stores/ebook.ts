@@ -549,7 +549,28 @@ export const useEbookStore = defineStore('ebook', () => {
   function updateTtsSettings(patch: Partial<TtsSettings>) {
     ttsSettings.value = { ...ttsSettings.value, ...patch }
     save(LS_TTS_SETTINGS, ttsSettings.value)
-    pushToServer().catch(() => {})
+    pushTtsSettingsToServer().catch(() => {})
+  }
+
+  // ─── TTS settings standalone server sync ──────────────────────────────────────
+
+  async function pushTtsSettingsToServer(): Promise<void> {
+    if (!isBackendConfigured()) return
+    await apiPut('/api/settings/ebookTts', { value: ttsSettings.value }).catch(() => {})
+  }
+
+  async function syncTtsSettingsFromServer(): Promise<void> {
+    if (!isBackendConfigured()) return
+    try {
+      const remote = await apiGet<{ value: TtsSettings }>('/api/settings/ebookTts')
+      if (remote?.value) {
+        ttsSettings.value = { ...DEFAULT_TTS_SETTINGS, ...remote.value }
+        save(LS_TTS_SETTINGS, ttsSettings.value)
+      } else if (remote) {
+        // Backend has no TTS settings yet → push local
+        pushTtsSettingsToServer().catch(() => {})
+      }
+    } catch { /* ignore */ }
   }
 
   // ─── TTS generation job state ─────────────────────────────────────────────
@@ -956,6 +977,12 @@ export const useEbookStore = defineStore('ebook', () => {
         ttsSettings.value = { ...DEFAULT_TTS_SETTINGS, ...r.ttsSettings }
         save(LS_TTS_SETTINGS, ttsSettings.value)
       }
+      // Also try legacy snake_case fallback
+      const legacyTts = (r as unknown as Record<string, unknown>)['tts_settings'] as Partial<TtsSettings> | undefined
+      if (legacyTts) {
+        ttsSettings.value = { ...DEFAULT_TTS_SETTINGS, ...legacyTts }
+        save(LS_TTS_SETTINGS, ttsSettings.value)
+      }
       if (r.settings) {
         settings.value = normalizeSettings(r.settings)
         save(LS_SETTINGS, settings.value)
@@ -1024,6 +1051,7 @@ export const useEbookStore = defineStore('ebook', () => {
     // Settings
     updateSettings,
     ttsSettings, updateTtsSettings,
+    pushTtsSettingsToServer, syncTtsSettingsFromServer,
     storageUsed,
     // TTS generation jobs
     ttsJobStates, updateTtsJob, getTtsJob, clearAudiobook,

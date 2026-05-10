@@ -183,6 +183,10 @@ interface PersistedSettings {
   providers:        PersistedProvider[];
   defaultProviderId?: string;
   defaultModelId?:    string;
+  ebookDefaultProviderId?: string;
+  ebookDefaultModelId?:    string;
+  paperDefaultProviderId?: string;
+  paperDefaultModelId?:    string;
 }
 
 async function saveToStorage(
@@ -190,6 +194,10 @@ async function saveToStorage(
   providers: AIProvider[],
   defaultProviderId?: string,
   defaultModelId?:    string,
+  ebookDefaultProviderId?: string,
+  ebookDefaultModelId?:    string,
+  paperDefaultProviderId?: string,
+  paperDefaultModelId?:    string,
 ): Promise<void> {
   try {
     const persisted: PersistedProvider[] = []
@@ -216,6 +224,10 @@ async function saveToStorage(
       providers:        persisted,
       defaultProviderId,
       defaultModelId,
+      ebookDefaultProviderId,
+      ebookDefaultModelId,
+      paperDefaultProviderId,
+      paperDefaultModelId,
     } satisfies PersistedSettings))
     localStorage.setItem(LS_MODIFIED_AT_KEY, new Date().toISOString())
   } catch (e) {
@@ -231,6 +243,10 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
   const activeProviderId = ref<string>('')
   const defaultProviderId = ref<string>('')
   const defaultModelId    = ref<string>('')
+  const ebookDefaultProviderId = ref<string>('')
+  const ebookDefaultModelId    = ref<string>('')
+  const paperDefaultProviderId = ref<string>('')
+  const paperDefaultModelId    = ref<string>('')
 
   function activeProvider(): AIProvider | undefined {
     return providers.value.find(p => p.id === activeProviderId.value)
@@ -266,6 +282,18 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
   function clearDefaultModel() {
     defaultProviderId.value = ''
     defaultModelId.value    = ''
+  }
+
+  function setEbookDefaultModel(providerId: string, modelId: string) {
+    ebookDefaultProviderId.value = providerId
+    ebookDefaultModelId.value    = modelId
+    persist()
+  }
+
+  function setPaperDefaultModel(providerId: string, modelId: string) {
+    paperDefaultProviderId.value = providerId
+    paperDefaultModelId.value    = modelId
+    persist()
   }
 
   function updateProvider(id: string, patch: Partial<Pick<AIProvider, 'apiKey' | 'baseUrl' | 'enabled' | 'name' | 'type'>>) {
@@ -373,6 +401,10 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
       providers.value,
       defaultProviderId.value,
       defaultModelId.value,
+      ebookDefaultProviderId.value,
+      ebookDefaultModelId.value,
+      paperDefaultProviderId.value,
+      paperDefaultModelId.value,
     ), DEBOUNCE_MS)
   }
 
@@ -383,6 +415,10 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
       providers.value,
       defaultProviderId.value,
       defaultModelId.value,
+      ebookDefaultProviderId.value,
+      ebookDefaultModelId.value,
+      paperDefaultProviderId.value,
+      paperDefaultModelId.value,
     )
   }
 
@@ -430,6 +466,10 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
         if (saved.activeProviderId) activeProviderId.value = saved.activeProviderId
         if (saved.defaultProviderId) defaultProviderId.value = saved.defaultProviderId
         if (saved.defaultModelId)    defaultModelId.value    = saved.defaultModelId
+        if (saved.ebookDefaultProviderId) ebookDefaultProviderId.value = saved.ebookDefaultProviderId
+        if (saved.ebookDefaultModelId)    ebookDefaultModelId.value    = saved.ebookDefaultModelId
+        if (saved.paperDefaultProviderId) paperDefaultProviderId.value = saved.paperDefaultProviderId
+        if (saved.paperDefaultModelId)    paperDefaultModelId.value    = saved.paperDefaultModelId
       }
     } catch { /* ignore corrupt data */ }
     _initDone = true
@@ -522,6 +562,10 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     if (s.activeProviderId)  activeProviderId.value  = s.activeProviderId
     if (s.defaultProviderId) defaultProviderId.value = s.defaultProviderId
     if (s.defaultModelId)    defaultModelId.value    = s.defaultModelId
+    if (s.ebookDefaultProviderId) ebookDefaultProviderId.value = s.ebookDefaultProviderId
+    if (s.ebookDefaultModelId)    ebookDefaultModelId.value    = s.ebookDefaultModelId
+    if (s.paperDefaultProviderId) paperDefaultProviderId.value = s.paperDefaultProviderId
+    if (s.paperDefaultModelId)    paperDefaultModelId.value    = s.paperDefaultModelId
 
     await flush()
   }
@@ -533,11 +577,17 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     activeModelId,
     defaultProviderId,
     defaultModelId,
+    ebookDefaultProviderId,
+    ebookDefaultModelId,
+    paperDefaultProviderId,
+    paperDefaultModelId,
     configuredProviders,
     setActiveProvider,
     setModelForProvider,
     setDefaultModel,
     clearDefaultModel,
+    setEbookDefaultModel,
+    setPaperDefaultModel,
     updateProvider,
     importProvider,
     addCustomModel,

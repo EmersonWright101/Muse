@@ -12,6 +12,11 @@ export interface CopilotUsage {
   costUsd?:      number
 }
 
+export interface CopilotStreamHandler {
+  onToken: (token: string) => void
+  onMediaOutput?: (mimeType: string, data: string, isUrl?: boolean) => void
+}
+
 export async function streamCopilotCompletion(
   provider: AIProvider,
   modelId: string,
@@ -19,13 +24,13 @@ export async function streamCopilotCompletion(
   systemPrompt: string,
   maxTokens: number,
   signal: AbortSignal,
-  onToken: (token: string) => void,
+  handler: CopilotStreamHandler,
 ): Promise<CopilotUsage> {
   switch (provider.type) {
-    case 'anthropic': return streamAnthropic(provider, modelId, prompt, systemPrompt, maxTokens, signal, onToken)
-    case 'google':    return streamGoogle(provider, modelId, prompt, systemPrompt, maxTokens, signal, onToken)
-    case 'ollama':    return streamOllama(provider, modelId, prompt, systemPrompt, maxTokens, signal, onToken)
-    default:          return streamOpenAI(provider, modelId, prompt, systemPrompt, maxTokens, signal, onToken)
+    case 'anthropic': return streamAnthropic(provider, modelId, prompt, systemPrompt, maxTokens, signal, handler)
+    case 'google':    return streamGoogle(provider, modelId, prompt, systemPrompt, maxTokens, signal, handler)
+    case 'ollama':    return streamOllama(provider, modelId, prompt, systemPrompt, maxTokens, signal, handler)
+    default:          return streamOpenAI(provider, modelId, prompt, systemPrompt, maxTokens, signal, handler)
   }
 }
 
@@ -37,6 +42,7 @@ async function readSSE(
   extractToken: (parsed: unknown) => string | undefined,
   onToken: (token: string) => void,
   onUsage?: (parsed: unknown) => void,
+  onMediaOutput?: (mimeType: string, data: string, isUrl?: boolean) => void,
 ): Promise<void> {
   const reader  = resp.body!.getReader()
   const decoder = new TextDecoder()
@@ -58,6 +64,50 @@ async function readSSE(
         const token = extractToken(parsed)
         if (token) onToken(token)
         if (onUsage) onUsage(parsed)
+        // Handle inline media outputs from stream (data URLs, images, audio)
+        if (onMediaOutput) {
+          const rawContent = (parsed as { choices?: { delta?: { content?: unknown } }[] })?.choices?.[0]?.delta?.content
+          if (typeof rawContent === 'string') {
+            if (rawContent.startsWith('data:image/') || rawContent.startsWith('data:video/') || rawContent.startsWith('data:audio/')) {
+              const comma = rawContent.indexOf(',')
+              if (comma > 0) onMediaOutput(rawContent.slice(5, comma).replace(';base64', ''), rawContent.slice(comma + 1))
+            }
+          } else if (Array.isArray(rawContent)) {
+            for (const blk of rawContent as Array<{ type?: string; text?: string; data?: string; audio?: string; mimeType?: string; mime_type?: string; image_url?: { url?: string } }>) {
+              if (blk.type === 'audio') {
+                const audioData = blk.data ?? blk.audio
+                if (audioData) onMediaOutput(blk.mimeType ?? blk.mime_type ?? 'audio/wav', audioData)
+              } else if (blk.image_url?.url) {
+                if (blk.image_url.url.startsWith('data:')) {
+                  const comma = blk.image_url.url.indexOf(',')
+                  if (comma > 0) onMediaOutput(blk.image_url.url.slice(5, comma).replace(';base64', ''), blk.image_url.url.slice(comma + 1))
+                } else {
+                  onMediaOutput('image/png', blk.image_url.url, true)
+                }
+              }
+            }
+          }
+          // OpenRouter image generation in delta.images
+          const deltaImages = (parsed as { choices?: { delta?: { images?: Array<{ image_url?: { url?: string } }> } }[] })?.choices?.[0]?.delta?.images
+          if (deltaImages) {
+            for (const img of deltaImages) {
+              if (img.image_url?.url) {
+                if (img.image_url.url.startsWith('data:')) {
+                  const comma = img.image_url.url.indexOf(',')
+                  if (comma > 0) onMediaOutput(img.image_url.url.slice(5, comma).replace(';base64', ''), img.image_url.url.slice(comma + 1))
+                } else {
+                  onMediaOutput('image/png', img.image_url.url, true)
+                }
+              }
+            }
+          }
+          // OpenAI native audio: delta.audio as incremental chunks
+          const deltaAudio = (parsed as { choices?: { delta?: { audio?: { data?: string; wav?: string; base64?: string } | string } }[] })?.choices?.[0]?.delta?.audio
+          if (deltaAudio) {
+            const chunk = typeof deltaAudio === 'string' ? deltaAudio : (deltaAudio.data ?? deltaAudio.wav ?? deltaAudio.base64 ?? '')
+            if (chunk && onMediaOutput) onMediaOutput('audio/wav', chunk)
+          }
+        }
       } catch { /* skip malformed lines */ }
     }
   }
@@ -72,7 +122,7 @@ async function streamOpenAI(
   systemPrompt: string,
   maxTokens: number,
   signal: AbortSignal,
-  onToken: (token: string) => void,
+  handler: CopilotStreamHandler,
 ): Promise<CopilotUsage> {
   const usage: CopilotUsage = {}
   const resp = await tauriFetch(`${provider.baseUrl}/chat/completions`, {
@@ -95,7 +145,7 @@ async function streamOpenAI(
   await readSSE(
     resp, signal,
     (d) => (d as { choices?: { delta?: { content?: string } }[] })?.choices?.[0]?.delta?.content,
-    onToken,
+    handler.onToken,
     (d) => {
       const u = (d as { usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number; total_cost?: number } }).usage
       if (!u) return
@@ -104,6 +154,7 @@ async function streamOpenAI(
       if (u.cost              != null) usage.costUsd       = u.cost
       if (u.total_cost        != null) usage.costUsd       = u.total_cost
     },
+    handler.onMediaOutput,
   )
   return usage
 }
@@ -117,7 +168,7 @@ async function streamAnthropic(
   systemPrompt: string,
   maxTokens: number,
   signal: AbortSignal,
-  onToken: (token: string) => void,
+  handler: CopilotStreamHandler,
 ): Promise<CopilotUsage> {
   const usage: CopilotUsage = {}
   const resp = await tauriFetch(`${provider.baseUrl}/v1/messages`, {
@@ -144,7 +195,7 @@ async function streamAnthropic(
       if (ev.usage.output_tokens != null) usage.outputTokens = (usage.outputTokens ?? 0) + ev.usage.output_tokens
     }
     return ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' ? ev.delta.text : undefined
-  }, onToken)
+  }, handler.onToken)
   return usage
 }
 
@@ -157,7 +208,7 @@ async function streamGoogle(
   systemPrompt: string,
   maxTokens: number,
   signal: AbortSignal,
-  onToken: (token: string) => void,
+  handler: CopilotStreamHandler,
 ): Promise<CopilotUsage> {
   const usage: CopilotUsage = {}
   const resp = await tauriFetch(
@@ -175,13 +226,22 @@ async function streamGoogle(
   )
   if (!resp.ok) throw new Error(`Google API error: ${resp.status} ${resp.statusText}`)
   await readSSE(resp, signal, (d) => {
-    const chunk = d as { candidates?: { content?: { parts?: { text?: string }[] } }[]; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number } }
+    const chunk = d as { candidates?: { content?: { parts?: { text?: string; inlineData?: { mimeType: string; data: string } }[] } }[]; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number } }
     if (chunk.usageMetadata) {
       if (chunk.usageMetadata.promptTokenCount     != null) usage.inputTokens  = chunk.usageMetadata.promptTokenCount
       if (chunk.usageMetadata.candidatesTokenCount != null) usage.outputTokens = chunk.usageMetadata.candidatesTokenCount
     }
+    // Handle Gemini inlineData (images/audio/video)
+    const parts = chunk.candidates?.[0]?.content?.parts
+    if (parts && handler.onMediaOutput) {
+      for (const part of parts) {
+        if (part.inlineData?.data) {
+          handler.onMediaOutput(part.inlineData.mimeType, part.inlineData.data)
+        }
+      }
+    }
     return chunk.candidates?.[0]?.content?.parts?.[0]?.text
-  }, onToken)
+  }, handler.onToken)
   return usage
 }
 
@@ -194,7 +254,7 @@ async function streamOllama(
   systemPrompt: string,
   maxTokens: number,
   signal: AbortSignal,
-  onToken: (token: string) => void,
+  handler: CopilotStreamHandler,
 ): Promise<CopilotUsage> {
   const resp = await tauriFetch(`${provider.baseUrl}/api/chat`, {
     method:  'POST',
@@ -229,7 +289,7 @@ async function streamOllama(
       if (!line.trim()) continue
       try {
         const ev = JSON.parse(line) as { message?: { content?: string }; done?: boolean }
-        if (ev.message?.content) onToken(ev.message.content)
+        if (ev.message?.content) handler.onToken(ev.message.content)
         if (ev.done) return {}
       } catch { /* skip */ }
     }

@@ -3,23 +3,43 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ChevronDown, Check } from 'lucide-vue-next'
 import { useAiSettingsStore, type AIProvider } from '../../../stores/aiSettings'
 
-const props = defineProps<{ dropDown?: boolean; compact?: boolean }>()
+const props = defineProps<{
+  dropDown?: boolean;
+  compact?: boolean;
+  /** When set, the selector uses this providerId instead of the global active one. */
+  providerId?: string;
+  /** When set, the selector uses this modelId instead of the global active one. */
+  modelId?: string;
+  /** When set, model selection is saved to this key instead of global active. */
+  saveTo?: 'ebook' | 'paper';
+}>()
 const emit = defineEmits<{ (e: 'select', providerId: string, modelId: string): void }>()
 
 const ai    = useAiSettingsStore()
 const open  = ref(false)
 const root  = ref<HTMLElement>()
 
-const activeProvider = computed(() => ai.activeProvider())
+const activeProvider = computed(() => {
+  if (props.providerId) {
+    return ai.providers.find(p => p.id === props.providerId) ?? ai.activeProvider()
+  }
+  return ai.activeProvider()
+})
 const activeModel    = computed(() =>
-  activeProvider.value?.models.find(m => m.id === activeProvider.value?.selectedModelId)
+  activeProvider.value?.models.find(m => m.id === (props.modelId ?? activeProvider.value?.selectedModelId))
 )
 
 const configuredProviders = computed(() => ai.configuredProviders())
 
 function selectModel(providerId: string, modelId: string) {
-  ai.setActiveProvider(providerId)
-  ai.setModelForProvider(providerId, modelId)
+  if (props.saveTo === 'ebook') {
+    ai.setEbookDefaultModel(providerId, modelId)
+  } else if (props.saveTo === 'paper') {
+    ai.setPaperDefaultModel(providerId, modelId)
+  } else {
+    ai.setActiveProvider(providerId)
+    ai.setModelForProvider(providerId, modelId)
+  }
   emit('select', providerId, modelId)
   open.value = false
 }

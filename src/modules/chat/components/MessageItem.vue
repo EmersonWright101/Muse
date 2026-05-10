@@ -534,7 +534,10 @@ async function onMarkdownBodyClick(e: MouseEvent) {
 }
 
 async function downloadImage(src: string, filename = 'muse-image.png') {
-  // Convert src to Uint8Array
+  await downloadMedia(src, filename, [{ name: 'Image', extensions: ['png', 'jpg', 'webp'] }])
+}
+
+async function downloadMedia(src: string, filename: string, filters: { name: string; extensions: string[] }[]) {
   let bytes: Uint8Array
   if (src.startsWith('data:')) {
     const b64 = src.split(',')[1]
@@ -550,16 +553,12 @@ async function downloadImage(src: string, filename = 'muse-image.png') {
     const { save } = await import('@tauri-apps/plugin-dialog')
     const { writeFile } = await import('@tauri-apps/plugin-fs')
 
-    const savePath = await save({
-      defaultPath: filename,
-      filters: [{ name: 'Image', extensions: ['png', 'jpg', 'webp'] }],
-    })
+    const savePath = await save({ defaultPath: filename, filters })
     if (!savePath) return  // user cancelled
 
     await writeFile(savePath, bytes)
     showSaveToast('已保存')
   } catch {
-    // Fallback: data-URL download (works for most cases)
     const a = document.createElement('a')
     a.href = src.startsWith('data:') ? src : URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer]))
     a.download = filename
@@ -822,14 +821,22 @@ function resultDomain(url: string): string {
               <Download :size="15" />
             </button>
           </div>
-          <video
-            v-else-if="out.mimeType.startsWith('video/')"
-            :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
-            class="media-video"
-            controls
-            preload="auto"
-            @loadedmetadata="seekVideoThumbnail"
-          />
+          <div v-else-if="out.mimeType.startsWith('video/')" class="media-video-wrap">
+            <video
+              :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
+              class="media-video"
+              controls
+              preload="auto"
+              @loadedmetadata="seekVideoThumbnail"
+            />
+            <button
+              class="media-video-download-btn"
+              title="下载视频"
+              @click.stop="downloadMedia(out.url ?? `data:${out.mimeType};base64,${out.data}`, `muse-video-${idx + 1}.mp4`, [{ name: 'Video', extensions: ['mp4', 'mov', 'webm'] }])"
+            >
+              <Download :size="14" />
+            </button>
+          </div>
           <AudioPlayer
             v-else-if="out.mimeType.startsWith('audio/')"
             :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
@@ -984,20 +991,36 @@ function resultDomain(url: string): string {
                   <Download :size="15" />
                 </button>
               </div>
-              <video
-                v-else-if="out.mimeType.startsWith('video/')"
-                :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
-                class="media-video"
-                controls
-                preload="metadata"
-              />
-              <audio
-                v-else-if="out.mimeType.startsWith('audio/')"
-                :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
-                class="media-audio"
-                controls
-                preload="metadata"
-              />
+              <div v-else-if="out.mimeType.startsWith('video/')" class="media-video-wrap">
+                <video
+                  :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
+                  class="media-video"
+                  controls
+                  preload="metadata"
+                />
+                <button
+                  class="media-video-download-btn"
+                  title="下载视频"
+                  @click.stop="downloadMedia(out.url ?? `data:${out.mimeType};base64,${out.data}`, `muse-video-${oidx + 1}.mp4`, [{ name: 'Video', extensions: ['mp4', 'mov', 'webm'] }])"
+                >
+                  <Download :size="14" />
+                </button>
+              </div>
+              <div v-else-if="out.mimeType.startsWith('audio/')" class="media-audio-wrap">
+                <audio
+                  :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
+                  class="media-audio"
+                  controls
+                  preload="metadata"
+                />
+                <button
+                  class="media-audio-download-btn"
+                  title="下载音频"
+                  @click.stop="downloadMedia(out.url ?? `data:${out.mimeType};base64,${out.data}`, `muse-audio-${oidx + 1}.mp3`, [{ name: 'Audio', extensions: ['mp3', 'wav', 'm4a', 'ogg'] }])"
+                >
+                  <Download :size="14" />
+                </button>
+              </div>
             </template>
           </div>
 
@@ -1170,7 +1193,7 @@ function resultDomain(url: string): string {
   background: #f0f0f5;
   color: #1c1c1e;
   border-radius: 16px 4px 16px 16px;
-  max-width: 100%;
+  max-width: 80%;
   border: 1px solid rgba(0, 0, 0, 0.06);
 }
 
@@ -1987,6 +2010,86 @@ details[open] .compare-reasoning-summary::before { content: '▼ '; }
   border-radius: 12px;
   background: #000;
   outline: none;
+}
+
+.media-video-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 520px;
+  width: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.media-video-wrap .media-video {
+  width: 100%;
+  display: block;
+  border-radius: 12px;
+}
+.media-video-download-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s, background 0.15s;
+  z-index: 2;
+}
+.media-video-wrap:hover .media-video-download-btn {
+  opacity: 1;
+}
+.media-video-download-btn:hover {
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+}
+
+.media-audio-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.media-audio {
+  max-width: 320px;
+  width: 100%;
+  border-radius: 8px;
+}
+.media-audio-download-btn {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: none;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s, background 0.15s;
+  z-index: 2;
+}
+.media-audio-wrap:hover .media-audio-download-btn {
+  opacity: 1;
+}
+.media-audio-download-btn:hover {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
 }
 
 

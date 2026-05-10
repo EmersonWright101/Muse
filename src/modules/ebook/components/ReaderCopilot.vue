@@ -3,14 +3,15 @@ import { ref, computed, nextTick, watch, onMounted, onUnmounted, reactive } from
 import {
   Send, Square, X, Eraser, SquarePen, Paperclip, Globe, Brain,
   FileText, Check, Plus, Eye, Copy, RefreshCw, History, Trash2, AtSign, Pencil,
-  Columns2, Rows3,
+  Columns2, Rows3, Download,
 } from 'lucide-vue-next'
+import AudioPlayer from '../../chat/components/AudioPlayer.vue'
 import copilotIcon from '../../../assets/icons/copilot.svg'
 import { useAiSettingsStore, calculateModelCost } from '../../../stores/aiSettings'
 import { recordEbookCopilotUsage } from '../../../stores/ebook'
 import { useWebSearchStore } from '../../../stores/webSearch'
 import { useEbookStore, type CopilotSession } from '../../../stores/ebook'
-import { streamCopilotCompletion } from '../../../composables/useCopilotStream'
+import { streamCopilotCompletion, type CopilotStreamHandler } from '../../../composables/useCopilotStream'
 import { performSearch, formatSearchResultsForContext } from '../../../services/webSearch'
 import { processPdfFile } from '../../../utils/pdf'
 import ModelSelector from '../../chat/components/ModelSelector.vue'
@@ -34,6 +35,7 @@ interface ChatVariant {
   model?: string
   providerId?: string
   error?: boolean
+  mediaOutputs?: Array<{ mimeType: string; data?: string; url?: string }>
 }
 
 interface ChatMessage {
@@ -53,6 +55,7 @@ interface ChatMessage {
   webSearchCount?: number
   variants?: ChatVariant[]
   activeVariantIdx?: number
+  mediaOutputs?: Array<{ mimeType: string; data?: string; url?: string }>
 }
 
 const aiStore = useAiSettingsStore()
@@ -98,8 +101,16 @@ let abortCtrl: AbortController | null = null
 let abortCtrl2: AbortController | null = null
 let _compositionEndedAt = 0
 
-const activeProvider = computed(() => aiStore.activeProvider())
-const activeModelId = computed(() => aiStore.activeModelId())
+// Use ebook-specific default model (falls back to global active model if not set)
+const activeProvider = computed(() => {
+  const pid = aiStore.ebookDefaultProviderId || aiStore.activeProviderId
+  return aiStore.providers.find(p => p.id === pid) ?? aiStore.activeProvider()
+})
+const activeModelId = computed(() => {
+  const pid = aiStore.ebookDefaultProviderId || aiStore.activeProviderId
+  const p = aiStore.providers.find(p => p.id === pid)
+  return aiStore.ebookDefaultModelId || p?.selectedModelId || aiStore.activeModelId()
+})
 const activeProviderType = computed(() => activeProvider.value?.type)
 const configuredProviders = computed(() => aiStore.configuredProviders())
 const hasWebSearch = computed(() => wsStore.hasApiKey(wsStore.activeProviderId))
@@ -191,8 +202,9 @@ function saveCurrentSession() {
       usage: m.usage,
       error: m.error,
       webSearchCount: m.webSearchCount,
+      mediaOutputs: m.mediaOutputs?.length ? m.mediaOutputs : undefined,
       variants: m.variants?.length
-        ? m.variants.map(v => ({ id: v.id, content: v.content, model: v.model, providerId: v.providerId, error: v.error }))
+        ? m.variants.map(v => ({ id: v.id, content: v.content, model: v.model, providerId: v.providerId, error: v.error, mediaOutputs: v.mediaOutputs?.length ? v.mediaOutputs : undefined }))
         : undefined,
     })),
   })
@@ -327,6 +339,17 @@ async function runStream(target: ChatMessage | ChatVariant, providerId: string, 
   if (!provider) return
   const startedAt = Date.now()
   let content = ''
+  const handler: CopilotStreamHandler = {
+    onToken(token) {
+      content += token
+      target.content = content
+      scrollToBottom()
+    },
+    onMediaOutput(mimeType, data, isUrl) {
+      if (!target.mediaOutputs) target.mediaOutputs = []
+      target.mediaOutputs.push(isUrl ? { mimeType, url: data } : { mimeType, data })
+    },
+  }
   const usage = await streamCopilotCompletion(
     provider,
     modelId,
@@ -334,11 +357,7 @@ async function runStream(target: ChatMessage | ChatVariant, providerId: string, 
     systemPrompt,
     4096,
     signal,
-    (token) => {
-      content += token
-      target.content = content
-      scrollToBottom()
-    },
+    handler,
   )
   if ('usage' in target) {
     if (usage.costUsd == null) {
@@ -432,6 +451,53 @@ const streamingMsgId = ref<string | null>(null)
 const variantLayout = ref<'tab' | 'horizontal'>('tab')
 const msgTabIdx = reactive<Record<string, number>>({})
 
+// ─── Media lightbox ───────────────────────────────────────────────────────────
+const lightboxSrc = ref<string | null>(null)
+
+function openLightbox(mimeType: string, data: string) {
+  lightboxSrc.value = `data:${mimeType};base64,${data}`
+}
+
+function openLightboxUrl(url: string) {
+  lightboxSrc.value = url
+}
+
+async function downloadMedia(src: string, filename: string, filters: { name: string; extensions: string[] }[]) {
+  let bytes: Uint8Array
+  if (src.startsWith('data:')) {
+    const b64 = src.split(',')[1]
+    const bin = atob(b64)
+    bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  } else {
+    const buf = await fetch(src).then(r => r.arrayBuffer())
+    bytes = new Uint8Array(buf)
+  }
+  try {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const { writeFile } = await import('@tauri-apps/plugin-fs')
+    const savePath = await save({ defaultPath: filename, filters })
+    if (!savePath) return
+    await writeFile(savePath, bytes)
+    showToast('已保存')
+  } catch {
+    const a = document.createElement('a')
+    a.href = src.startsWith('data:') ? src : URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer]))
+    a.download = filename
+    a.click()
+    showToast('已保存到下载文件夹')
+  }
+}
+
+function showToast(msg: string) {
+  const el = document.createElement('div')
+  el.textContent = msg
+  el.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.75);color:#fff;padding:6px 14px;border-radius:8px;font-size:12px;z-index:9999;pointer-events:none;transition:opacity 0.3s;'
+  document.body.appendChild(el)
+  setTimeout(() => { el.style.opacity = '0' }, 2000)
+  setTimeout(() => { el.remove() }, 2300)
+}
+
 function deleteMessage(msgId: string) {
   const idx = messages.value.findIndex(m => m.id === msgId)
   if (idx === -1) return
@@ -469,6 +535,8 @@ async function regenerate(msg: ChatMessage) {
   msg.content = ''
   msg.usage = undefined
   msg.error = false
+  msg.providerId = provider.id
+  msg.model = modelId
 
   const prompt = buildPrompt(userMsg.content, userMsg.attachments ?? [])
   const systemPrompt = buildSystemPrompt()
@@ -796,7 +864,14 @@ function getSessionPreview(s: CopilotSession): string {
         </Transition>
       </div>
 
-      <ModelSelector :compact="!!secondProviderId" drop-down class="cp-model-sel" />
+      <ModelSelector
+        :compact="!!secondProviderId"
+        drop-down
+        class="cp-model-sel"
+        :provider-id="aiStore.ebookDefaultProviderId || aiStore.activeProviderId"
+        :model-id="aiStore.ebookDefaultModelId || aiStore.activeModelId()"
+        save-to="ebook"
+      />
     </div>
 
     <div ref="messagesEl" class="copilot-messages">
@@ -888,6 +963,37 @@ function getSessionPreview(s: CopilotSession): string {
                   :content="getDisplay(msg).content"
                   :streaming="streamingMsgId === msg.id"
                 />
+                <!-- Media outputs -->
+                <div v-if="getDisplay(msg).mediaOutputs?.length" class="media-outputs">
+                  <template v-for="(out, idx) in getDisplay(msg).mediaOutputs" :key="idx">
+                    <div v-if="out.mimeType.startsWith('image/')" class="media-img-wrap">
+                      <img
+                        :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
+                        class="media-img"
+                        :alt="`生成图片 ${idx + 1}`"
+                        @click="out.url ? openLightboxUrl(out.url) : openLightbox(out.mimeType, out.data!)"
+                      />
+                      <button class="media-download-btn" title="下载原图" @click.stop="downloadMedia(out.url ?? `data:${out.mimeType};base64,${out.data}`, `muse-image-${idx + 1}.png`, [{ name: 'Image', extensions: ['png', 'jpg', 'webp'] }])">
+                        <Download :size="14" />
+                      </button>
+                    </div>
+                    <div v-else-if="out.mimeType.startsWith('video/')" class="media-video-wrap">
+                      <video
+                        :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
+                        class="media-video"
+                        controls
+                        preload="auto"
+                      />
+                      <button class="media-video-download-btn" title="下载视频" @click.stop="downloadMedia(out.url ?? `data:${out.mimeType};base64,${out.data}`, `muse-video-${idx + 1}.mp4`, [{ name: 'Video', extensions: ['mp4', 'mov', 'webm'] }])">
+                        <Download :size="14" />
+                      </button>
+                    </div>
+                    <AudioPlayer
+                      v-else-if="out.mimeType.startsWith('audio/')"
+                      :src="out.url ?? `data:${out.mimeType};base64,${out.data}`"
+                    />
+                  </template>
+                </div>
               </div>
             </div>
 
@@ -1106,6 +1212,14 @@ function getSessionPreview(s: CopilotSession): string {
 
   <Teleport to="body">
     <div v-if="isResizing" class="cp-resize-overlay" @mousemove="onResizeMove" @mouseup="onResizeEnd" />
+  </Teleport>
+
+  <!-- Image lightbox -->
+  <Teleport to="body">
+    <div v-if="lightboxSrc" class="lightbox-overlay" @click="lightboxSrc = null">
+      <img :src="lightboxSrc" class="lightbox-img" @click.stop />
+      <button class="lightbox-close" @click="lightboxSrc = null">✕</button>
+    </div>
   </Teleport>
 </template>
 
@@ -1671,4 +1785,137 @@ function getSessionPreview(s: CopilotSession): string {
 .cp-theme-dark .sm-model-btn { color: #e5e5ea; }
 .cp-theme-dark .sm-model-btn:hover { background: rgba(255,255,255,0.07); }
 .cp-theme-dark .input-textarea { color: #e5e5ea; }
+
+/* ─── Media outputs ─────────────────────────────────────────────────────────── */
+.media-outputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+.media-img-wrap {
+  position: relative;
+  display: inline-block;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.media-img {
+  display: block;
+  max-width: 280px;
+  max-height: 280px;
+  width: auto;
+  height: auto;
+  border-radius: 12px;
+  cursor: zoom-in;
+  object-fit: contain;
+}
+.media-download-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s, background 0.15s;
+  z-index: 2;
+}
+.media-img-wrap:hover .media-download-btn {
+  opacity: 1;
+}
+.media-download-btn:hover {
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+}
+.media-video-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 320px;
+  width: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.media-video-wrap .media-video {
+  width: 100%;
+  display: block;
+  border-radius: 12px;
+  background: #000;
+}
+.media-video-download-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s, background 0.15s;
+  z-index: 2;
+}
+.media-video-wrap:hover .media-video-download-btn {
+  opacity: 1;
+}
+.media-video-download-btn:hover {
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+}
+
+/* ─── Lightbox ──────────────────────────────────────────────────────────────── */
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.lightbox-img {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 10px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  cursor: default;
+}
+.lightbox-close {
+  position: absolute;
+  top: 20px;
+  right: 24px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s;
+}
+.lightbox-close:hover { background: rgba(255, 255, 255, 0.25); }
 </style>

@@ -593,8 +593,8 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
     if (!activePaperId.value) return null
     const aiStore = useAiSettingsStore()
     const id  = crypto.randomUUID()
-    const pid = aiStore.activeProviderId
-    const mid = aiStore.activeModelId()
+    const pid = aiStore.paperDefaultProviderId || aiStore.activeProviderId
+    const mid = aiStore.paperDefaultModelId || aiStore.activeModelId()
     const now = new Date().toISOString()
     const localConv: PaperConversation = {
       id, paperId: activePaperId.value, paperSource: activePaperSource.value,
@@ -811,8 +811,8 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
 
     const aiStore      = useAiSettingsStore()
     const chatSettings = useChatSettingsStore()
-    const pid = aiStore.activeProviderId
-    const mid = aiStore.activeModelId()
+    const pid = aiStore.paperDefaultProviderId || aiStore.activeProviderId
+    const mid = aiStore.paperDefaultModelId || aiStore.activeModelId()
     const provider = aiStore.providers.find(p => p.id === pid)
     if (!provider || (!provider.apiKey && provider.type !== 'ollama')) {
       return
@@ -1065,8 +1065,8 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
   async function _restream(conv: PaperConversation, overrideProviderId?: string, overrideModelId?: string) {
     const aiStore      = useAiSettingsStore()
     const chatSettings = useChatSettingsStore()
-    const pid = overrideProviderId ?? aiStore.activeProviderId
-    const mid = overrideModelId   ?? aiStore.activeModelId()
+    const pid = overrideProviderId ?? aiStore.paperDefaultProviderId ?? aiStore.activeProviderId
+    const mid = overrideModelId   ?? aiStore.paperDefaultModelId ?? aiStore.activeModelId()
     const provider = aiStore.providers.find(p => p.id === pid)
     if (!provider || (!provider.apiKey && provider.type !== 'ollama')) return
 

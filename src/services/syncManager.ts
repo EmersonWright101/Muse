@@ -14,7 +14,7 @@
  */
 
 import { apiGet, apiDelete, apiPost, apiPut, isBackendConfigured } from './api'
-import { setSyncState, beginSyncOp, endSyncOp, failSyncOp } from '../stores/syncStatus'
+import { setSyncState, beginSyncOp, endSyncOp, failSyncOp, setSyncModule } from '../stores/syncStatus'
 import {
   fetchConvListFromServer,
   fetchConvFromServer,
@@ -440,6 +440,7 @@ export async function syncAllFromServer(): Promise<void> {
   beginSyncOp()
   try {
     // 1. Pull all settings in one request
+    setSyncModule('设置')
     const allSettings = await apiGet<Record<string, unknown>>('/api/settings')
     const [aiStore, chatSettingsStore, webSearchStore, homeStore, privateAssistantSettings, travelCopilotStore, paperCopilotStore] = await Promise.all([
       getAiStore(),
@@ -492,6 +493,7 @@ export async function syncAllFromServer(): Promise<void> {
 
   // 2. Sync assistants
   try {
+    setSyncModule('助手')
     const assistantsStore = await getAssistantsStore()
     await assistantsStore.syncFromServer()
   } catch (err) {
@@ -500,6 +502,7 @@ export async function syncAllFromServer(): Promise<void> {
   }
 
   try {
+    setSyncModule('私人助手')
     const privateAssistantStore = await getPrivateAssistantStore()
     await privateAssistantStore.syncFromServer()
   } catch (err) {
@@ -508,6 +511,7 @@ export async function syncAllFromServer(): Promise<void> {
   }
 
   // 3+4+5+6. Chat list + travel notes + todo + ebook (parallel)
+  setSyncModule('对话 / 旅行 / Todo / 图书')
   const todoStore = await getTodoStore()
   const ebookStore = useEbookStore()
   const parallelResults = await Promise.allSettled([

@@ -110,10 +110,19 @@ export function useReaderTTS() {
         _audio.playbackRate = state.value.speed
         state.value.loading = false
         await new Promise<void>((resolve, reject) => {
+          let hasStarted = false
           _audio!.onended = () => resolve()
-          _audio!.onerror = () => reject(new Error('音频播放错误'))
+          _audio!.onerror = () => {
+            // Ignore errors caused by stop() clearing the src
+            if (!_isPlayingChunks) { resolve(); return }
+            reject(new Error('音频播放错误'))
+          }
           _audio!.onpause = () => { if (!state.value.paused) resolve() }
-          _audio!.play().catch(reject)
+          _audio!.play().then(() => { hasStarted = true }).catch((e) => {
+            // Ignore abort errors from stop() during play()
+            if (!_isPlayingChunks) { resolve(); return }
+            reject(e)
+          })
         })
       } catch (e) {
         state.value.error = String(e)
@@ -184,9 +193,17 @@ export function useReaderTTS() {
       try {
         await new Promise<void>((resolve, reject) => {
           _audio!.onended = () => resolve()
-          _audio!.onerror = () => reject(new Error('音频播放错误'))
+          _audio!.onerror = () => {
+            // Ignore errors caused by stop() clearing the src
+            if (!_isPlayingChunks) { resolve(); return }
+            reject(new Error('音频播放错误'))
+          }
           _audio!.onpause = () => { if (!state.value.paused) resolve() }
-          _audio!.play().catch(reject)
+          _audio!.play().catch((e) => {
+            // Ignore abort errors from stop() during play()
+            if (!_isPlayingChunks) { resolve(); return }
+            reject(e)
+          })
         })
       } catch (e) {
         state.value.error = String(e)

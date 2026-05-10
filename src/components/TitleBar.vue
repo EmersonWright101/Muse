@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { PanelLeft, Minus, Square, X } from 'lucide-vue-next'
+import { Minus, Square, X, Loader2, Check } from 'lucide-vue-next'
+import sidebarIcon from '../assets/icons/sidebar.svg'
+import cloudGray from '../assets/icons/cloud-gray.svg'
+import cloudBlue from '../assets/icons/cloud-blue.svg'
+import cloudGreen from '../assets/icons/cloud-green.svg'
+import cloudRed from '../assets/icons/cloud-red.svg'
+import { syncStatus } from '../stores/syncStatus'
+import { syncAllFromServer } from '../services/syncManager'
+import { computed, ref, watch } from 'vue'
 
 defineProps<{ panelVisible: boolean }>()
 const emit = defineEmits<{ toggle: [] }>()
@@ -15,6 +23,50 @@ async function onMouseDown(e: MouseEvent) {
     await win.startDragging()
   }
 }
+
+const syncIconTitle = computed(() => {
+  switch (syncStatus.state) {
+    case 'syncing': return '正在同步…'
+    case 'done':    return '同步完成'
+    case 'error':   return `同步失败：${syncStatus.lastError ?? '未知错误'}（点击重试）`
+    case 'not_configured': return '未配置后端'
+    default:        return '后端已连接'
+  }
+})
+
+const showStatusText = ref(false)
+const statusText = computed(() => {
+  if (syncStatus.state === 'syncing' && syncStatus.currentModule) {
+    return `正在同步：${syncStatus.currentModule}`
+  }
+  if (syncStatus.state === 'done') return '同步完成'
+  if (syncStatus.state === 'error') return '同步失败'
+  return ''
+})
+
+const cloudSrc = computed(() => {
+  switch (syncStatus.state) {
+    case 'syncing': return cloudBlue
+    case 'done':    return cloudGreen
+    case 'error':   return cloudRed
+    default:        return cloudGray
+  }
+})
+
+let _hideTimer: ReturnType<typeof setTimeout> | null = null
+watch(() => syncStatus.state, (state) => {
+  if (state === 'syncing') {
+    showStatusText.value = true
+    if (_hideTimer) { clearTimeout(_hideTimer); _hideTimer = null }
+  } else if (state === 'done' || state === 'error') {
+    showStatusText.value = true
+    if (_hideTimer) clearTimeout(_hideTimer)
+    _hideTimer = setTimeout(() => { showStatusText.value = false }, 3000)
+  } else if (state === 'idle') {
+    showStatusText.value = false
+    if (_hideTimer) { clearTimeout(_hideTimer); _hideTimer = null }
+  }
+}, { immediate: true })
 </script>
 
 <template>
@@ -25,8 +77,23 @@ async function onMouseDown(e: MouseEvent) {
       :class="{ active: panelVisible }"
       @click="emit('toggle')"
     >
-      <PanelLeft :size="18" />
+      <img :src="sidebarIcon" class="sidebar-toggle-icon" :class="{ active: panelVisible }" alt="" />
     </button>
+
+    <!-- Sync status -->
+    <button
+      class="titlebar-sync-btn"
+      :class="syncStatus.state"
+      :title="syncIconTitle"
+      @click="syncAllFromServer().catch(() => {})"
+    >
+      <img :src="cloudSrc" class="titlebar-cloud-icon" alt="" />
+      <Loader2 v-if="syncStatus.state === 'syncing'" :size="10" :stroke-width="3" class="ts-inner-spin" />
+      <Check v-else-if="syncStatus.state === 'done'" :size="11" :stroke-width="3.5" class="ts-inner-check" />
+    </button>
+    <transition name="fade">
+      <span v-if="showStatusText && statusText" class="titlebar-sync-text">{{ statusText }}</span>
+    </transition>
 
     <!-- Drag spacer -->
     <div class="drag-spacer" />
@@ -76,8 +143,72 @@ async function onMouseDown(e: MouseEvent) {
   transition: background 0.12s, color 0.12s;
 }
 
-.panel-toggle-btn:hover { background: rgba(0, 0, 0, 0.07); color: #1c1c1e; }
-.panel-toggle-btn.active { color: #1c1c1e; }
+.panel-toggle-btn:hover { background: rgba(0, 0, 0, 0.07); }
+
+.sidebar-toggle-icon {
+  width: 27px;
+  height: 27px;
+  opacity: 0.5;
+  transition: opacity 0.12s;
+}
+.panel-toggle-btn:hover .sidebar-toggle-icon {
+  opacity: 0.75;
+}
+.sidebar-toggle-icon.active {
+  opacity: 0.85;
+}
+
+.titlebar-cloud-icon {
+  width: 27px;
+  height: 27px;
+  transition: opacity 0.12s;
+}
+
+/* ─── Titlebar sync button ─────────────────────────────────────────────────── */
+.titlebar-sync-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: #8e8e93;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  position: relative;
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+.titlebar-sync-btn:hover { background: rgba(0, 0, 0, 0.07); }
+.titlebar-sync-btn.syncing { color: #223F79; }
+.titlebar-sync-btn.done   { color: #34c759; }
+.titlebar-sync-btn.error  { color: #ff3b30; }
+
+.ts-inner-spin {
+  position: absolute;
+  left: 10px;
+  animation: ts-spin 0.8s linear infinite;
+}
+.ts-inner-check {
+  position: absolute;
+  left: 10px;
+}
+@keyframes ts-spin {
+  to { transform: rotate(360deg); }
+}
+
+.titlebar-sync-text {
+  font-size: 11px;
+  color: #8e8e93;
+  margin-left: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.fade-enter-active, .fade-leave-active { transition: opacity 0.3s; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 
 /* ─── Windows window controls ──────────────────────────────────────────────── */
 

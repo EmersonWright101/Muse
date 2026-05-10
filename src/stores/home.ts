@@ -542,6 +542,20 @@ export const useHomeStore = defineStore('home', () => {
 
   async function maybeAutoGenerate() {
     if (!settings.value.enabled) return
+    // If backend is configured, fetch the latest lastGeneratedDate from server
+    // to avoid duplicate generation across devices.
+    if (isBackendConfigured()) {
+      try {
+        const fetched = await apiGet<Record<string, unknown>>('/api/settings')
+        const remoteLastDate = (fetched?.home as { lastGeneratedDate?: string | null } | undefined)?.lastGeneratedDate
+        if (remoteLastDate !== undefined && remoteLastDate !== null) {
+          if (!lastGeneratedDate.value || remoteLastDate > lastGeneratedDate.value) {
+            lastGeneratedDate.value = remoteLastDate
+            localStorage.setItem('muse-home-last-generated', remoteLastDate)
+          }
+        }
+      } catch { /* ignore, fall back to local date */ }
+    }
     if (!shouldGenerate(settings.value.frequency, lastGeneratedDate.value)) return
     await generatePoster()
   }

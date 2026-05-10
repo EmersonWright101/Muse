@@ -2,9 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings, Cloud, Loader2, Check, BookOpen, X } from 'lucide-vue-next'
-import { syncStatus } from '../stores/syncStatus'
-import { syncAllFromServer } from '../services/syncManager'
+import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings, BookOpen } from 'lucide-vue-next'
 import { apiPut } from '../services/api'
 import assistantIcon from '../assets/icons/AIAssistant@2x.svg'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -27,15 +25,7 @@ const navItems = computed(() => [
 const todoStore = useTodoStore()
 const todoBadgeCount = computed(() => todoStore.countByFilter('today'))
 
-const syncIconTitle = computed(() => {
-  switch (syncStatus.state) {
-    case 'syncing':        return '正在同步…'
-    case 'done':           return '同步完成'
-    case 'error':          return `同步失败：${syncStatus.lastError ?? '未知错误'}（点击重试）`
-    case 'not_configured': return '未配置后端'
-    default:               return '后端已连接'
-  }
-})
+
 
 const isActive = (path: string) => route.path.startsWith(path)
 const isHome = computed(() => route.path.startsWith('/home'))
@@ -187,22 +177,8 @@ onUnmounted(() => {
       </div>
     </nav>
 
-    <!-- Bottom: sync status + statistics + settings -->
+    <!-- Bottom: statistics + settings -->
     <div class="sidebar-bottom">
-      <div
-        class="sync-indicator"
-        :class="syncStatus.state"
-        :title="syncIconTitle"
-        @click="syncAllFromServer().catch(() => {})"
-      >
-        <div class="sync-stack">
-          <Cloud :size="23" />
-          <Loader2 v-if="syncStatus.state === 'syncing'"                    :size="12" :stroke-width="3"   class="inner-spin" />
-          <Check   v-else-if="syncStatus.state === 'done'"                  :size="13" :stroke-width="3.5" class="inner-check" />
-          <X       v-else-if="syncStatus.state === 'error'"                 :size="12" :stroke-width="3"   class="inner-check" />
-          <span    v-else-if="syncStatus.state === 'not_configured'"                                       class="inner-exclaim">!</span>
-        </div>
-      </div>
       <router-link
         to="/statistics"
         class="nav-item"
@@ -449,7 +425,7 @@ onUnmounted(() => {
 .nav-item {
   width: 44px;
   height: 44px;
-  border-radius: 10px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -482,7 +458,7 @@ onUnmounted(() => {
 .sync-indicator {
   width: 44px;
   height: 44px;
-  border-radius: 10px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -525,5 +501,26 @@ onUnmounted(() => {
 
 @keyframes inner-rotate {
   to { transform: rotate(360deg); }
+}
+
+/* ── Sync status text ── */
+.sync-status-text {
+  font-size: 10px;
+  color: #8e8e93;
+  text-align: center;
+  line-height: 1.3;
+  max-width: 64px;
+  padding: 2px 4px;
+  word-break: break-all;
+}
+
+/* fade transition */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 </style>

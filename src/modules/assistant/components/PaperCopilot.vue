@@ -484,7 +484,14 @@ onUnmounted(() => {
         </Transition>
       </div>
 
-      <ModelSelector :compact="!!copilot.secondProviderId" drop-down class="cp-model-sel" />
+      <ModelSelector
+        :compact="!!copilot.secondProviderId"
+        drop-down
+        class="cp-model-sel"
+        :provider-id="aiStore.paperDefaultProviderId || aiStore.activeProviderId"
+        :model-id="aiStore.paperDefaultModelId || aiStore.activeModelId()"
+        save-to="paper"
+      />
     </div>
 
     <!-- ── Messages ───────────────────────────────────────────────────────── -->

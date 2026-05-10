@@ -98,6 +98,7 @@ export interface CopilotVariant {
   model?: string
   providerId?: string
   error?: boolean
+  mediaOutputs?: Array<{ mimeType: string; data?: string; url?: string }>
 }
 
 export interface CopilotMessage {
@@ -115,6 +116,7 @@ export interface CopilotMessage {
   error?: boolean
   webSearchCount?: number
   variants?: CopilotVariant[]
+  mediaOutputs?: Array<{ mimeType: string; data?: string; url?: string }>
 }
 
 export interface CopilotSession {

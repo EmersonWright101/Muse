@@ -547,8 +547,9 @@ img { max-width: 100% !important; height: auto !important; }
 
   // ─── TTS text highlighting ───────────────────────────────────────────────────
 
-  /** Highlight a text segment in the current rendered content. Returns an ID for removal. */
-  function highlightTextSegment(text: string): string | null {
+  /** Highlight a text segment in the current rendered content. Returns an ID for removal.
+   *  If the highlighted text is off the current page, navigates to it automatically. */
+  async function highlightTextSegment(text: string): Promise<string | null> {
     const r = renditionRef.value
     if (!r) return null
     try {
@@ -558,37 +559,58 @@ img { max-width: 100% !important; height: auto !important; }
         const doc = c?.document as Document | undefined
         const win = doc?.defaultView as Window | undefined
         if (!doc?.body || !win) continue
-        // Normalize text for search
         const normalized = text.replace(/\s+/g, ' ').trim()
         if (!normalized) continue
-        // Use window.find to locate text
         win.getSelection()?.removeAllRanges()
-        // Case-sensitive, backward=false, wrap=false
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const found = (win as any).find(normalized, false, false, false, false, false, false)
-        if (found) {
-          const sel = win.getSelection()
-          if (sel && sel.rangeCount > 0) {
-            const range = sel.getRangeAt(0)
-            // Try surroundContents first (single element)
-            const span = doc.createElement('span')
-            span.className = 'muse-tts-chunk-highlight'
-            const id = `tts-hl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-            span.id = id
-            try {
-              range.surroundContents(span)
-              win.getSelection()?.removeAllRanges()
-              return id
-            } catch {
-              // Spans multiple elements — extract contents and wrap
-              const fragment = range.extractContents()
-              span.appendChild(fragment)
-              range.insertNode(span)
-              win.getSelection()?.removeAllRanges()
-              return id
+        if (!found) continue
+        const sel = win.getSelection()
+        if (!sel || sel.rangeCount === 0) continue
+        const range = sel.getRangeAt(0)
+
+        // Capture CFI before modifying DOM (some epubjs versions compute lazily)
+        let cfi: string | null = null
+        try {
+          cfi = c?.cfiFromRange?.(range) ?? c?.section?.cfiFromRange?.(range) ?? null
+        } catch { /* ignore */ }
+
+        // Wrap the range in a highlight span
+        const span = doc.createElement('span')
+        span.className = 'muse-tts-chunk-highlight'
+        const id = `tts-hl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        span.id = id
+        try {
+          range.surroundContents(span)
+        } catch {
+          const fragment = range.extractContents()
+          span.appendChild(fragment)
+          range.insertNode(span)
+        }
+        win.getSelection()?.removeAllRanges()
+
+        // Navigate to make the highlighted text visible if it's off-screen.
+        // In paginated mode: use CFI so epubjs switches to the correct page.
+        // In scroll mode: scrollIntoView is enough.
+        const spanEl = doc.getElementById(id)
+        if (spanEl) {
+          const rect = spanEl.getBoundingClientRect()
+          const vw = win.innerWidth  || doc.documentElement.clientWidth
+          const vh = win.innerHeight || doc.documentElement.clientHeight
+          const isVisible =
+            rect.width > 0 && rect.height > 0 &&
+            rect.top < vh && rect.bottom > 0 &&
+            rect.left < vw && rect.right > 0
+          if (!isVisible) {
+            if (cfi && !_currentSettings?.scrollMode) {
+              try { await r.display(cfi) } catch { /* ignore */ }
+            } else {
+              spanEl.scrollIntoView({ behavior: 'smooth', block: 'center' })
             }
           }
         }
+
+        return id
       }
     } catch { /* ignore */ }
     return null

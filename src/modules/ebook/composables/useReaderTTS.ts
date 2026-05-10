@@ -161,7 +161,7 @@ export function useReaderTTS() {
   async function speakFromUrls(
     urls: string[],
     callbacks?: {
-      onChunkStart?: (index: number) => void
+      onChunkStart?: (index: number) => Promise<void> | void
       onChunkEnd?: (index: number) => void
       onFinished?: () => void
     },
@@ -179,7 +179,8 @@ export function useReaderTTS() {
       _blobUrl = urls[i]
       _audio = new Audio(urls[i])
       _audio.playbackRate = state.value.speed
-      callbacks?.onChunkStart?.(i)
+      await callbacks?.onChunkStart?.(i)
+      if (!_isPlayingChunks) break
       try {
         await new Promise<void>((resolve, reject) => {
           _audio!.onended = () => resolve()

@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings, Cloud, Loader2, Check, BookOpen } from 'lucide-vue-next'
+import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings, Cloud, Loader2, Check, BookOpen, X } from 'lucide-vue-next'
 import { syncStatus } from '../stores/syncStatus'
 import { syncAllFromServer } from '../services/syncManager'
 import { apiPut } from '../services/api'
@@ -31,6 +31,7 @@ const syncIconTitle = computed(() => {
   switch (syncStatus.state) {
     case 'syncing':        return '正在同步…'
     case 'done':           return '同步完成'
+    case 'error':          return `同步失败：${syncStatus.lastError ?? '未知错误'}（点击重试）`
     case 'not_configured': return '未配置后端'
     default:               return '后端已连接'
   }
@@ -196,9 +197,10 @@ onUnmounted(() => {
       >
         <div class="sync-stack">
           <Cloud :size="23" />
-          <Loader2 v-if="syncStatus.state === 'syncing'"        :size="12" :stroke-width="3" class="inner-spin" />
-          <Check  v-else-if="syncStatus.state === 'done'"       :size="13" :stroke-width="3.5" class="inner-check" />
-          <span   v-else-if="syncStatus.state === 'not_configured'"        class="inner-exclaim">!</span>
+          <Loader2 v-if="syncStatus.state === 'syncing'"                    :size="12" :stroke-width="3"   class="inner-spin" />
+          <Check   v-else-if="syncStatus.state === 'done'"                  :size="13" :stroke-width="3.5" class="inner-check" />
+          <X       v-else-if="syncStatus.state === 'error'"                 :size="12" :stroke-width="3"   class="inner-check" />
+          <span    v-else-if="syncStatus.state === 'not_configured'"                                       class="inner-exclaim">!</span>
         </div>
       </div>
       <router-link
@@ -495,6 +497,7 @@ onUnmounted(() => {
 
 .sync-indicator.syncing        { color: #223F79; }
 .sync-indicator.done           { color: #34c759; }
+.sync-indicator.error          { color: #ff3b30; }
 .sync-indicator.not_configured { color: #ff3b30; }
 
 .sync-stack {

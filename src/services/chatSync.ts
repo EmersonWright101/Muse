@@ -12,6 +12,7 @@
  */
 
 import { apiPost, apiPut, apiGet, apiPostForm, apiGetBinary, apiDelete, isBackendConfigured } from './api'
+import { beginSyncOp, endSyncOp, failSyncOp } from '../stores/syncStatus'
 import type { Conversation, ChatMessage } from '../utils/storage'
 
 interface AttachmentUploadResult { id: string }
@@ -64,10 +65,10 @@ export async function prepareConvForServer(conv: Conversation): Promise<Conversa
         if (data) {
           const mime = (att.mimeType as string) || 'application/octet-stream'
           const id = await uploadBinary(data, (att.name as string) || (att.id as string), mime, conv.id, msg.id)
-          if (id) {
-            att.attachmentId = id
-            delete att.data
-          }
+          if (id) att.attachmentId = id
+          // Always strip inline binary — if upload failed the server copy lacks this
+          // attachment, but keeping raw data would make the payload too large to POST/PUT.
+          delete att.data
         }
       }
     }
@@ -79,10 +80,8 @@ export async function prepareConvForServer(conv: Conversation): Promise<Conversa
           const mime = (mo.mimeType as string) || 'image/png'
           const ext  = mime.split('/')[1]?.split(';')[0] ?? 'bin'
           const id = await uploadBinary(data, `${msg.id}_output.${ext}`, mime, conv.id, msg.id)
-          if (id) {
-            mo.attachmentId = id
-            delete mo.data
-          }
+          if (id) mo.attachmentId = id
+          delete mo.data
         }
       }
     }
@@ -96,10 +95,8 @@ export async function prepareConvForServer(conv: Conversation): Promise<Conversa
               const mime = (mo.mimeType as string) || 'image/png'
               const ext  = mime.split('/')[1]?.split(';')[0] ?? 'bin'
               const id = await uploadBinary(data, `${msg.id}_variant.${ext}`, mime, conv.id, msg.id)
-              if (id) {
-                mo.attachmentId = id
-                delete mo.data
-              }
+              if (id) mo.attachmentId = id
+              delete mo.data
             }
           }
         }
@@ -223,17 +220,16 @@ function conversationToServerBody(cleaned: Conversation, extra?: Record<string, 
  */
 export async function pushConvToServer(conv: Conversation): Promise<void> {
   if (!isBackendConfigured()) return
+  beginSyncOp()
   try {
     const cleaned = await prepareConvForServer(conv)
-    const body = conversationToServerBody(cleaned, { trashed_at: null, expiry_at: null })
-    await apiPost<{ id: string }>('/api/chat/conversations', body).catch(async (e: { status?: number }) => {
-      // Already exists → fallback to PUT
-      if (e?.status === 409 || e?.status === 422 || e?.status === 400) {
-        const { apiPut } = await import('./api')
-        await apiPut(`/api/chat/conversations/${cleaned.id}`, body).catch(() => {})
-      }
-    })
-  } catch { /* ignore */ }
+    // PUT is now an upsert on the backend: creates if not found, updates if found.
+    await apiPut(`/api/chat/conversations/${cleaned.id}`, conversationToServerBody(cleaned, { trashed_at: null, expiry_at: null }))
+    endSyncOp()
+  } catch (err) {
+    console.error(`[Sync] Failed to push conversation "${conv.title}" (${conv.id}):`, err)
+    failSyncOp(err)
+  }
 }
 
 /**
@@ -241,28 +237,51 @@ export async function pushConvToServer(conv: Conversation): Promise<void> {
  */
 export async function updateConvOnServer(conv: Conversation): Promise<void> {
   if (!isBackendConfigured()) return
+  beginSyncOp()
   try {
     const cleaned = await prepareConvForServer(conv)
     await apiPut(`/api/chat/conversations/${cleaned.id}`, conversationToServerBody(cleaned))
-  } catch { /* ignore */ }
+    endSyncOp()
+  } catch (err) {
+    console.error(`[Sync] Failed to update conversation "${conv.title}" (${conv.id}):`, err)
+    failSyncOp(err)
+  }
 }
 
 export async function trashConvOnServer(id: string, trashedAt: string, expiryAt: string | null = null): Promise<void> {
   if (!isBackendConfigured()) return
-  await apiPut(`/api/chat/conversations/${id}`, {
-    trashed_at: trashedAt,
-    expiry_at:  expiryAt,
-  }).catch(() => {})
+  beginSyncOp()
+  try {
+    await apiPut(`/api/chat/conversations/${id}`, { trashed_at: trashedAt, expiry_at: expiryAt })
+    endSyncOp()
+  } catch (err) {
+    console.error(`[Sync] Failed to trash conversation ${id}:`, err)
+    failSyncOp(err)
+  }
 }
 
 export async function restoreConvOnServer(id: string): Promise<void> {
   if (!isBackendConfigured()) return
-  await apiPost(`/api/chat/conversations/${id}/restore`, {}).catch(() => {})
+  beginSyncOp()
+  try {
+    await apiPost(`/api/chat/conversations/${id}/restore`, {})
+    endSyncOp()
+  } catch (err) {
+    console.error(`[Sync] Failed to restore conversation ${id}:`, err)
+    failSyncOp(err)
+  }
 }
 
 export async function deleteConvOnServer(id: string): Promise<void> {
   if (!isBackendConfigured()) return
-  await apiDelete(`/api/chat/conversations/${id}`).catch(() => {})
+  beginSyncOp()
+  try {
+    await apiDelete(`/api/chat/conversations/${id}`)
+    endSyncOp()
+  } catch (err) {
+    console.error(`[Sync] Failed to delete conversation ${id}:`, err)
+    failSyncOp(err)
+  }
 }
 
 /**

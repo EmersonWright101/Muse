@@ -302,12 +302,10 @@ async function speakCurrentChapter(startChunkIdx = 0) {
 
   isAutoTtsReading.value = true
   await tts.speakFromUrls(playUrls, {
-    onChunkStart: (i) => {
-      // Track remaining URLs so they can be revoked if playback is interrupted
+    onChunkStart: async (i) => {
       _remainingChapterUrls = playUrls.slice(i + 1)
       clearTtsHighlight()
-      if (playTexts[i]) ttsHighlightId.value = reader.highlightTextSegment(playTexts[i])
-      // Persist playback position for resume
+      if (playTexts[i]) ttsHighlightId.value = await reader.highlightTextSegment(playTexts[i])
       store.setTtsPlaybackPos(props.book.id, { spineIdx, chunkIdx: i + startChunkIdx, href })
     },
     onChunkEnd: () => clearTtsHighlight(),
@@ -390,6 +388,13 @@ const settingsPopStyle = computed(() => {
   if (!popWrapRef.value) return {}
   const rect = popWrapRef.value.getBoundingClientRect()
   return { position: 'fixed' as const, top: `${rect.bottom + 8}px`, right: `${window.innerWidth - rect.right}px`, zIndex: 400 }
+})
+
+const ttsPlayWrapRef = ref<HTMLElement>()
+const ttsPickerStyle = computed(() => {
+  if (!ttsPlayWrapRef.value) return {}
+  const rect = ttsPlayWrapRef.value.getBoundingClientRect()
+  return { position: 'fixed' as const, top: `${rect.bottom + 6}px`, right: `${window.innerWidth - rect.right}px`, zIndex: 500 }
 })
 
 
@@ -505,7 +510,7 @@ function onCtxDelete() {
 
         <div class="tts-group">
           <!-- Play/Pause button -->
-          <div class="tts-play-wrap">
+          <div class="tts-play-wrap" ref="ttsPlayWrapRef">
             <button
               class="tbtn"
               :class="{ active: tts.state.value.active }"
@@ -517,15 +522,6 @@ function onCtxDelete() {
               <Play    v-else-if="tts.state.value.active && tts.state.value.paused" :size="18" />
               <Volume2 v-else :size="18" />
             </button>
-            <!-- Play-mode picker: "from current page" or "resume from last position" -->
-            <div v-if="showTtsModePicker" class="tts-mode-picker">
-              <button class="tts-mode-item" @click="showTtsModePicker = false; speakCurrentChapter()">
-                从当前页朗读
-              </button>
-              <button v-if="hasSavedTtsPos" class="tts-mode-item" @click="resumeFromLastPosition">
-                从上次停止处继续
-              </button>
-            </div>
           </div>
           <!-- Stop button -->
           <button v-if="tts.state.value.active" class="tbtn sm" @click="stopTts()">
@@ -758,6 +754,21 @@ function onCtxDelete() {
       <div v-if="showFontPanel" class="overlay-dismiss" @click="showFontPanel = false" />
     </Teleport>
     <Teleport to="body">
+      <div
+        v-if="showTtsModePicker"
+        class="tts-mode-picker"
+        :class="themeClass"
+        :style="ttsPickerStyle"
+      >
+        <button class="tts-mode-item" @click="showTtsModePicker = false; speakCurrentChapter()">
+          从当前页朗读
+        </button>
+        <button v-if="hasSavedTtsPos" class="tts-mode-item" @click="resumeFromLastPosition">
+          从上次停止处继续
+        </button>
+      </div>
+    </Teleport>
+    <Teleport to="body">
       <div v-if="showTtsModePicker" class="overlay-dismiss" @click="showTtsModePicker = false" />
     </Teleport>
 
@@ -873,10 +884,6 @@ function onCtxDelete() {
 
 .tts-play-wrap { position: relative; }
 .tts-mode-picker {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 410;
   min-width: 168px;
   background: rgba(255,255,255,0.97);
   backdrop-filter: blur(20px) saturate(1.4);
@@ -885,7 +892,7 @@ function onCtxDelete() {
   padding: 4px;
   box-shadow: 0 8px 28px rgba(0,0,0,0.14);
 }
-.theme-dark .tts-mode-picker {
+.tts-mode-picker.theme-dark {
   background: rgba(44,44,46,0.97);
   border-color: rgba(255,255,255,0.10);
 }

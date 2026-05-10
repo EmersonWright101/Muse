@@ -89,7 +89,8 @@ function nodeToText(doc: Document): string {
   const clone = body.cloneNode(true) as HTMLElement
   clone.querySelectorAll('script,style,[aria-hidden="true"]').forEach(el => el.remove())
   const text = clone.innerText ?? clone.textContent ?? ''
-  return text.replace(/\s+/g, ' ').trim()
+  // Preserve newlines (paragraph boundaries) but collapse horizontal whitespace
+  return text.replace(/[^\S\n]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
 }
 
 async function extractChapters(
@@ -131,22 +132,36 @@ async function extractChapters(
 
 // ─── Text splitting ───────────────────────────────────────────────────────────
 
-function splitText(text: string, chunkSize: number): string[] {
-  const chunks: string[] = []
-  let remaining = text.trim()
-  while (remaining.length > 0) {
-    if (remaining.length <= chunkSize) { chunks.push(remaining); break }
-    let cutAt = -1
-    for (const sep of ['。', '！', '？', '…', '. ', '! ', '? ', '\n']) {
-      const pos = remaining.lastIndexOf(sep, chunkSize)
-      if (pos > chunkSize * 0.4) { cutAt = pos + sep.length; break }
+// Safety cap: paragraphs longer than this are split at sentence boundaries.
+const MAX_PARA_CHARS = 500
+
+function splitByParagraphs(text: string): string[] {
+  const paragraphs = text
+    .split(/\n+/)
+    .map(p => p.replace(/\s+/g, ' ').trim())
+    .filter(p => p.length > 0)
+
+  const result: string[] = []
+  for (const para of paragraphs) {
+    if (para.length <= MAX_PARA_CHARS) {
+      result.push(para)
+    } else {
+      // Oversized paragraph: cut at sentence boundaries
+      let remaining = para
+      while (remaining.length > MAX_PARA_CHARS) {
+        let cutAt = -1
+        for (const sep of ['。', '！', '？', '…', '. ', '! ', '? ']) {
+          const pos = remaining.lastIndexOf(sep, MAX_PARA_CHARS)
+          if (pos > MAX_PARA_CHARS * 0.3) { cutAt = pos + sep.length; break }
+        }
+        if (cutAt <= 0) cutAt = MAX_PARA_CHARS
+        result.push(remaining.slice(0, cutAt).trim())
+        remaining = remaining.slice(cutAt).trim()
+      }
+      if (remaining) result.push(remaining)
     }
-    if (cutAt <= 0) cutAt = chunkSize
-    const chunk = remaining.slice(0, cutAt).trim()
-    if (chunk.length > 0) chunks.push(chunk)
-    remaining = remaining.slice(cutAt).trim()
   }
-  return chunks.filter(c => c.length > 0)
+  return result.filter(c => c.length > 0)
 }
 
 // ─── TTS API call ─────────────────────────────────────────────────────────────
@@ -193,7 +208,6 @@ export function useEbookTtsGenerator() {
     const provider = aiStore.providers.find(p => p.id === ts.providerId)
     if (!provider) return
 
-    const chunkSize = ts.chunkSize ?? 30
     const ctrl: JobControl = { shouldStop: false }
     _controllers.set(bookId, ctrl)
 
@@ -218,7 +232,7 @@ export function useEbookTtsGenerator() {
       // ── Phase 2: build full chunk list + save manifests ───────────────────
       const allChunks: ChunkRef[] = []
       for (const ch of chapters) {
-        const texts = splitText(ch.text, chunkSize)
+        const texts = splitByParagraphs(ch.text)
         // Save manifest with chunk texts for highlighting during playback
         await saveManifest(bookId, ch.chapterIdx, texts).catch(() => {})
         texts.forEach((text, partIdx) => {
@@ -288,14 +302,12 @@ export function useEbookTtsGenerator() {
 
   /** Re-scan the FS to recount done chunks (e.g. after a partial run). */
   async function rescanProgress(bookId: string): Promise<void> {
-    const ts        = ebookStore.ttsSettings
-    const chunkSize = ts.chunkSize ?? 30
     const chapters  = await extractChapters(bookId)
     const doneFiles = await listDoneFiles(bookId)
     let total = 0
     let done  = 0
     for (const ch of chapters) {
-      splitText(ch.text, chunkSize).forEach((_, pi) => {
+      splitByParagraphs(ch.text).forEach((_, pi) => {
         total++
         if (doneFiles.has(`${ch.chapterIdx}_${pi}.wav`)) done++
       })

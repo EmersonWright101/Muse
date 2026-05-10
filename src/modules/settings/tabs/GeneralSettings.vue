@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { FolderOpen, AlertTriangle, Check, X, Eye, EyeOff, Wifi, WifiOff } from 'lucide-vue-next'
+import { FolderOpen, AlertTriangle, Check, X, Eye, EyeOff, Wifi, WifiOff, HardDrive } from 'lucide-vue-next'
 import { usePapersStore } from '../../../stores/papers'
 import { open } from '@tauri-apps/plugin-dialog'
-import { readDir, remove } from '@tauri-apps/plugin-fs'
+import { readDir, remove, stat } from '@tauri-apps/plugin-fs'
 import { getDataRoot, setDataRoot, resolveDataRoot, migrateData } from '../../../utils/path'
 import { getTrashRetentionDays, setTrashRetentionDays } from '../../../utils/travelStorage'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
@@ -142,10 +142,43 @@ const showDeleteOldConfirm = ref(false)
 const pendingDeletePath = ref('')
 const oldDirEntries = ref<Array<{ name: string; isDirectory: boolean }>>([])
 
+// Directory size
+const dirSizeBytes  = shallowRef<number | null>(null)
+const dirSizeLoading = ref(false)
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024)              return `${bytes} B`
+  if (bytes < 1024 * 1024)      return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 ** 3)        return `${(bytes / 1024 ** 2).toFixed(1)} MB`
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`
+}
+
+const formattedDirSize = computed(() =>
+  dirSizeBytes.value !== null ? formatBytes(dirSizeBytes.value) : '—'
+)
+
+async function calcDirSize(dirPath: string): Promise<number> {
+  try {
+    const entries = await readDir(dirPath)
+    const sizes = await Promise.all(entries.map(async (entry): Promise<number> => {
+      const child = `${dirPath}/${entry.name}`
+      if (entry.isFile) {
+        try { return (await stat(child)).size ?? 0 } catch { return 0 }
+      }
+      if (entry.isDirectory) return calcDirSize(child)
+      return 0
+    }))
+    return sizes.reduce((a, b) => a + b, 0)
+  } catch { return 0 }
+}
+
 async function refreshPath() {
   const root = await resolveDataRoot()
   currentPath.value = root
   isCustom.value = !!getDataRoot()
+  dirSizeLoading.value = true
+  dirSizeBytes.value   = null
+  calcDirSize(root).then(n => { dirSizeBytes.value = n }).finally(() => { dirSizeLoading.value = false })
 }
 
 onMounted(refreshPath)
@@ -232,6 +265,12 @@ async function confirmDeleteOld() {
             <FolderOpen :size="14" />
             打开文件夹
           </button>
+          <div class="storage-badge" :class="{ loading: dirSizeLoading }">
+            <HardDrive :size="12" class="storage-icon" />
+            <span class="storage-label">本地占用</span>
+            <span v-if="dirSizeLoading" class="storage-size">计算中…</span>
+            <span v-else class="storage-size">{{ formattedDirSize }}</span>
+          </div>
         </div>
         <div v-if="migrateError" class="migrate-error">{{ migrateError }}</div>
       </div>
@@ -610,7 +649,38 @@ async function confirmDeleteOld() {
 
 .path-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.storage-badge {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px 5px 9px;
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-radius: 20px;
+  white-space: nowrap;
+  transition: opacity 0.2s;
+}
+
+.storage-badge.loading { opacity: 0.55; }
+
+.storage-icon { color: #8e8e93; flex-shrink: 0; }
+
+.storage-label {
+  font-size: 11px;
+  color: #aeaeb2;
+  font-weight: 400;
+}
+
+.storage-size {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6e6e73;
+  font-variant-numeric: tabular-nums;
 }
 
 .path-btn {

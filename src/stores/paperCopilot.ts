@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, reactive, computed } from 'vue'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+import { writeTextFile, readTextFile, exists, mkdir, remove } from '@tauri-apps/plugin-fs'
+import { appDataDir } from '@tauri-apps/api/path'
 import { useAiSettingsStore, calculateModelCost } from './aiSettings'
 import { useChatSettingsStore } from './chatSettings'
 import { useWebSearchStore } from './webSearch'
@@ -63,6 +65,68 @@ interface StreamChunkHandler {
   onError:           (err: string) => void
   onReasoningToken?: (token: string) => void
 }
+
+// ─── Pending upload persistence ───────────────────────────────────────────────
+// Survives app restarts: binary saved as base64 text + metadata in queue.json.
+
+interface PendingUpload {
+  paperId: string
+  source:  string
+  convId:  string
+  msgId:   string
+  att: { id: string; name: string; mimeType: string; extractedText?: string }
+}
+
+async function _pendingDir(): Promise<string> {
+  const base = await appDataDir()
+  const dir  = `${base}/paper_copilot_pending`
+  if (!(await exists(dir))) await mkdir(dir, { recursive: true })
+  return dir
+}
+
+async function _loadPendingQueue(): Promise<PendingUpload[]> {
+  try {
+    const dir  = await _pendingDir()
+    const path = `${dir}/queue.json`
+    if (!(await exists(path))) return []
+    return JSON.parse(await readTextFile(path)) as PendingUpload[]
+  } catch { return [] }
+}
+
+async function _savePendingQueue(queue: PendingUpload[]): Promise<void> {
+  try {
+    const dir = await _pendingDir()
+    await writeTextFile(`${dir}/queue.json`, JSON.stringify(queue))
+  } catch { /* ignore */ }
+}
+
+async function _persistPendingUpload(
+  paperId: string, source: string, convId: string, msgId: string, att: AttachmentMeta,
+): Promise<void> {
+  try {
+    if (!att.data) return
+    const dir = await _pendingDir()
+    await writeTextFile(`${dir}/${att.id}.b64`, att.data)
+    const queue = await _loadPendingQueue()
+    if (!queue.some(q => q.att.id === att.id)) {
+      queue.push({ paperId, source, convId, msgId, att: { id: att.id, name: att.name, mimeType: att.mimeType, extractedText: att.extractedText } })
+      await _savePendingQueue(queue)
+    }
+  } catch { /* ignore */ }
+}
+
+async function _clearPendingUpload(attId: string): Promise<void> {
+  try {
+    const dir      = await _pendingDir()
+    const filePath = `${dir}/${attId}.b64`
+    if (await exists(filePath)) await remove(filePath)
+    const queue    = await _loadPendingQueue()
+    const filtered = queue.filter(q => q.att.id !== attId)
+    if (filtered.length !== queue.length) await _savePendingQueue(filtered)
+  } catch { /* ignore */ }
+}
+
+// ─── Stream helpers ────────────────────────────────────────────────────────────
 
 function isOpenRouter(baseUrl: string): boolean {
   return baseUrl.includes('openrouter.ai')
@@ -431,6 +495,10 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
   const streamingVariantReasoning = ref('')
   const _abortCtrl2               = ref<AbortController | null>(null)
 
+  // Tracks attachment IDs whose binary has been successfully uploaded this session.
+  // Prevents redundant re-uploads and enables retry-on-switch for failed uploads.
+  const _uploadedAttachmentIds = new Set<string>()
+
   // ── Global chat options ────────────────────────────────────────────────────
   const webSearchEnabled = ref(false)
   const useReasoning     = ref(false)
@@ -489,6 +557,8 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
     activePaperId.value     = paperId
     activePaperSource.value = paperSource
     isOpen.value            = true
+    // Retry any binary uploads that didn't complete before the last app exit.
+    retryPendingUploads().catch(() => {})
     if (changed) {
       paperFullText.value       = null
       paperFullTextBase64.value = null
@@ -546,6 +616,19 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
 
   async function openConversation(convId: string) {
     if (convId === activeConvId.value) return
+
+    // Before switching away, retry any binary uploads that failed earlier this session.
+    // Only fires for attachments that are still in memory (data present) but not yet
+    // confirmed as uploaded (_uploadedAttachmentIds). Covers network-hiccup retry.
+    const outgoing = activeConv.value
+    if (outgoing) {
+      for (const msg of outgoing.messages) {
+        if (msg.role === 'user' && msg.attachments?.some(a => a.data && !_uploadedAttachmentIds.has(a.id))) {
+          _uploadAttachmentBinaries(outgoing.id, msg.id, msg.attachments!).catch(() => {})
+        }
+      }
+    }
+
     isLoadingMessages.value = true
     try {
       const resp = await tauriFetch(
@@ -564,6 +647,29 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
             id: a.id, name: a.name, mimeType: a.mime_type, size: a.size, pageCount: a.page_count,
           })),
         }))
+        // Restore attachment binaries from server (for multi-device sync).
+        // Only user messages can have attachments; fetch each binary in parallel.
+        await Promise.all(messages.flatMap(msg =>
+          msg.role === 'user' && msg.attachments?.length
+            ? msg.attachments.map(async att => {
+                try {
+                  const r = await tauriFetch(
+                    _url(`/${activePaperId.value}/conversations/${convId}/attachments/${att.id}?source=${activePaperSource.value}`),
+                    { method: 'GET', headers: _headers() },
+                  )
+                  if (r.ok) {
+                    const bytes = new Uint8Array(await (await r.blob()).arrayBuffer())
+                    let bin = ''
+                    for (let i = 0; i < bytes.length; i += 8192) {
+                      bin += String.fromCharCode(...Array.from(bytes.subarray(i, i + 8192)))
+                    }
+                    att.data = btoa(bin)
+                    _uploadedAttachmentIds.add(att.id)
+                  }
+                } catch { /* binary not uploaded yet or unavailable */ }
+              })
+            : [],
+        ))
         const meta = conversations.value.find(c => c.id === convId)
         activeConv.value   = { ...(meta as PaperConversationMeta), messages }
         activeConvId.value = convId
@@ -611,6 +717,78 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
         },
       )
     } catch { /* silently ignore */ }
+  }
+
+  async function _uploadAttachmentBinaries(convId: string, msgId: string, attachments: AttachmentMeta[]) {
+    if (!activePaperId.value) return
+    const paperId = activePaperId.value
+    const source  = activePaperSource.value
+    for (const att of attachments) {
+      if (!att.data || _uploadedAttachmentIds.has(att.id)) continue
+      // Persist to disk before attempting upload so a restart can retry this.
+      await _persistPendingUpload(paperId, source, convId, msgId, att)
+      const binary = Uint8Array.from(atob(att.data), c => c.charCodeAt(0))
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const form = new FormData()
+          form.append('file', new Blob([binary], { type: att.mimeType }), att.name)
+          form.append('attachment_id', att.id)
+          form.append('message_id', msgId)
+          form.append('name', att.name)
+          form.append('mime_type', att.mimeType)
+          if (att.extractedText) form.append('extracted_text', att.extractedText)
+          const r = await tauriFetch(
+            _url(`/${paperId}/conversations/${convId}/attachments?source=${source}`),
+            { method: 'POST', headers: { Authorization: `Bearer ${_conn().apiKey}` }, body: form },
+          )
+          if (r.ok) {
+            _uploadedAttachmentIds.add(att.id)
+            _clearPendingUpload(att.id).catch(() => {})
+            break
+          }
+        } catch { /* retry */ }
+      }
+    }
+  }
+
+  async function retryPendingUploads(): Promise<void> {
+    if (!getBackendConfig()) return
+    let queue: PendingUpload[]
+    try { queue = await _loadPendingQueue() } catch { return }
+    if (queue.length === 0) return
+    const dir = await _pendingDir()
+    for (const item of queue) {
+      if (_uploadedAttachmentIds.has(item.att.id)) {
+        _clearPendingUpload(item.att.id).catch(() => {})
+        continue
+      }
+      const filePath = `${dir}/${item.att.id}.b64`
+      if (!(await exists(filePath))) continue
+      try {
+        const b64    = await readTextFile(filePath)
+        const binary = Uint8Array.from(atob(b64), c => c.charCodeAt(0))
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const form = new FormData()
+            form.append('file', new Blob([binary], { type: item.att.mimeType }), item.att.name)
+            form.append('attachment_id', item.att.id)
+            form.append('message_id', item.msgId)
+            form.append('name', item.att.name)
+            form.append('mime_type', item.att.mimeType)
+            if (item.att.extractedText) form.append('extracted_text', item.att.extractedText)
+            const r = await tauriFetch(
+              _url(`/${item.paperId}/conversations/${item.convId}/attachments?source=${item.source}`),
+              { method: 'POST', headers: { Authorization: `Bearer ${_conn().apiKey}` }, body: form },
+            )
+            if (r.ok) {
+              _uploadedAttachmentIds.add(item.att.id)
+              _clearPendingUpload(item.att.id).catch(() => {})
+              break
+            }
+          } catch { /* retry */ }
+        }
+      } catch { /* skip this item */ }
+    }
   }
 
   async function _updateTitle(convId: string, title: string) {
@@ -762,12 +940,18 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
           }
         }
         await _syncMessages(conv.id, [userMsg, assistantMsg])
+        if (userMsg.attachments?.length) {
+          _uploadAttachmentBinaries(conv.id, userMsg.id, userMsg.attachments).catch(() => {})
+        }
       },
       async onError(err) {
         assistantMsg.content = `Error: ${err}`
         assistantMsg.error   = true
         _finishStream()
         await _syncMessages(conv.id, [userMsg, assistantMsg])
+        if (userMsg.attachments?.length) {
+          _uploadAttachmentBinaries(conv.id, userMsg.id, userMsg.attachments).catch(() => {})
+        }
       },
     }
 
@@ -1109,7 +1293,7 @@ export const usePaperCopilotStore = defineStore('paperCopilot', () => {
     paperFullText, paperFullTextBase64, paperAbstractText, isExtractingText, fullTextError,
     openForPaper, close, setSecondModel,
     setReasoning, setReasoningLevel, setDefaultContextMode,
-    pushToServer, syncFromServer,
+    pushToServer, syncFromServer, retryPendingUploads,
     prepareAbstractText, extractFullText,
     loadConversations, createConversation, openConversation, deleteConversation,
     sendMessage, stopStreaming, clearContext, removeContextCutoff,

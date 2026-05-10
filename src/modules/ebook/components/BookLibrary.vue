@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
-import { Plus, BookOpen, Trash2, Clock, MoreVertical } from 'lucide-vue-next'
+import { Plus, BookOpen, Trash2, Clock, MoreVertical, VolumeX } from 'lucide-vue-next'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { useEbookStore, type Book } from '../../../stores/ebook'
@@ -210,6 +210,14 @@ const sortedBooks = computed(() =>
 
         <!-- Dropdown -->
         <div v-if="menuOpenId === book.id" class="card-dropdown" @click.stop>
+          <button
+            v-if="store.ttsJobStates[book.id] && store.ttsJobStates[book.id].status !== 'idle'"
+            class="dropdown-item"
+            @click="store.clearAudiobook(book.id); closeMenu()"
+          >
+            <VolumeX :size="14" />
+            清除有声书
+          </button>
           <button class="dropdown-item danger" @click="deleteBook(book)">
             <Trash2 :size="14" />
             {{ t('ebook.library.delete') }}

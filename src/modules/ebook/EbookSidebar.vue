@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Search, BookOpen, Check, BookMarked, Plus, Trash2, X, Settings, Volume2, ChevronDown, Headphones, Play, Pause, RefreshCw, AlertCircle, Square } from 'lucide-vue-next'
+import { Search, BookOpen, Check, BookMarked, Plus, Trash2, X, Settings, Volume2, ChevronDown, Headphones, Play, Pause, RefreshCw, AlertCircle, Square, VolumeX } from 'lucide-vue-next'
 import { useEbookStore } from '../../stores/ebook'
 import { useAiSettingsStore } from '../../stores/aiSettings'
 import { useEbookTtsGenerator } from './composables/useEbookTtsGenerator'
@@ -190,7 +190,14 @@ const displayBooks = computed(() =>
 // ─── Audiobook generation ─────────────────────────────────────────────────────
 
 const ttsGen = useEbookTtsGenerator()
-const showAudiobook = ref(false)
+const showAudiobook     = ref(false)
+const clearConfirmBookId = ref<string | null>(null)
+
+async function doClearAudiobook(bookId: string) {
+  clearConfirmBookId.value = null
+  if (ttsGen.isRunning(bookId)) ttsGen.pauseGeneration(bookId)
+  await store.clearAudiobook(bookId)
+}
 
 /** All books that have any TTS job state (running/paused/complete/error). */
 const audiobookEntries = computed(() =>
@@ -393,21 +400,6 @@ const currentBookHasJob = computed(() =>
                 :value="ttsSettings.speed"
                 @input="store.updateTtsSettings({ speed: parseFloat(($event.target as HTMLInputElement).value) })" />
             </div>
-            <div class="tts-field">
-              <span class="tts-lbl">每段字数</span>
-              <div class="chunk-size-ctrl">
-                <button class="cs-btn" @click="store.updateTtsSettings({ chunkSize: Math.max(11, (ttsSettings.chunkSize ?? 30) - 10) })">−</button>
-                <input
-                  class="cs-input"
-                  type="number"
-                  :value="ttsSettings.chunkSize ?? 30"
-                  min="11"
-                  @change="store.updateTtsSettings({ chunkSize: Math.max(11, parseInt(($event.target as HTMLInputElement).value) || 30) })"
-                  @blur="($event.target as HTMLInputElement).value = String(ttsSettings.chunkSize ?? 30)"
-                />
-                <button class="cs-btn" @click="store.updateTtsSettings({ chunkSize: (ttsSettings.chunkSize ?? 30) + 10 })">+</button>
-              </div>
-            </div>
           </template>
         </div>
 
@@ -524,6 +516,31 @@ const currentBookHasJob = computed(() =>
                     class="ab-error-icon"
                     :title="entry.job.errorMsg"
                   />
+                  <!-- Clear audiobook -->
+                  <template v-if="clearConfirmBookId === entry.bookId">
+                    <button
+                      class="ab-action-btn ab-action-clear-confirm"
+                      title="确认清除"
+                      @click="doClearAudiobook(entry.bookId)"
+                    >
+                      <VolumeX :size="11" />
+                    </button>
+                    <button
+                      class="ab-action-btn"
+                      title="取消"
+                      @click="clearConfirmBookId = null"
+                    >
+                      <X :size="11" />
+                    </button>
+                  </template>
+                  <button
+                    v-else
+                    class="ab-action-btn ab-action-clear"
+                    title="清除有声书"
+                    @click="clearConfirmBookId = entry.bookId"
+                  >
+                    <Trash2 :size="11" />
+                  </button>
                 </div>
               </div>
 
@@ -797,33 +814,6 @@ const currentBookHasJob = computed(() =>
 
 .tts-slider { width: 100%; accent-color: #223F79; cursor: pointer; }
 
-/* Chunk size control */
-.chunk-size-ctrl {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  border: 1px solid rgba(0,0,0,0.12);
-  border-radius: 7px;
-  overflow: hidden;
-  background: rgba(0,0,0,0.04);
-  flex-shrink: 0;
-}
-.cs-btn {
-  width: 26px; height: 26px; border: none; background: transparent;
-  color: #3c3c43; font-size: 15px; line-height: 1; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: background 0.10s;
-}
-.cs-btn:hover { background: rgba(0,0,0,0.07); }
-.cs-input {
-  width: 44px; text-align: center; font-size: 12px;
-  font-weight: 600; color: #1c1c1e; border: none; background: transparent;
-  outline: none; padding: 0; -moz-appearance: textfield;
-}
-.cs-input::-webkit-outer-spin-button,
-.cs-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.sidebar-theme-dark .cs-input { color: #e5e5ea; }
-.sidebar-theme-dark .cs-btn { color: #e5e5ea; }
 
 /* Toggle */
 .tts-toggle { position: relative; width: 36px; height: 20px; cursor: pointer; flex-shrink: 0; }
@@ -952,6 +942,10 @@ const currentBookHasJob = computed(() =>
 .ab-action-btn:hover { background: rgba(34,63,121,0.12); color: #223F79; }
 .ab-action-resume { background: rgba(34,63,121,0.10); color: #223F79; }
 .ab-action-resume:hover { background: rgba(34,63,121,0.18); }
+.ab-action-clear { color: #8e8e93; }
+.ab-action-clear:hover { background: rgba(255,59,48,0.08); color: #ff3b30; }
+.ab-action-clear-confirm { background: rgba(255,59,48,0.10); color: #ff3b30; }
+.ab-action-clear-confirm:hover { background: rgba(255,59,48,0.18); }
 .ab-error-icon { color: #ff3b30; flex-shrink: 0; }
 .sidebar-theme-dark .ab-action-btn { background: rgba(255,255,255,0.10); color: #e5e5ea; }
 

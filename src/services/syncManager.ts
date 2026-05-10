@@ -13,8 +13,8 @@
  * swallowed so the app boots even when offline.
  */
 
-import { apiGet, isBackendConfigured } from './api'
-import { setSyncState, beginSyncOp, endSyncOp } from '../stores/syncStatus'
+import { apiGet, apiDelete, apiPost, apiPut, isBackendConfigured } from './api'
+import { setSyncState, beginSyncOp, endSyncOp, failSyncOp } from '../stores/syncStatus'
 import {
   fetchConvListFromServer,
   fetchConvFromServer,
@@ -36,6 +36,12 @@ import {
   restoreConversationFromTrash,
 } from '../utils/storage'
 import type { TravelNote, TravelNoteMeta, TravelTrashMeta } from '../utils/travelStorage'
+import {
+  saveTravelNote, listTravelNotes, loadTravelNote,
+  listTrashItems, moveNoteToTrash, restoreNoteFromTrash,
+  cacheTravelImagesForContent, uploadReferencedTravelImages,
+} from '../utils/travelStorage'
+import { useEbookStore } from '../stores/ebook'
 
 // ─── Lazy store accessors (avoid circular init) ──────────────────────────────
 
@@ -309,18 +315,6 @@ async function syncTravelList() {
     const remoteRaw = await apiGet<Array<Record<string, unknown>>>('/api/travel/notes?include_deleted=true')
     if (!remoteRaw) return
 
-    const {
-      saveTravelNote,
-      listTravelNotes,
-      loadTravelNote,
-      listTrashItems,
-      moveNoteToTrash,
-      restoreNoteFromTrash,
-      cacheTravelImagesForContent,
-      uploadReferencedTravelImages,
-    } = await import('../utils/travelStorage')
-    const { apiDelete, apiPost } = await import('./api')
-
     const remote = remoteRaw.map(normalizeRemoteTravelMeta).filter(r => r.id)
     const remoteIds = new Set(remote.map(r => r.id))
     const activeRemote = remote.filter(r => !r.deletedAt)
@@ -442,6 +436,7 @@ export async function syncAllFromServer(): Promise<void> {
     setSyncState('not_configured')
     return
   }
+  let firstErr: unknown = undefined
   beginSyncOp()
   try {
     // 1. Pull all settings in one request
@@ -488,26 +483,34 @@ export async function syncAllFromServer(): Promise<void> {
       pushProfileSettings().catch(() => {})
       pushChatUiSettings().catch(() => {})
       // Push ebook library (settings, books, progress, etc.) since it uses its own endpoint
-      import('../stores/ebook').then(m => m.useEbookStore().pushToServer()).catch(() => {})
+      useEbookStore().pushToServer().catch(() => {})
     }
-  } catch { /* ignore */ }
+  } catch (err) {
+    console.error('[Sync] Settings sync failed:', err)
+    firstErr ??= err
+  }
 
   // 2. Sync assistants
   try {
     const assistantsStore = await getAssistantsStore()
     await assistantsStore.syncFromServer()
-  } catch { /* ignore */ }
+  } catch (err) {
+    console.error('[Sync] Assistants sync failed:', err)
+    firstErr ??= err
+  }
 
   try {
     const privateAssistantStore = await getPrivateAssistantStore()
     await privateAssistantStore.syncFromServer()
-  } catch { /* ignore */ }
+  } catch (err) {
+    console.error('[Sync] Private assistants sync failed:', err)
+    firstErr ??= err
+  }
 
   // 3+4+5+6. Chat list + travel notes + todo + ebook (parallel)
   const todoStore = await getTodoStore()
-  const { useEbookStore } = await import('../stores/ebook')
   const ebookStore = useEbookStore()
-  await Promise.allSettled([
+  const parallelResults = await Promise.allSettled([
     syncChatList().then(async () => {
       // After updating local index.json, tell the chat store to reload its in-memory list
       // so the UI immediately shows synced titles and conversation order.
@@ -517,11 +520,21 @@ export async function syncAllFromServer(): Promise<void> {
       } catch { /* non-critical */ }
     }),
     syncTravelList(),
-    todoStore.load().catch(() => {}),
-    ebookStore.syncFromServer().catch(() => {}),
+    todoStore.load(),
+    ebookStore.syncFromServer(),
   ])
+  for (const result of parallelResults) {
+    if (result.status === 'rejected') {
+      console.error('[Sync] Parallel sync task failed:', result.reason)
+      firstErr ??= result.reason
+    }
+  }
 
-  endSyncOp()
+  if (firstErr) {
+    failSyncOp(firstErr)
+  } else {
+    endSyncOp()
+  }
 }
 
 /**
@@ -529,16 +542,13 @@ export async function syncAllFromServer(): Promise<void> {
  * Call this from GeneralSettings.vue whenever any of these values change.
  */
 export async function pushGeneralSettings(): Promise<void> {
-  const { apiPut } = await import('./api')
   await apiPut('/api/settings/general', { value: buildGeneralSettings() }).catch(() => {})
 }
 
 export async function pushProfileSettings(): Promise<void> {
-  const { apiPut } = await import('./api')
   await apiPut('/api/settings/profile', { value: buildProfileSettings() }).catch(() => {})
 }
 
 export async function pushChatUiSettings(): Promise<void> {
-  const { apiPut } = await import('./api')
   await apiPut('/api/settings/chatUi', { value: buildChatUiSettings() }).catch(() => {})
 }

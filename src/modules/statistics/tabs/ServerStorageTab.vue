@@ -8,6 +8,7 @@ import { useStatisticsStore } from '../../../stores/statistics'
 interface ServerStats {
   settings: number; chat: number; home: number
   travel: number; papers: number; todo: number; total: number
+  [key: string]: number  // 允许后端返回新的模块数据（如 ebook 等）
 }
 
 const stats      = ref<ServerStats | null>(null)
@@ -36,24 +37,44 @@ async function load() {
   finally { loading.value = false }
 }
 
-const DEFS = [
-  { key: 'chat',     label: '对话',     color: '#3B5BA5' },
-  { key: 'home',     label: '海报',     color: '#52BA6F' },
-  { key: 'papers',   label: '论文',     color: '#E4983D' },
-  { key: 'travel',   label: '旅行笔记', color: '#9B6CF0' },
-  { key: 'settings', label: '设置',     color: '#20BDB8' },
-  { key: 'todo',     label: 'Todo',     color: '#F0A830' },
+// 已知模块的显示配置（label、颜色）
+// 后端返回的新字段如果没有在这里定义，会显示 key 作为 label 并使用默认颜色
+const MODULE_META: Record<string, { label: string; color: string }> = {
+  chat:     { label: '对话',     color: '#3B5BA5' },
+  home:     { label: '海报',     color: '#52BA6F' },
+  papers:   { label: '论文',     color: '#E4983D' },
+  travel:   { label: '旅行笔记', color: '#9B6CF0' },
+  settings: { label: '设置',     color: '#20BDB8' },
+  todo:     { label: 'Todo',     color: '#F0A830' },
+  ebook:    { label: '图书',     color: '#E85D75' },
+}
+
+const DEFAULT_COLORS = [
+  '#3B5BA5', '#52BA6F', '#E4983D', '#9B6CF0',
+  '#20BDB8', '#F0A830', '#E85D75', '#6B8E23',
+  '#4682B4', '#D2691E', '#8B4513', '#708090',
 ]
 
 const modules = computed(() => {
   if (!stats.value) return []
   const total = stats.value.total || 1
-  return DEFS
-    .map(d => ({
-      ...d,
-      bytes: stats.value![d.key as keyof ServerStats] as number,
-      pct:   ((stats.value![d.key as keyof ServerStats] as number) / total) * 100,
-    }))
+
+  // 自动收集后端返回的所有模块（排除 total 字段）
+  const keys = Object.keys(stats.value).filter(k => k !== 'total')
+
+  let colorIdx = 0
+  return keys
+    .map(key => {
+      const meta = MODULE_META[key]
+      const bytes = stats.value![key] as number
+      return {
+        key,
+        label: meta?.label ?? key,
+        color: meta?.color ?? DEFAULT_COLORS[colorIdx++ % DEFAULT_COLORS.length],
+        bytes,
+        pct: (bytes / total) * 100,
+      }
+    })
     .sort((a, b) => b.bytes - a.bytes)
 })
 

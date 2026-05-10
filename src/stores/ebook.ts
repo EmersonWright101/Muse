@@ -6,7 +6,7 @@
 
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { readFile, writeFile, mkdir, exists, remove, copyFile, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
+import { readFile, writeFile, mkdir, exists, remove, copyFile, readTextFile, writeTextFile, BaseDirectory } from '@tauri-apps/plugin-fs'
 import { ebooksDir, resolveDataRoot } from '../utils/path'
 import { apiGet, apiPut, apiPutBinary, apiGetBinary, apiDelete, isBackendConfigured } from '../services/api'
 
@@ -143,7 +143,6 @@ export interface TtsSettings {
   modelId:    string   // references an AIModel.id within that provider (must have audio: true)
   voice:      string   // voice id, e.g. "Ryan" — sourced from /v1/models or custom input
   speed:      number   // 0.25 – 4.0
-  chunkSize:  number   // chars per audio segment for pre-generation, >10, default 30
 }
 
 export interface BookTtsJobState {
@@ -208,7 +207,6 @@ const DEFAULT_TTS_SETTINGS: TtsSettings = {
   modelId:    '',
   voice:      '',
   speed:      1.0,
-  chunkSize:  30,
 }
 
 function normalizeSettings(raw: Partial<ReaderSettings>): ReaderSettings {
@@ -588,6 +586,25 @@ export const useEbookStore = defineStore('ebook', () => {
     return ttsPlaybackPos.value[bookId] ?? null
   }
 
+  async function clearAudiobook(bookId: string): Promise<void> {
+    // Clear local state
+    delete ttsJobStates.value[bookId]
+    save(LS_TTS_JOBS, ttsJobStates.value)
+    delete ttsPlaybackPos.value[bookId]
+    save(LS_TTS_PLAYBACK, ttsPlaybackPos.value)
+    // Delete local audio files (AppData/ebook-tts/{bookId}/)
+    try {
+      const ttsDir = `ebook-tts/${bookId}`
+      if (await exists(ttsDir, { baseDir: BaseDirectory.AppData })) {
+        await remove(ttsDir, { baseDir: BaseDirectory.AppData, recursive: true })
+      }
+    } catch { /* ignore */ }
+    // Delete server-side audio chunks and manifests
+    await apiDelete(`/api/ebook/tts/${bookId}`).catch(() => {})
+    // Push cleared job state so other devices also see no audiobook
+    await pushToServer().catch(() => {})
+  }
+
   // ─── Copilot sessions ────────────────────────────────────────────────────────
 
   function saveCopilotSession(session: CopilotSession) {
@@ -827,7 +844,7 @@ export const useEbookStore = defineStore('ebook', () => {
     ttsSettings, updateTtsSettings,
     storageUsed,
     // TTS generation jobs
-    ttsJobStates, updateTtsJob, getTtsJob,
+    ttsJobStates, updateTtsJob, getTtsJob, clearAudiobook,
     // TTS playback position
     ttsPlaybackPos, setTtsPlaybackPos, getTtsPlaybackPos,
     // Copilot

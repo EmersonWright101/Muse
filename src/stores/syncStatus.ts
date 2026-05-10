@@ -1,10 +1,11 @@
 import { reactive } from 'vue'
 
-export type SyncState = 'idle' | 'syncing' | 'done' | 'not_configured'
+export type SyncState = 'idle' | 'syncing' | 'done' | 'error' | 'not_configured'
 
 export const syncStatus = reactive({
   state: 'idle' as SyncState,
   lastSyncAt: null as string | null,
+  lastError: null as string | null,
 })
 
 let _activeOps = 0
@@ -24,11 +25,18 @@ export function beginSyncOp() {
   }
 }
 
-/** Call when a backend operation finishes. Shows 'done' only when all ops complete. */
+/** Call when a backend operation finishes successfully. Shows 'done' only when all ops complete. */
 export function endSyncOp() {
   _activeOps = Math.max(0, _activeOps - 1)
   if (_activeOps === 0 && syncStatus.state === 'syncing') {
     syncStatus.state = 'done'
     syncStatus.lastSyncAt = new Date().toISOString()
   }
+}
+
+/** Call when a backend operation fails. Immediately shows 'error'. */
+export function failSyncOp(err?: unknown) {
+  _activeOps = Math.max(0, _activeOps - 1)
+  syncStatus.state = 'error'
+  syncStatus.lastError = err instanceof Error ? err.message : String(err ?? 'Unknown error')
 }

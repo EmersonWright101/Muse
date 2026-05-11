@@ -131,9 +131,7 @@ onUnmounted(() => {
     <div class="sidebar-logo">
       <router-link to="/home" class="logo-link" :title="t('nav.home')" @contextmenu.prevent="openLogoMenu">
         <img v-if="userAvatar" :src="userAvatar" class="logo-avatar" :class="{ active: isHome }" alt="" />
-        <div v-else class="logo-mark" :class="{ active: isHome }">
-          <span>M</span>
-        </div>
+        <img v-else :src="appIcon" class="logo-avatar" :class="{ active: isHome }" alt="" />
       </router-link>
     </div>
 
@@ -448,8 +446,8 @@ onUnmounted(() => {
 }
 
 .nav-custom-icon {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   object-fit: contain;
   opacity: 0.55;
   transition: opacity 0.12s;

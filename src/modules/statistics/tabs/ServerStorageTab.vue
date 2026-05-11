@@ -8,7 +8,7 @@ import { useStatisticsStore } from '../../../stores/statistics'
 interface ServerStats {
   settings: number; chat: number; home: number
   travel: number; papers: number; todo: number; total: number
-  [key: string]: number  // 允许后端返回新的模块数据（如 ebook 等）
+  [key: string]: number | Record<string, number>  // 允许后端返回新的模块数据（如 ebook 等）
 }
 
 const stats      = ref<ServerStats | null>(null)
@@ -55,12 +55,22 @@ const DEFAULT_COLORS = [
   '#4682B4', '#D2691E', '#8B4513', '#708090',
 ]
 
+const ebookBreakdown = computed(() => {
+  const b = stats.value?._breakdown as Record<string, number> | undefined
+  if (!b) return null
+  return [
+    { key: 'ebook_db',    label: '  └ 数据库',    bytes: b.ebook_db || 0 },
+    { key: 'ebook_files', label: '  └ EPUB 文件', bytes: b.ebook_files || 0 },
+    { key: 'ebook_tts',   label: '  └ 有声书音频', bytes: b.ebook_tts || 0 },
+  ]
+})
+
 const modules = computed(() => {
   if (!stats.value) return []
   const total = stats.value.total || 1
 
-  // 自动收集后端返回的所有模块（排除 total 字段）
-  const keys = Object.keys(stats.value).filter(k => k !== 'total')
+  // 自动收集后端返回的所有模块（排除 total 和内部字段）
+  const keys = Object.keys(stats.value).filter(k => k !== 'total' && !k.startsWith('_'))
 
   let colorIdx = 0
   return keys
@@ -207,21 +217,35 @@ onMounted(() => {
         </div>
       </div>
       <div class="legend">
-        <div
-          v-for="m in modules" :key="m.key"
-          class="legend-row"
-          :class="{ dimmed: hoveredKey && hoveredKey !== m.key, lit: hoveredKey === m.key }"
-          @mouseenter="hoveredKey = m.key"
-          @mouseleave="hoveredKey = null"
-        >
-          <span class="dot" :style="{ background: m.color }" />
-          <span class="leg-label">{{ m.label }}</span>
-          <div class="leg-bar-wrap">
-            <div class="leg-bar-fill" :style="{ width: m.pct + '%', background: m.color }" />
+        <template v-for="m in modules" :key="m.key">
+          <div
+            class="legend-row"
+            :class="{ dimmed: hoveredKey && hoveredKey !== m.key, lit: hoveredKey === m.key }"
+            @mouseenter="hoveredKey = m.key"
+            @mouseleave="hoveredKey = null"
+          >
+            <span class="dot" :style="{ background: m.color }" />
+            <span class="leg-label">{{ m.label }}</span>
+            <div class="leg-bar-wrap">
+              <div class="leg-bar-fill" :style="{ width: m.pct + '%', background: m.color }" />
+            </div>
+            <span class="leg-pct">{{ m.pct.toFixed(1) }}%</span>
+            <span class="leg-size">{{ formatBytes(m.bytes) }}</span>
           </div>
-          <span class="leg-pct">{{ m.pct.toFixed(1) }}%</span>
-          <span class="leg-size">{{ formatBytes(m.bytes) }}</span>
-        </div>
+          <!-- ebook breakdown sub-rows -->
+          <div
+            v-if="m.key === 'ebook' && ebookBreakdown"
+            class="ebook-breakdown"
+          >
+            <div
+              v-for="sub in ebookBreakdown" :key="sub.key"
+              class="breakdown-row"
+            >
+              <span class="breakdown-label">{{ sub.label }}</span>
+              <span class="breakdown-size">{{ formatBytes(sub.bytes) }}</span>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
 
@@ -534,4 +558,23 @@ svg.spinning { animation: spin 0.8s linear infinite; }
 .storage-row :deep(svg) { color: #8e8e93; flex-shrink: 0; }
 .storage-label { color: #8e8e93; flex: 1; }
 .storage-value { font-weight: 600; color: #1c1c1e; }
+
+/* ebook breakdown sub-rows */
+.ebook-breakdown {
+  padding-left: 19px;
+  margin-bottom: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.breakdown-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #8e8e93;
+  padding: 2px 0;
+}
+.breakdown-label { flex: 1; }
+.breakdown-size { font-variant-numeric: tabular-nums; }
 </style>

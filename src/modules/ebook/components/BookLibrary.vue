@@ -147,7 +147,9 @@ const sortedBooks = computed(() =>
     <div class="library-header">
       <div class="library-title-wrap">
         <h2 class="library-title">{{ t('ebook.library.title') }}</h2>
-        <span v-if="store.storageUsed > 0" class="storage-badge">{{ formatStorage(store.storageUsed) }}</span>
+        <span v-if="store.books.length > 0" class="storage-badge">
+          {{ store.books.length }} 本 · {{ formatStorage(store.books.reduce((s, b) => s + (b.fileSize || 0), 0)) }}
+        </span>
       </div>
       <button class="add-btn" :disabled="isImporting" @click="importBook">
         <Plus :size="16" />

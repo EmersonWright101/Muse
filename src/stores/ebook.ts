@@ -264,8 +264,12 @@ export const useEbookStore = defineStore('ebook', () => {
   async function readBookFile(book: Book): Promise<ArrayBuffer | null> {
     try {
       const dir = await getEbooksDir()
-      const localPath = `${dir}/${book.filePath}`
-      if (await exists(localPath)) {
+      const safeFilePath = book.filePath?.trim()
+      if (!safeFilePath) {
+        console.warn('[EbookSync] readBookFile: empty filePath for', book.title, `(${book.id})`, '- downloading from backend')
+      }
+      const localPath = safeFilePath ? `${dir}/${safeFilePath}` : ''
+      if (localPath && await exists(localPath)) {
         const bytes = await readFile(localPath)
         return uint8ToArrayBuffer(bytes)
       }
@@ -273,7 +277,14 @@ export const useEbookStore = defineStore('ebook', () => {
         console.log('[EbookSync] Downloading book file:', book.title, `(${book.id})`)
         const remote = await apiGetBinary(`/api/ebook/books/${book.id}/file`)
         if (remote) {
-          await writeFile(localPath, remote)
+          const savePath = localPath || `${dir}/${book.id}.epub`
+          await writeFile(savePath, remote)
+          // Update local book record so next time we know where the file is
+          const idx = books.value.findIndex(b => b.id === book.id)
+          if (idx >= 0) {
+            books.value[idx].filePath = savePath.replace(`${dir}/`, '')
+            save(LS_BOOKS, books.value)
+          }
           console.log('[EbookSync] Download OK:', book.title, `(${book.id})`, `${remote.byteLength} bytes`)
           return uint8ToArrayBuffer(remote)
         }
@@ -685,6 +696,7 @@ export const useEbookStore = defineStore('ebook', () => {
     settings?: ReaderSettings
     ttsJobStates?: Record<string, BookTtsJobState>
     storageUsed?: number
+    storageBreakdown?: { total: number; books: number; tts: number; db: number }
     copilotSessions?: CopilotSession[]
     copilotStats?: Record<string, EbookCopilotDailyStat>
     ttsPlaybackPos?: Record<string, TtsPlaybackPos>
@@ -703,16 +715,17 @@ export const useEbookStore = defineStore('ebook', () => {
     } catch { /* non-critical */ }
     // Backend expects flat structure (not wrapped in { value: ... })
     // and progress as an array, not a Record object.
+    const isObj = (v: any) => v && typeof v === 'object'
     const payload = {
-      books: books.value,
-      progress: Object.values(progress.value),
-      annotations: annotations.value,
-      sessions: sessions.value,
-      collections: collections.value,
+      books: books.value.filter((b: any) => isObj(b) && b.id),
+      progress: Object.values(progress.value).filter((p: any) => isObj(p) && p.bookId),
+      annotations: annotations.value.filter((a: any) => isObj(a) && a.id && a.bookId),
+      sessions: sessions.value.filter((s: any) => isObj(s) && s.id && s.bookId),
+      collections: collections.value.filter((c: any) => isObj(c) && c.id),
       settings: settings.value,
       ttsJobStates: ttsJobStates.value,
       // Extra fields accepted by backend (extra="allow") but not persisted by put_library
-      copilotSessions: copilotSessions.value,
+      copilotSessions: copilotSessions.value.filter((s: any) => isObj(s) && s.id),
       copilotStats,
       ttsPlaybackPos: ttsPlaybackPos.value,
       ttsSettings: ttsSettings.value,
@@ -729,7 +742,12 @@ export const useEbookStore = defineStore('ebook', () => {
     if (!isBackendConfigured()) return
     try {
       const dir = await getEbooksDir()
-      const localPath = `${dir}/${book.filePath}`
+      const safeFilePath = book.filePath?.trim()
+      if (!safeFilePath) {
+        console.warn('[EbookSync] pushBookFileToServer: empty filePath, skip:', book.title, `(${book.id})`)
+        return
+      }
+      const localPath = `${dir}/${safeFilePath}`
       if (!(await exists(localPath))) {
         console.warn('[EbookSync] pushBookFileToServer: local file not found:', localPath)
         return
@@ -777,7 +795,7 @@ export const useEbookStore = defineStore('ebook', () => {
       ...remote,
       ...local,
       id: keptId,
-      filePath: local.filePath,
+      filePath: local.filePath || remote.filePath,
       lastReadAt: Math.max(local.lastReadAt ?? 0, remote.lastReadAt ?? 0) || null,
       totalProgress: Math.max(local.totalProgress, remote.totalProgress),
       readStatus: readStatusRank(local.readStatus) >= readStatusRank(remote.readStatus) ? local.readStatus : remote.readStatus,
@@ -1068,6 +1086,9 @@ export const useEbookStore = defineStore('ebook', () => {
         save(LS_TTS_PLAYBACK, ttsPlaybackPos.value)
       }
       storageUsed.value = r.storageUsed ?? 0
+      if (r.storageBreakdown) {
+        (storageUsed as any)._breakdown = r.storageBreakdown
+      }
     } catch (err) {
       console.error('[EbookSync] syncFromServer uncaught error:', err)
     }

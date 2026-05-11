@@ -115,17 +115,25 @@ async function getToolStore(name: ToolName) {
 
 /** Load and sync all tool histories. Call from syncManager. */
 export async function syncAllToolHistories(): Promise<void> {
-  for (const name of TOOL_NAMES) {
-    const mod = await getToolStore(name)
-    if (!mod || !mod.historyRecords) continue
-    const local = mod.historyRecords.value as any[]
-    const merged = await syncToolHistory(name, local)
-    if (merged !== local && mod.historyRecords) {
-      mod.historyRecords.value = merged
-      const m = mod as any
-      if (m.persistHistoryToDisk) {
-        await m.persistHistoryToDisk(merged)
+  const results = await Promise.allSettled(
+    TOOL_NAMES.map(async (name) => {
+      const mod = await getToolStore(name)
+      if (!mod || !mod.historyRecords) return
+      const local = mod.historyRecords.value as any[]
+      const merged = await syncToolHistory(name, local)
+      if (merged !== local && mod.historyRecords) {
+        mod.historyRecords.value = merged
+        const m = mod as any
+        if (m.persistHistoryToDisk) {
+          await m.persistHistoryToDisk(merged)
+        }
       }
+    })
+  )
+
+  for (let i = 0; i < results.length; i++) {
+    if (results[i].status === 'rejected') {
+      console.error(`[Sync] Failed to sync tool history for ${TOOL_NAMES[i]}:`, (results[i] as PromiseRejectedResult).reason)
     }
   }
 }

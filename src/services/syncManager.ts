@@ -194,16 +194,12 @@ async function syncChatList() {
   for (const [title, group] of titleGroups) {
     if (group.local.length + group.remote.length < 2) continue
 
-    const localConvs: Conversation[] = []
-    for (const meta of group.local) {
-      const conv = await readJsonFile<Conversation>(`${dir}/${meta.id}.json`)
-      if (conv) localConvs.push(conv)
-    }
-    const remoteConvs: Conversation[] = []
-    for (const rm of group.remote) {
-      const conv = await fetchConvFromServer(rm.id)
-      if (conv) remoteConvs.push(conv)
-    }
+    const [localResults, remoteResults] = await Promise.all([
+      Promise.all(group.local.map(meta => readJsonFile<Conversation>(`${dir}/${meta.id}.json`))),
+      Promise.all(group.remote.map(rm => fetchConvFromServer(rm.id))),
+    ])
+    const localConvs = localResults.filter((c): c is Conversation => !!c)
+    const remoteConvs = remoteResults.filter((c): c is Conversation => !!c)
 
     const mergedList = mergeConversationsByContent(localConvs, remoteConvs)
     const merged = mergedList.find(c => c.title === title)
@@ -338,12 +334,9 @@ async function syncChatList() {
   }
   const localOnly = localIndex.filter(m => !remoteIds.has(m.id))
   if (localOnly.length > 0) {
-    const localConvs: Conversation[] = []
-    for (const meta of localOnly) {
-      const convPath = `${dir}/${meta.id}.json`
-      const conv = await readJsonFile<Conversation>(convPath)
-      if (conv) localConvs.push(conv)
-    }
+    const localConvs = (await Promise.all(
+      localOnly.map(meta => readJsonFile<Conversation>(`${dir}/${meta.id}.json`))
+    )).filter((c): c is Conversation => !!c)
     if (activeRemote.length === 0) {
       migrateConvsToServer(localConvs).catch(() => {})
     } else {
@@ -421,13 +414,11 @@ async function syncTravelList() {
     const activeRemote = remoteAll.filter(r => !r.deletedAt)
     const deletedRemote = remoteAll.filter(r => r.deletedAt)
 
-    // Load full local notes with content
+    // Load full local notes with content in parallel
     const localMetas = await listTravelNotes()
-    const localNotes: TravelNote[] = []
-    for (const meta of localMetas) {
-      const note = await loadTravelNote(meta.id)
-      if (note) localNotes.push(note)
-    }
+    const localNotes = (await Promise.all(
+      localMetas.map(meta => loadTravelNote(meta.id))
+    )).filter((n): n is TravelNote => !!n)
     const localTrash = await listTrashItems()
     const localTrashMap = new Map<string, TravelTrashMeta>(localTrash.map(n => [n.id, n]))
 
@@ -446,18 +437,14 @@ async function syncTravelList() {
     }
 
     // Refresh local notes after possible trash operations
-    const currentLocalNotes: TravelNote[] = []
-    for (const meta of await listTravelNotes()) {
-      const note = await loadTravelNote(meta.id)
-      if (note) currentLocalNotes.push(note)
-    }
+    const currentLocalNotes = (await Promise.all(
+      (await listTravelNotes()).map(meta => loadTravelNote(meta.id))
+    )).filter((n): n is TravelNote => !!n)
 
-    // Fetch full content for all active remote notes
-    const remoteNotes: TravelNote[] = []
-    for (const rm of activeRemote) {
-      const full = await fetchFullTravelNote(rm.id)
-      if (full) remoteNotes.push(full)
-    }
+    // Fetch full content for all active remote notes in parallel
+    const remoteNotes = (await Promise.all(
+      activeRemote.map(rm => fetchFullTravelNote(rm.id))
+    )).filter((n): n is TravelNote => !!n)
 
     // ── Content-based deduplication merge ──────────────────────────────────────
     addSyncAction('正在按内容指纹去重并合并本地与远程旅行笔记…')

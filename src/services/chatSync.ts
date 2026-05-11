@@ -41,9 +41,11 @@ async function uploadBinary(
 async function fetchBinaryAsBase64(attachmentId: string): Promise<string | null> {
   const binary = await apiGetBinary(`/api/chat/attachments/${attachmentId}`)
   if (!binary) return null
+  const chunkSize = 65536
   let bin = ''
-  for (let i = 0; i < binary.length; i += 8192) {
-    bin += String.fromCharCode(...Array.from(binary.subarray(i, i + 8192)))
+  for (let i = 0; i < binary.length; i += chunkSize) {
+    const chunk = binary.subarray(i, i + chunkSize)
+    bin += String.fromCharCode(...chunk)
   }
   return btoa(bin)
 }
@@ -58,6 +60,16 @@ async function fetchBinaryAsBase64(attachmentId: string): Promise<string | null>
 export async function prepareConvForServer(conv: Conversation): Promise<Conversation> {
   const cleaned = JSON.parse(JSON.stringify(conv)) as Conversation
 
+  interface UploadTask {
+    data: string
+    mime: string
+    filename: string
+    target: Record<string, unknown>
+    msgId: string
+  }
+
+  const tasks: UploadTask[] = []
+
   for (const msg of cleaned.messages) {
     // User attachments with inline data
     if (msg.attachments) {
@@ -65,11 +77,13 @@ export async function prepareConvForServer(conv: Conversation): Promise<Conversa
         const data = att.data as string | undefined
         if (data) {
           const mime = (att.mimeType as string) || 'application/octet-stream'
-          const id = await uploadBinary(data, (att.name as string) || (att.id as string), mime, conv.id, msg.id)
-          if (id) att.attachmentId = id
-          // Always strip inline binary — if upload failed the server copy lacks this
-          // attachment, but keeping raw data would make the payload too large to POST/PUT.
-          delete att.data
+          tasks.push({
+            data,
+            mime,
+            filename: (att.name as string) || (att.id as string),
+            target: att,
+            msgId: msg.id,
+          })
         }
       }
     }
@@ -80,9 +94,13 @@ export async function prepareConvForServer(conv: Conversation): Promise<Conversa
         if (data) {
           const mime = (mo.mimeType as string) || 'image/png'
           const ext  = mime.split('/')[1]?.split(';')[0] ?? 'bin'
-          const id = await uploadBinary(data, `${msg.id}_output.${ext}`, mime, conv.id, msg.id)
-          if (id) mo.attachmentId = id
-          delete mo.data
+          tasks.push({
+            data,
+            mime,
+            filename: `${msg.id}_output.${ext}`,
+            target: mo,
+            msgId: msg.id,
+          })
         }
       }
     }
@@ -95,14 +113,34 @@ export async function prepareConvForServer(conv: Conversation): Promise<Conversa
             if (data) {
               const mime = (mo.mimeType as string) || 'image/png'
               const ext  = mime.split('/')[1]?.split(';')[0] ?? 'bin'
-              const id = await uploadBinary(data, `${msg.id}_variant.${ext}`, mime, conv.id, msg.id)
-              if (id) mo.attachmentId = id
-              delete mo.data
+              tasks.push({
+                data,
+                mime,
+                filename: `${msg.id}_variant.${ext}`,
+                target: mo,
+                msgId: msg.id,
+              })
             }
           }
         }
       }
     }
+  }
+
+  // Upload all attachments in parallel
+  const uploadResults = await Promise.allSettled(
+    tasks.map(t => uploadBinary(t.data, t.filename, t.mime, conv.id, t.msgId))
+  )
+
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i]
+    const result = uploadResults[i]
+    if (result.status === 'fulfilled' && result.value) {
+      task.target.attachmentId = result.value
+    }
+    // Always strip inline binary — if upload failed the server copy lacks this
+    // attachment, but keeping raw data would make the payload too large to POST/PUT.
+    delete task.target.data
   }
 
   return cleaned
@@ -113,13 +151,19 @@ export async function prepareConvForServer(conv: Conversation): Promise<Conversa
  * Finds all attachmentId references and fetches the binary from /api/chat/attachments/:id.
  */
 export async function restoreConvFromServer(conv: Conversation): Promise<Conversation> {
+  interface DownloadTask {
+    attId: string
+    target: Record<string, unknown>
+  }
+
+  const tasks: DownloadTask[] = []
+
   for (const msg of conv.messages) {
     if (msg.attachments) {
       for (const att of msg.attachments as unknown as Array<Record<string, unknown>>) {
         const attId = att.attachmentId as string | undefined
         if (attId && !att.data) {
-          const b64 = await fetchBinaryAsBase64(attId)
-          if (b64) att.data = b64
+          tasks.push({ attId, target: att })
         }
       }
     }
@@ -127,8 +171,7 @@ export async function restoreConvFromServer(conv: Conversation): Promise<Convers
       for (const mo of msg.mediaOutputs as Array<Record<string, unknown>>) {
         const attId = mo.attachmentId as string | undefined
         if (attId && !mo.data) {
-          const b64 = await fetchBinaryAsBase64(attId)
-          if (b64) mo.data = b64
+          tasks.push({ attId, target: mo })
         }
       }
     }
@@ -138,14 +181,26 @@ export async function restoreConvFromServer(conv: Conversation): Promise<Convers
           for (const mo of v.mediaOutputs as Array<Record<string, unknown>>) {
             const attId = mo.attachmentId as string | undefined
             if (attId && !mo.data) {
-              const b64 = await fetchBinaryAsBase64(attId)
-              if (b64) mo.data = b64
+              tasks.push({ attId, target: mo })
             }
           }
         }
       }
     }
   }
+
+  const downloadResults = await Promise.allSettled(
+    tasks.map(t => fetchBinaryAsBase64(t.attId))
+  )
+
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i]
+    const result = downloadResults[i]
+    if (result.status === 'fulfilled' && result.value) {
+      task.target.data = result.value
+    }
+  }
+
   return conv
 }
 

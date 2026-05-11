@@ -270,14 +270,20 @@ export const useEbookStore = defineStore('ebook', () => {
         return uint8ToArrayBuffer(bytes)
       }
       if (isBackendConfigured()) {
+        console.log('[EbookSync] Downloading book file:', book.title, `(${book.id})`)
         const remote = await apiGetBinary(`/api/ebook/books/${book.id}/file`)
         if (remote) {
           await writeFile(localPath, remote)
+          console.log('[EbookSync] Download OK:', book.title, `(${book.id})`, `${remote.byteLength} bytes`)
           return uint8ToArrayBuffer(remote)
         }
+        console.warn('[EbookSync] Download returned empty:', book.title, `(${book.id})`)
       }
       return null
-    } catch { return null }
+    } catch (err) {
+      console.error('[EbookSync] readBookFile failed:', book.title, `(${book.id})`, err)
+      return null
+    }
   }
 
   async function importBookFile(srcPath: string, bookId: string): Promise<boolean> {
@@ -290,10 +296,17 @@ export const useEbookStore = defineStore('ebook', () => {
           `/api/ebook/books/${bookId}/file`,
           uint8ToArrayBuffer(bytes),
           'application/epub+zip',
-        ).catch(() => {})
+        ).then(() => {
+          console.log('[EbookSync] importBookFile upload OK:', bookId)
+        }).catch((err) => {
+          console.error('[EbookSync] importBookFile upload failed:', bookId, err)
+        })
       }
       return true
-    } catch { return false }
+    } catch (err) {
+      console.error('[EbookSync] importBookFile failed:', bookId, err)
+      return false
+    }
   }
 
   async function deleteBookFile(book: Book): Promise<void> {
@@ -663,23 +676,19 @@ export const useEbookStore = defineStore('ebook', () => {
 
   // ─── Backend sync ─────────────────────────────────────────────────────────────
 
-  interface EbookServerPayload {
+  interface RemoteEbookLibrary {
     books: Book[]
-    progress: Record<string, ReadingProgress>
+    progress: ReadingProgress[]
     annotations: BookAnnotation[]
     sessions: ReadingSession[]
     collections: Collection[]
-    copilotSessions: CopilotSession[]
     settings?: ReaderSettings
-    ttsSettings?: TtsSettings
     ttsJobStates?: Record<string, BookTtsJobState>
+    storageUsed?: number
+    copilotSessions?: CopilotSession[]
     copilotStats?: Record<string, EbookCopilotDailyStat>
     ttsPlaybackPos?: Record<string, TtsPlaybackPos>
-  }
-
-  interface EbookLibraryResponse {
-    value: EbookServerPayload
-    storageUsed?: number
+    ttsSettings?: TtsSettings
   }
 
   async function pushToServer(): Promise<void> {
@@ -692,20 +701,27 @@ export const useEbookStore = defineStore('ebook', () => {
         copilotStats = JSON.parse(await readTextFile(statsPath)) as Record<string, EbookCopilotDailyStat>
       }
     } catch { /* non-critical */ }
-    const payload: EbookServerPayload = {
+    // Backend expects flat structure (not wrapped in { value: ... })
+    // and progress as an array, not a Record object.
+    const payload = {
       books: books.value,
-      progress: progress.value,
+      progress: Object.values(progress.value),
       annotations: annotations.value,
       sessions: sessions.value,
       collections: collections.value,
-      copilotSessions: copilotSessions.value,
       settings: settings.value,
-      ttsSettings: ttsSettings.value,
       ttsJobStates: ttsJobStates.value,
+      // Extra fields accepted by backend (extra="allow") but not persisted by put_library
+      copilotSessions: copilotSessions.value,
       copilotStats,
       ttsPlaybackPos: ttsPlaybackPos.value,
+      ttsSettings: ttsSettings.value,
     }
-    await apiPut('/api/ebook/library', { value: payload }).catch(() => {})
+    try {
+      await apiPut('/api/ebook/library', payload)
+    } catch (err) {
+      console.error('[EbookSync] pushToServer failed:', err)
+    }
   }
 
   /** Upload a book's EPUB file from local FS to the server (best-effort). */
@@ -714,14 +730,20 @@ export const useEbookStore = defineStore('ebook', () => {
     try {
       const dir = await getEbooksDir()
       const localPath = `${dir}/${book.filePath}`
-      if (!(await exists(localPath))) return
+      if (!(await exists(localPath))) {
+        console.warn('[EbookSync] pushBookFileToServer: local file not found:', localPath)
+        return
+      }
       const bytes = await readFile(localPath)
       await apiPutBinary(
         `/api/ebook/books/${book.id}/file`,
         uint8ToArrayBuffer(bytes),
         'application/epub+zip',
       )
-    } catch { /* non-critical */ }
+      console.log('[EbookSync] pushBookFileToServer OK:', book.title, `(${book.id})`)
+    } catch (err) {
+      console.error('[EbookSync] pushBookFileToServer failed:', book.title, `(${book.id})`, err)
+    }
   }
 
   // ─── Merge helpers ─────────────────────────────────────────────────────────────
@@ -766,16 +788,23 @@ export const useEbookStore = defineStore('ebook', () => {
   async function syncFromServer(): Promise<void> {
     if (!isBackendConfigured()) return
     try {
-      const remote = await apiGet<EbookLibraryResponse>('/api/ebook/library')
-      if (!remote?.value) {
+      const remote = await apiGet<RemoteEbookLibrary>('/api/ebook/library')
+      if (remote === null) {
+        console.error('[EbookSync] apiGet /api/ebook/library returned null (network or auth error)')
+      }
+      if (!remote?.books) {
+        console.log('[EbookSync] Server library empty → pushing local data')
         await pushToServer()
         // First-time sync: also push all local book files so other devices can download them
         for (const b of books.value) {
-          pushBookFileToServer(b).catch(() => {})
+          pushBookFileToServer(b).catch((err) => {
+            console.error('[EbookSync] First-time pushBookFileToServer failed:', b.title, err)
+          })
         }
         return
       }
-      const r = remote.value
+      console.log('[EbookSync] syncFromServer: remote books =', remote.books?.length ?? 0)
+      const r = remote
 
       // Work with plain copies to avoid mid-merge reactivity side-effects
       let localBooks: Book[] = JSON.parse(JSON.stringify(books.value))
@@ -787,7 +816,12 @@ export const useEbookStore = defineStore('ebook', () => {
       let localSessions: ReadingSession[] = JSON.parse(JSON.stringify(sessions.value))
       const remoteSessions: ReadingSession[] = JSON.parse(JSON.stringify(r.sessions ?? []))
       let localProgress: Record<string, ReadingProgress> = JSON.parse(JSON.stringify(progress.value))
-      const remoteProgress: Record<string, ReadingProgress> = JSON.parse(JSON.stringify(r.progress ?? {}))
+      // Backend returns progress as an array; convert back to Record.
+      const remoteProgressRaw: ReadingProgress[] = JSON.parse(JSON.stringify(r.progress ?? []))
+      const remoteProgress: Record<string, ReadingProgress> = {}
+      for (const p of remoteProgressRaw) {
+        if (p && p.bookId) remoteProgress[p.bookId] = p
+      }
       let localCopilot: CopilotSession[] = JSON.parse(JSON.stringify(copilotSessions.value))
       const remoteCopilot: CopilotSession[] = JSON.parse(JSON.stringify(r.copilotSessions ?? []))
 
@@ -961,15 +995,22 @@ export const useEbookStore = defineStore('ebook', () => {
         if (remoteBook) {
           const downloadTarget: Book =
             remoteBook.id === b.id ? b : { ...remoteBook, filePath: b.filePath }
-          readBookFile(downloadTarget).catch(() => {})
+          readBookFile(downloadTarget).catch((err) => {
+            console.error('[EbookSync] readBookFile failed:', b.title, err)
+          })
         }
       }
 
       // Push books that exist locally but are missing from the server
       const localOnlyBooks = localBooks.filter(lb => !remoteBooks.some(rb => bookFingerprint(rb) === bookFingerprint(lb)))
       if (localOnlyBooks.length > 0) {
-        pushToServer().catch(() => {})
-        for (const b of localOnlyBooks) pushBookFileToServer(b).catch(() => {})
+        console.log('[EbookSync] Pushing', localOnlyBooks.length, 'local-only books to server')
+        pushToServer().catch((err) => console.error('[EbookSync] pushToServer (local-only) failed:', err))
+        for (const b of localOnlyBooks) {
+          pushBookFileToServer(b).catch((err) => {
+            console.error('[EbookSync] pushBookFileToServer (local-only) failed:', b.title, err)
+          })
+        }
       }
 
       // Settings (remote wins)
@@ -1026,8 +1067,10 @@ export const useEbookStore = defineStore('ebook', () => {
         ttsPlaybackPos.value = remappedPlayback
         save(LS_TTS_PLAYBACK, ttsPlaybackPos.value)
       }
-      storageUsed.value = remote.storageUsed ?? 0
-    } catch { /* ignore */ }
+      storageUsed.value = r.storageUsed ?? 0
+    } catch (err) {
+      console.error('[EbookSync] syncFromServer uncaught error:', err)
+    }
   }
 
   return {

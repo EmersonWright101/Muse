@@ -24,6 +24,7 @@ export function setSyncState(state: SyncState) {
 /** Call before any backend operation. Immediately shows 'syncing'. */
 export function beginSyncOp() {
   _activeOps++
+  syncStatus.lastError = null
   if (syncStatus.state !== 'not_configured') {
     syncStatus.state = 'syncing'
   }

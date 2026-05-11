@@ -78,7 +78,16 @@ async function uploadToBackend(
 
 async function fetchFromBackend(bookId: string, chapterIdx: number, partIdx: number): Promise<Uint8Array | null> {
   if (!isBackendConfigured()) return null
-  return apiGetBinary(`/api/ebook/tts/${encodeURIComponent(bookId)}/${chapterIdx}/${partIdx}`)
+  try {
+    const result = await apiGetBinary(`/api/ebook/tts/${encodeURIComponent(bookId)}/${chapterIdx}/${partIdx}`)
+    if (!result) {
+      console.warn(`[TTS] fetchFromBackend returned null: bookId=${bookId}, chapter=${chapterIdx}, part=${partIdx}`)
+    }
+    return result
+  } catch (err) {
+    console.error(`[TTS] fetchFromBackend failed: bookId=${bookId}, chapter=${chapterIdx}, part=${partIdx}`, err)
+    return null
+  }
 }
 
 // ─── Text extraction ──────────────────────────────────────────────────────────
@@ -345,15 +354,21 @@ export function useEbookTtsGenerator() {
   async function getChunkUrl(bookId: string, chapterIdx: number, partIdx: number): Promise<string | null> {
     const path = fsPath(bookId, chapterIdx, partIdx)
     try {
-      if (!(await exists(path, { baseDir: BaseDirectory.AppData }))) {
+      const localExists = await exists(path, { baseDir: BaseDirectory.AppData })
+      if (!localExists) {
+        console.log(`[TTS] Local chunk missing, fetching from backend: ${path}`)
         const remote = await fetchFromBackend(bookId, chapterIdx, partIdx)
         if (!remote) return null
         await saveWav(bookId, chapterIdx, partIdx, remote)
+        console.log(`[TTS] Downloaded and saved: ${path} (${remote.byteLength} bytes)`)
       }
       const { readFile } = await import('@tauri-apps/plugin-fs')
       const data = await readFile(path, { baseDir: BaseDirectory.AppData })
       return URL.createObjectURL(new Blob([data], { type: 'audio/wav' }))
-    } catch { return null }
+    } catch (err) {
+      console.error(`[TTS] getChunkUrl failed: ${path}`, err)
+      return null
+    }
   }
 
   /** Return all pre-generated part URLs for a chapter (caller must revoke each). */

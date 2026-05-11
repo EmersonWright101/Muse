@@ -30,7 +30,9 @@ const syncIconTitle = computed(() => {
     case 'done':    return '同步完成'
     case 'error':   return `同步失败：${syncStatus.lastError ?? '未知错误'}（点击重试）`
     case 'not_configured': return '未配置后端'
-    default:        return '后端已连接'
+    default:
+      if (syncStatus.lastError) return `上次同步失败：${syncStatus.lastError}（点击重试）`
+      return '后端已连接'
   }
 })
 
@@ -46,7 +48,7 @@ const statusText = computed(() => {
     return '正在同步…'
   }
   if (syncStatus.state === 'done') return '同步完成'
-  if (syncStatus.state === 'error') {
+  if (syncStatus.state === 'error' || syncStatus.lastError) {
     return `同步失败：${syncStatus.lastError ?? '未知错误'}`
   }
   return ''
@@ -57,7 +59,7 @@ const cloudSrc = computed(() => {
     case 'syncing': return cloudBlue
     case 'done':    return cloudGreen
     case 'error':   return cloudRed
-    default:        return cloudGray
+    default:        return syncStatus.lastError ? cloudRed : cloudGray
   }
 })
 
@@ -69,12 +71,14 @@ watch(() => syncStatus.state, (state) => {
   } else if (state === 'done') {
     showStatusText.value = true
     if (_hideTimer) clearTimeout(_hideTimer)
-    _hideTimer = setTimeout(() => { showStatusText.value = false }, 3000)
+    if (!syncStatus.lastError) {
+      _hideTimer = setTimeout(() => { showStatusText.value = false }, 3000)
+    }
   } else if (state === 'error') {
     showStatusText.value = true
     if (_hideTimer) { clearTimeout(_hideTimer); _hideTimer = null }
   } else if (state === 'idle') {
-    showStatusText.value = false
+    showStatusText.value = !!syncStatus.lastError
     if (_hideTimer) { clearTimeout(_hideTimer); _hideTimer = null }
   }
 }, { immediate: true })

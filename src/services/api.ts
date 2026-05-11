@@ -34,7 +34,12 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
 
 async function parseError(resp: { status: number; statusText: string; json: () => Promise<unknown> }): Promise<ApiError> {
   let msg = resp.statusText
-  try { msg = ((await resp.json()) as { detail?: string }).detail ?? msg } catch { /* ignore */ }
+  try {
+    const body = await resp.json() as { detail?: unknown }
+    if (body.detail !== undefined) {
+      msg = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
+    }
+  } catch { /* ignore */ }
   return new ApiError(resp.status, msg)
 }
 

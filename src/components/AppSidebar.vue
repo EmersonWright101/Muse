@@ -6,6 +6,7 @@ import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings, BookOpen } fro
 import toolIcon from '../assets/icons/tool.svg'
 import { apiPut } from '../services/api'
 import assistantIcon from '../assets/icons/AIAssistant@2x.svg'
+import appIcon from '../assets/app-icon.png'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useTodoStore } from '../stores/todo'
 

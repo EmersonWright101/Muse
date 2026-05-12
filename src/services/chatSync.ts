@@ -323,7 +323,7 @@ export async function pushConvToServer(conv: Conversation): Promise<void> {
           defaultProviderId: conv.defaultProviderId ?? remoteConv.defaultProviderId,
           defaultModelId: conv.defaultModelId ?? remoteConv.defaultModelId,
           messages: mergeMessages(remoteConv.messages, conv.messages),
-          updatedAt: new Date().toISOString(),
+          updatedAt: [conv.updatedAt, remoteConv.updatedAt].filter(Boolean).sort().pop() || new Date().toISOString(),
         }
         const mergedCleaned = await prepareConvForServer(merged)
         return conversationToServerBody(mergedCleaned, { trashed_at: null, expiry_at: null })
@@ -361,7 +361,7 @@ export async function updateConvOnServer(conv: Conversation): Promise<void> {
           defaultProviderId: conv.defaultProviderId ?? remoteConv.defaultProviderId,
           defaultModelId: conv.defaultModelId ?? remoteConv.defaultModelId,
           messages: mergeMessages(remoteConv.messages, conv.messages),
-          updatedAt: new Date().toISOString(),
+          updatedAt: [conv.updatedAt, remoteConv.updatedAt].filter(Boolean).sort().pop() || new Date().toISOString(),
         }
         const mergedCleaned = await prepareConvForServer(merged)
         return conversationToServerBody(mergedCleaned)

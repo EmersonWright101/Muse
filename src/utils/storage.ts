@@ -290,7 +290,7 @@ export async function saveConversation(conv: Conversation): Promise<void> {
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
   // Push to backend (fire-and-forget; upsert via POST→fallback-to-PUT)
   if (isBackendConfigured()) {
-    pushConvToServer(conv).catch(() => {});
+    pushConvToServer(conv).catch((err) => { console.error('[Storage] Failed to push conversation to server:', err); });
   }
 
   await indexMutex.run(async () => {
@@ -366,7 +366,7 @@ export async function deleteConversation(id: string): Promise<void> {
   localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
   saveDiskTombstones(map);
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
-  deleteConvOnServer(id).catch(() => {});
+  deleteConvOnServer(id).catch((err) => { console.error('[Storage] Failed to delete conversation on server:', err); });
 }
 
 export async function deleteConversations(ids: string[]): Promise<void> {
@@ -387,7 +387,7 @@ export async function deleteConversations(ids: string[]): Promise<void> {
   localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
   saveDiskTombstones(map);
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
-  for (const id of set) deleteConvOnServer(id).catch(() => {});
+  for (const id of set) deleteConvOnServer(id).catch((err) => { console.error('[Storage] Failed to delete conversation on server:', err); });
 }
 
 // ─── Trash (soft-delete) ─────────────────────────────────────────────────────
@@ -443,7 +443,7 @@ export async function trashConversation(
   const days = parseInt(localStorage.getItem('muse-trash-retention-days') ?? '30') || 30;
   const expiryAt = days > 0 ? new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString() : null;
   if (opts.sync !== false) {
-    trashConvOnServer(id, deletedAt, expiryAt).catch(() => {});
+    trashConvOnServer(id, deletedAt, expiryAt).catch((err) => { console.error('[Storage] Failed to trash conversation on server:', err); });
   }
 }
 
@@ -500,7 +500,7 @@ export async function restoreConversationFromTrash(id: string): Promise<void> {
   });
 
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
-  restoreConvOnServer(id).catch(() => {});
+  restoreConvOnServer(id).catch((err) => { console.error('[Storage] Failed to restore conversation on server:', err); });
 }
 
 export async function permanentDeleteFromTrash(id: string): Promise<void> {
@@ -519,7 +519,7 @@ export async function permanentDeleteFromTrash(id: string): Promise<void> {
   localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
   saveDiskTombstones(map);
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
-  deleteConvOnServer(id).catch(() => {});
+  deleteConvOnServer(id).catch((err) => { console.error('[Storage] Failed to permanently delete conversation on server:', err); });
 }
 
 export async function purgeExpiredTrash(days = 30): Promise<void> {

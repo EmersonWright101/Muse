@@ -9,6 +9,7 @@ import { ref, computed } from 'vue'
 import { readFile, writeFile, mkdir, exists, remove, copyFile, readTextFile, writeTextFile, BaseDirectory } from '@tauri-apps/plugin-fs'
 import { ebooksDir, resolveDataRoot } from '../utils/path'
 import { apiGet, apiPut, apiPutBinary, apiGetBinary, apiDelete, isBackendConfigured } from '../services/api'
+import { recordSyncTimestamp } from '../utils/syncTimestamp'
 
 // ─── Ebook Copilot usage tracking ────────────────────────────────────────────
 
@@ -326,7 +327,7 @@ export const useEbookStore = defineStore('ebook', () => {
       const p = `${dir}/${book.filePath}`
       if (await exists(p)) await remove(p)
     } catch { /* ignore */ }
-    apiDelete(`/api/ebook/books/${book.id}/file`).catch(() => {})
+    apiDelete(`/api/ebook/books/${book.id}/file`).catch((err) => { console.error('[EbookSync] Failed to delete book file on server:', err) })
   }
 
   function schedulePushToServer() {
@@ -334,7 +335,7 @@ export const useEbookStore = defineStore('ebook', () => {
     if (_serverPushTimer) clearTimeout(_serverPushTimer)
     _serverPushTimer = setTimeout(() => {
       _serverPushTimer = null
-      pushToServer().catch(() => {})
+      pushToServer().catch((err) => { console.error('[EbookSync] Scheduled push failed:', err) })
     }, 800)
   }
 
@@ -349,7 +350,7 @@ export const useEbookStore = defineStore('ebook', () => {
     }
     books.value.unshift(book)
     save(LS_BOOKS, books.value)
-    pushToServer().catch(() => {})
+    pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
     return book
   }
 
@@ -373,7 +374,7 @@ export const useEbookStore = defineStore('ebook', () => {
     save(LS_PROGRESS, progress.value)
     save(LS_ANNOTATIONS, annotations.value)
     save(LS_SESSIONS, sessions.value)
-    pushToServer().catch(() => {})
+    pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
   }
 
   function setActiveBook(id: string | null) {
@@ -408,7 +409,7 @@ export const useEbookStore = defineStore('ebook', () => {
     const full: BookAnnotation = { ...ann, id: uuid(), createdAt: now, updatedAt: now }
     annotations.value.push(full)
     save(LS_ANNOTATIONS, annotations.value)
-    pushToServer().catch(() => {})
+    pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
     return full
   }
 
@@ -417,13 +418,13 @@ export const useEbookStore = defineStore('ebook', () => {
     if (idx < 0) return
     annotations.value[idx] = { ...annotations.value[idx], ...patch, updatedAt: Date.now() }
     save(LS_ANNOTATIONS, annotations.value)
-    pushToServer().catch(() => {})
+    pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
   }
 
   function removeAnnotation(id: string) {
     annotations.value = annotations.value.filter(a => a.id !== id)
     save(LS_ANNOTATIONS, annotations.value)
-    pushToServer().catch(() => {})
+    pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
   }
 
   function getAnnotations(bookId: string): BookAnnotation[] {
@@ -451,7 +452,7 @@ export const useEbookStore = defineStore('ebook', () => {
     save(LS_SESSIONS, sessions.value)
     _sessionStart = 0
     _sessionBookId = ''
-    pushToServer().catch(() => {})
+    pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
   }
 
   /** Returns { 'YYYY-MM-DD': totalMinutes } for the last N days. */
@@ -532,7 +533,7 @@ export const useEbookStore = defineStore('ebook', () => {
     const col: Collection = { id: uuid(), name, createdAt: Date.now() }
     collections.value.push(col)
     save(LS_COLLECTIONS, collections.value)
-    pushToServer().catch(() => {})
+    pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
     return col
   }
 
@@ -543,7 +544,7 @@ export const useEbookStore = defineStore('ebook', () => {
     })
     save(LS_COLLECTIONS, collections.value)
     save(LS_BOOKS, books.value)
-    pushToServer().catch(() => {})
+    pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
   }
 
   function setBookCollection(bookId: string, collectionId: string, add: boolean) {
@@ -559,7 +560,7 @@ export const useEbookStore = defineStore('ebook', () => {
 
   function setReadStatus(bookId: string, status: ReadStatus) {
     updateBook(bookId, { readStatus: status })
-    pushToServer().catch(() => {})
+    pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
   }
 
   // ─── Reader settings ──────────────────────────────────────────────────────────
@@ -567,20 +568,20 @@ export const useEbookStore = defineStore('ebook', () => {
   function updateSettings(patch: Partial<ReaderSettings>) {
     settings.value = normalizeSettings({ ...settings.value, ...patch })
     save(LS_SETTINGS, settings.value)
-    pushToServer().catch(() => {})
+    pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
   }
 
   function updateTtsSettings(patch: Partial<TtsSettings>) {
     ttsSettings.value = { ...ttsSettings.value, ...patch }
     save(LS_TTS_SETTINGS, ttsSettings.value)
-    pushTtsSettingsToServer().catch(() => {})
+    pushTtsSettingsToServer().catch((err) => { console.error('[EbookSync] Push TTS settings to server failed:', err) })
   }
 
   // ─── TTS settings standalone server sync ──────────────────────────────────────
 
   async function pushTtsSettingsToServer(): Promise<void> {
     if (!isBackendConfigured()) return
-    await apiPut('/api/settings/ebookTts', { value: ttsSettings.value }).catch(() => {})
+    try { await apiPut('/api/settings/ebookTts', { value: ttsSettings.value }) } catch (err) { console.error('[EbookSync] Push TTS settings to server failed:', err) }
   }
 
   async function syncTtsSettingsFromServer(): Promise<void> {
@@ -592,7 +593,7 @@ export const useEbookStore = defineStore('ebook', () => {
         save(LS_TTS_SETTINGS, ttsSettings.value)
       } else if (remote) {
         // Backend has no TTS settings yet → push local
-        pushTtsSettingsToServer().catch(() => {})
+        pushTtsSettingsToServer().catch((err) => { console.error('[EbookSync] Push TTS settings to server failed:', err) })
       }
     } catch { /* ignore */ }
   }
@@ -647,9 +648,9 @@ export const useEbookStore = defineStore('ebook', () => {
       }
     } catch { /* ignore */ }
     // Delete server-side audio chunks and manifests
-    await apiDelete(`/api/ebook/tts/${bookId}`).catch(() => {})
+    try { await apiDelete(`/api/ebook/tts/${bookId}`) } catch (err) { console.error('[EbookSync] Failed to delete audiobook on server:', err) }
     // Push cleared job state so other devices also see no audiobook
-    await pushToServer().catch(() => {})
+    try { await pushToServer() } catch (err) { console.error('[EbookSync] Push to server failed:', err) }
   }
 
   // ─── Copilot sessions ────────────────────────────────────────────────────────
@@ -670,7 +671,7 @@ export const useEbookStore = defineStore('ebook', () => {
       copilotSessions.value = copilotSessions.value.filter(s => s.id !== oldest.id)
     }
     save(LS_COPILOT, copilotSessions.value)
-    pushToServer().catch(() => {})
+    pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
   }
 
   function getCopilotSessions(bookId: string): CopilotSession[] {
@@ -682,7 +683,7 @@ export const useEbookStore = defineStore('ebook', () => {
   function deleteCopilotSession(id: string) {
     copilotSessions.value = copilotSessions.value.filter(s => s.id !== id)
     save(LS_COPILOT, copilotSessions.value)
-    pushToServer().catch(() => {})
+    pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
   }
 
   // ─── Backend sync ─────────────────────────────────────────────────────────────
@@ -1116,6 +1117,7 @@ export const useEbookStore = defineStore('ebook', () => {
       if (r.storageBreakdown) {
         (storageUsed as any)._breakdown = r.storageBreakdown
       }
+      recordSyncTimestamp('ebook', new Date().toISOString())
     } catch (err) {
       console.error('[EbookSync] syncFromServer uncaught error:', err)
     }

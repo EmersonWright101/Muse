@@ -13,7 +13,7 @@
  * swallowed so the app boots even when offline.
  */
 
-import { apiGet, apiDelete, apiPost, apiPut, isBackendConfigured } from './api'
+import { apiGet, apiDelete, apiPost, apiPut, isBackendConfigured, ApiError } from './api'
 import { setSyncState, beginSyncOp, endSyncOp, failSyncOp, setSyncModule, setSyncAction, addSyncAction, removeSyncAction } from '../stores/syncStatus'
 import {
   fetchConvListFromServer,
@@ -92,6 +92,56 @@ async function getStatisticsStore() {
 async function getHomeStore() {
   const { useHomeStore } = await import('../stores/home')
   return useHomeStore()
+}
+
+interface SyncStatus {
+  settings: string | null
+  chat: string | null
+  travel: string | null
+  todo: string | null
+  ebook: string | null
+  home: string | null
+  tools: string | null
+  papers: string | null
+}
+
+const LS_SYNC_TS_KEY = 'muse-sync-timestamps'
+
+function getLocalSyncTs(): Record<string, string | null> {
+  try { return JSON.parse(localStorage.getItem(LS_SYNC_TS_KEY) || '{}') }
+  catch { return {} }
+}
+
+function setLocalSyncTs(module: string, ts: string | null) {
+  const all = getLocalSyncTs()
+  if (ts) all[module] = ts
+  else delete all[module]
+  localStorage.setItem(LS_SYNC_TS_KEY, JSON.stringify(all))
+}
+
+function shouldSync(module: string, remoteTs: string | null): boolean {
+  const localTs = getLocalSyncTs()[module]
+  if (!remoteTs && !localTs) return true
+  if (!remoteTs || !localTs) return true
+  return localTs !== remoteTs
+}
+
+const MODULE_TS_MAP: Record<string, keyof SyncStatus> = {
+  settings: 'settings',
+  assistants: 'chat',
+  privateAssistant: 'chat',
+  chat: 'chat',
+  travel: 'travel',
+  todo: 'todo',
+  ebook: 'ebook',
+  tools: 'tools',
+}
+
+function getRemoteTs(remoteStatus: SyncStatus | null, module: string): string | null {
+  if (!remoteStatus) return null
+  const key = MODULE_TS_MAP[module]
+  if (!key) return null
+  return remoteStatus[key]
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -599,92 +649,132 @@ function buildChatUiSettings() {
   }
 }
 
+// ─── 全局同步锁 ──────────────────────────────────────────────────────────────
+
+let _syncInProgress = false
+
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
-export async function syncAllFromServer(): Promise<void> {
-  if (!isBackendConfigured()) {
-    setSyncState('not_configured')
+export async function syncAllFromServer(force = false): Promise<void> {
+  if (_syncInProgress) {
+    console.log('[Sync] Already in progress, skipping')
     return
   }
+  _syncInProgress = true
+
+  if (!isBackendConfigured()) {
+    setSyncState('not_configured')
+    _syncInProgress = false
+    return
+  }
+
+  // Fetch remote sync timestamps
+  let remoteStatus: SyncStatus | null = null
+  try {
+    remoteStatus = await apiGet<SyncStatus>('/api/sync-status')
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) {
+      console.log('[Sync] /api/sync-status not found, falling back to full sync')
+    } else {
+      console.error('[Sync] Failed to fetch sync status:', err)
+    }
+  }
+
   let firstErr: unknown = undefined
   beginSyncOp()
+
+  try {
+
+  // Track success for modules that share timestamps
+  let assistantsOk = true
+  let privateAssistantOk = true
+  let chatOk = true
+  let toolsOk = true
+
   try {
     // 1. Pull all settings in one request
-    setSyncModule('设置')
-    setSyncAction('正在同步设置…')
-    const allSettings = await apiGet<Record<string, unknown>>('/api/settings')
-    const [aiStore, chatSettingsStore, webSearchStore, homeStore, privateAssistantSettings, travelCopilotStore, paperCopilotStore, statisticsStore] = await Promise.all([
-      getAiStore(),
-      getChatSettingsStore(),
-      getWebSearchStore(),
-      getHomeStore(),
-      getPrivateAssistantSettingsStore(),
-      getTravelCopilotStore(),
-      getPaperCopilotStore(),
-      getStatisticsStore(),
-    ])
-    const ebookStore = useEbookStore()
-    if (allSettings && (allSettings.ai || allSettings.chat || allSettings.webSearch || allSettings.home || allSettings.general || allSettings.privateAssistant || allSettings.travelCopilot || allSettings.paperCopilot || allSettings.profile || allSettings.chatUi || allSettings.statistics || allSettings.ebookTts)) {
-      // Backend has settings → apply them
-      setSyncAction('正在同步 AI 提供商与模型配置（含 API 密钥加密）…')
-      await aiStore.syncFromServer(allSettings)
-      setSyncAction('正在同步聊天界面与标题生成模型配置…')
-      await chatSettingsStore.syncFromServer(allSettings)
-      setSyncAction('正在同步网络搜索提供商与模型配置…')
-      await webSearchStore.syncFromServer(allSettings)
-      setSyncAction('正在同步主页快捷入口与海报配置…')
-      await homeStore.syncFromServer(allSettings)
-      setSyncAction('正在同步私人助手的默认模型与参数配置…')
-      await privateAssistantSettings.syncFromServer(allSettings)
-      setSyncAction('正在同步旅行助手的默认模型与开关状态…')
-      await travelCopilotStore.syncFromServer(allSettings)
-      setSyncAction('正在同步论文助手的默认模型与开关状态…')
-      await paperCopilotStore.syncFromServer(allSettings)
-      setSyncAction('正在同步统计数据与货币单位设置…')
-      await statisticsStore.syncFromServer(allSettings)
-      if (allSettings.general) {
-        setSyncAction('正在同步通用设置（界面语言 / 货币单位 / 回收站保留天数）…')
-        applyGeneralSettings(allSettings.general as GeneralSettings)
+    if (force || shouldSync('settings', getRemoteTs(remoteStatus, 'settings'))) {
+      setSyncModule('设置')
+      setSyncAction('正在同步设置…')
+      const allSettings = await apiGet<Record<string, unknown>>('/api/settings')
+      const [aiStore, chatSettingsStore, webSearchStore, homeStore, privateAssistantSettings, travelCopilotStore, paperCopilotStore, statisticsStore] = await Promise.all([
+        getAiStore(),
+        getChatSettingsStore(),
+        getWebSearchStore(),
+        getHomeStore(),
+        getPrivateAssistantSettingsStore(),
+        getTravelCopilotStore(),
+        getPaperCopilotStore(),
+        getStatisticsStore(),
+      ])
+      const ebookStore = useEbookStore()
+      if (allSettings && (allSettings.ai || allSettings.chat || allSettings.webSearch || allSettings.home || allSettings.general || allSettings.privateAssistant || allSettings.travelCopilot || allSettings.paperCopilot || allSettings.profile || allSettings.chatUi || allSettings.statistics || allSettings.ebookTts)) {
+        // Backend has settings → apply them
+        setSyncAction('正在同步 AI 提供商与模型配置（含 API 密钥加密）…')
+        await aiStore.syncFromServer(allSettings)
+        setSyncAction('正在同步聊天界面与标题生成模型配置…')
+        await chatSettingsStore.syncFromServer(allSettings)
+        setSyncAction('正在同步网络搜索提供商与模型配置…')
+        await webSearchStore.syncFromServer(allSettings)
+        setSyncAction('正在同步主页快捷入口与海报配置…')
+        await homeStore.syncFromServer(allSettings)
+        setSyncAction('正在同步私人助手的默认模型与参数配置…')
+        await privateAssistantSettings.syncFromServer(allSettings)
+        setSyncAction('正在同步旅行助手的默认模型与开关状态…')
+        await travelCopilotStore.syncFromServer(allSettings)
+        setSyncAction('正在同步论文助手的默认模型与开关状态…')
+        await paperCopilotStore.syncFromServer(allSettings)
+        setSyncAction('正在同步统计数据与货币单位设置…')
+        await statisticsStore.syncFromServer(allSettings)
+        if (allSettings.general) {
+          setSyncAction('正在同步通用设置（界面语言 / 货币单位 / 回收站保留天数）…')
+          applyGeneralSettings(allSettings.general as GeneralSettings)
+        }
+        if (allSettings.profile) {
+          setSyncAction('正在同步用户个人资料（头像）…')
+          const avatar = (allSettings.profile as { avatar?: unknown }).avatar
+          if (typeof avatar === 'string') localStorage.setItem('muse-user-avatar', avatar)
+          else if (avatar === null) localStorage.removeItem('muse-user-avatar')
+        }
+        if (allSettings.chatUi && typeof (allSettings.chatUi as { variantLayout?: unknown }).variantLayout === 'object') {
+          setSyncAction('正在同步聊天变体布局设置（标签页 / 横向）…')
+          localStorage.setItem('muse-variant-layout', JSON.stringify((allSettings.chatUi as { variantLayout: unknown }).variantLayout))
+        }
+        // Sync ebook TTS settings independently
+        setSyncAction('正在同步电子书朗读设置（TTS 提供商 / 音色 / 语速 / 模型）…')
+        await ebookStore.syncTtsSettingsFromServer()
+      } else if (allSettings) {
+        // Backend returned {} (first time) → push all local settings to backend
+        setSyncAction('首次同步：正在推送 AI 提供商与模型配置（含 API 密钥加密）…')
+        aiStore.pushToServer().catch(() => {})
+        setSyncAction('首次同步：正在推送聊天界面与标题生成模型配置…')
+        chatSettingsStore.pushToServer().catch(() => {})
+        setSyncAction('首次同步：正在推送网络搜索提供商与模型配置…')
+        webSearchStore.pushToServer().catch(() => {})
+        setSyncAction('首次同步：正在推送主页快捷入口与海报配置…')
+        homeStore.pushToServer()
+        setSyncAction('首次同步：正在推送私人助手默认模型与参数配置…')
+        privateAssistantSettings.pushToServer().catch(() => {})
+        setSyncAction('首次同步：正在推送旅行助手默认模型与开关状态…')
+        travelCopilotStore.pushToServer().catch(() => {})
+        setSyncAction('首次同步：正在推送论文助手默认模型与开关状态…')
+        paperCopilotStore.pushToServer().catch(() => {})
+        setSyncAction('首次同步：正在推送统计数据与货币单位设置…')
+        statisticsStore.pushToServer().catch(() => {})
+        pushGeneralSettings().catch(() => {})
+        pushProfileSettings().catch(() => {})
+        pushChatUiSettings().catch(() => {})
+        // Push ebook library (settings, books, progress, etc.) since it uses its own endpoint
+        ebookStore.pushToServer().catch(() => {})
+        ebookStore.pushTtsSettingsToServer().catch(() => {})
+        // Push tool histories (first-time migration)
+        pushAllToolHistories().catch(() => {})
       }
-      if (allSettings.profile) {
-        setSyncAction('正在同步用户个人资料（头像）…')
-        const avatar = (allSettings.profile as { avatar?: unknown }).avatar
-        if (typeof avatar === 'string') localStorage.setItem('muse-user-avatar', avatar)
-        else if (avatar === null) localStorage.removeItem('muse-user-avatar')
+      if (remoteStatus) {
+        setLocalSyncTs('settings', remoteStatus.settings)
       }
-      if (allSettings.chatUi && typeof (allSettings.chatUi as { variantLayout?: unknown }).variantLayout === 'object') {
-        setSyncAction('正在同步聊天变体布局设置（标签页 / 横向）…')
-        localStorage.setItem('muse-variant-layout', JSON.stringify((allSettings.chatUi as { variantLayout: unknown }).variantLayout))
-      }
-      // Sync ebook TTS settings independently
-      setSyncAction('正在同步电子书朗读设置（TTS 提供商 / 音色 / 语速 / 模型）…')
-      await ebookStore.syncTtsSettingsFromServer()
-    } else if (allSettings) {
-      // Backend returned {} (first time) → push all local settings to backend
-      setSyncAction('首次同步：正在推送 AI 提供商与模型配置（含 API 密钥加密）…')
-      aiStore.pushToServer().catch(() => {})
-      setSyncAction('首次同步：正在推送聊天界面与标题生成模型配置…')
-      chatSettingsStore.pushToServer().catch(() => {})
-      setSyncAction('首次同步：正在推送网络搜索提供商与模型配置…')
-      webSearchStore.pushToServer().catch(() => {})
-      setSyncAction('首次同步：正在推送主页快捷入口与海报配置…')
-      homeStore.pushToServer()
-      setSyncAction('首次同步：正在推送私人助手默认模型与参数配置…')
-      privateAssistantSettings.pushToServer().catch(() => {})
-      setSyncAction('首次同步：正在推送旅行助手默认模型与开关状态…')
-      travelCopilotStore.pushToServer().catch(() => {})
-      setSyncAction('首次同步：正在推送论文助手默认模型与开关状态…')
-      paperCopilotStore.pushToServer().catch(() => {})
-      setSyncAction('首次同步：正在推送统计数据与货币单位设置…')
-      statisticsStore.pushToServer().catch(() => {})
-      pushGeneralSettings().catch(() => {})
-      pushProfileSettings().catch(() => {})
-      pushChatUiSettings().catch(() => {})
-      // Push ebook library (settings, books, progress, etc.) since it uses its own endpoint
-      ebookStore.pushToServer().catch(() => {})
-      ebookStore.pushTtsSettingsToServer().catch(() => {})
-      // Push tool histories (first-time migration)
-      pushAllToolHistories().catch(() => {})
+    } else {
+      console.log('[Sync] Skip settings (timestamp match)')
     }
   } catch (err) {
     console.error('[Sync] Settings sync failed:', err)
@@ -692,53 +782,126 @@ export async function syncAllFromServer(): Promise<void> {
   }
 
   // 2. Sync assistants
-  try {
-    setSyncModule('助手')
-    setSyncAction('正在同步助手列表、系统提示词与参数配置…')
-    const assistantsStore = await getAssistantsStore()
-    await assistantsStore.syncFromServer()
-  } catch (err) {
-    console.error('[Sync] Assistants sync failed:', err)
-    firstErr ??= err
+  if (force || shouldSync('assistants', getRemoteTs(remoteStatus, 'assistants'))) {
+    assistantsOk = false
+    try {
+      setSyncModule('助手')
+      setSyncAction('正在同步助手列表、系统提示词与参数配置…')
+      const assistantsStore = await getAssistantsStore()
+      await assistantsStore.syncFromServer()
+      assistantsOk = true
+    } catch (err) {
+      console.error('[Sync] Assistants sync failed:', err)
+      firstErr ??= err
+    }
+  } else {
+    console.log('[Sync] Skip assistants (timestamp match)')
   }
 
-  try {
-    setSyncModule('私人助手')
-    setSyncAction('正在同步私人助手对话记录与消息历史…')
-    const privateAssistantStore = await getPrivateAssistantStore()
-    await privateAssistantStore.syncFromServer()
-  } catch (err) {
-    console.error('[Sync] Private assistants sync failed:', err)
-    firstErr ??= err
+  // 3. Sync private assistants
+  if (force || shouldSync('privateAssistant', getRemoteTs(remoteStatus, 'privateAssistant'))) {
+    privateAssistantOk = false
+    try {
+      setSyncModule('私人助手')
+      setSyncAction('正在同步私人助手对话记录与消息历史…')
+      const privateAssistantStore = await getPrivateAssistantStore()
+      await privateAssistantStore.syncFromServer()
+      privateAssistantOk = true
+    } catch (err) {
+      console.error('[Sync] Private assistants sync failed:', err)
+      firstErr ??= err
+    }
+  } else {
+    console.log('[Sync] Skip privateAssistant (timestamp match)')
   }
 
-  // 3+4+5+6+7. Chat list + travel notes + todo + ebook + tools (parallel)
+  // 4+5+6+7+8. Chat list + travel notes + todo + ebook + tools (parallel)
   setSyncModule(null)
   setSyncAction(null)
-  addSyncAction('正在同步对话列表、消息内容与阅读进度…')
-  addSyncAction('正在同步旅行笔记、地图标记、图片与分类标签…')
-  addSyncAction('正在同步待办事项列表、分类与完成状态…')
-  addSyncAction('正在同步书库、阅读进度、批注与收藏分类…')
-  addSyncAction('正在同步各工具的使用历史记录…')
-  addSyncAction('正在同步 RemoveBg AI 模型权重文件…')
+
   const todoStore = getTodoStore()
   const ebookStore = useEbookStore()
-  const parallelResults = await Promise.allSettled([
-    syncChatList().then(async () => {
-      removeSyncAction('正在同步对话列表、消息内容与阅读进度…')
-      // After updating local index.json, tell the chat store to reload its in-memory list
-      // so the UI immediately shows synced titles and conversation order.
-      try {
-        const { useChatStore } = await import('../stores/chat')
-        useChatStore().loadList()
-      } catch { /* non-critical */ }
-    }).catch((err) => { removeSyncAction('正在同步对话列表、消息内容与阅读进度…'); throw err }),
-    syncTravelList().then(() => removeSyncAction('正在同步旅行笔记、地图标记、图片与分类标签…')).catch((err) => { removeSyncAction('正在同步旅行笔记、地图标记、图片与分类标签…'); throw err }),
-    todoStore.load().then(() => removeSyncAction('正在同步待办事项列表、分类与完成状态…')).catch((err) => { removeSyncAction('正在同步待办事项列表、分类与完成状态…'); throw err }),
-    ebookStore.syncFromServer().then(() => removeSyncAction('正在同步书库、阅读进度、批注与收藏分类…')).catch((err) => { removeSyncAction('正在同步书库、阅读进度、批注与收藏分类…'); throw err }),
-    syncAllToolHistories().then(() => removeSyncAction('正在同步各工具的使用历史记录…')).catch((err) => { removeSyncAction('正在同步各工具的使用历史记录…'); throw err }),
-    syncRemoveBgModels().then(() => removeSyncAction('正在同步 RemoveBg AI 模型权重文件…')).catch((err) => { removeSyncAction('正在同步 RemoveBg AI 模型权重文件…'); throw err }),
-  ])
+
+  const parallelPromises: Promise<void>[] = []
+
+  if (force || shouldSync('chat', getRemoteTs(remoteStatus, 'chat'))) {
+    chatOk = false
+    addSyncAction('正在同步对话列表、消息内容与阅读进度…')
+    parallelPromises.push(
+      syncChatList().then(async () => {
+        removeSyncAction('正在同步对话列表、消息内容与阅读进度…')
+        // After updating local index.json, tell the chat store to reload its in-memory list
+        // so the UI immediately shows synced titles and conversation order.
+        try {
+          const { useChatStore } = await import('../stores/chat')
+          useChatStore().loadList()
+        } catch { /* non-critical */ }
+        chatOk = true
+      }).catch((err) => { removeSyncAction('正在同步对话列表、消息内容与阅读进度…'); throw err })
+    )
+  } else {
+    console.log('[Sync] Skip chat (timestamp match)')
+  }
+
+  if (force || shouldSync('travel', getRemoteTs(remoteStatus, 'travel'))) {
+    addSyncAction('正在同步旅行笔记、地图标记、图片与分类标签…')
+    parallelPromises.push(
+      syncTravelList().then(() => {
+        removeSyncAction('正在同步旅行笔记、地图标记、图片与分类标签…')
+        if (remoteStatus) {
+          setLocalSyncTs('travel', remoteStatus.travel)
+        }
+      }).catch((err) => { removeSyncAction('正在同步旅行笔记、地图标记、图片与分类标签…'); throw err })
+    )
+  } else {
+    console.log('[Sync] Skip travel (timestamp match)')
+  }
+
+  if (force || shouldSync('todo', getRemoteTs(remoteStatus, 'todo'))) {
+    addSyncAction('正在同步待办事项列表、分类与完成状态…')
+    parallelPromises.push(
+      todoStore.load().then(() => {
+        removeSyncAction('正在同步待办事项列表、分类与完成状态…')
+        if (remoteStatus) {
+          setLocalSyncTs('todo', remoteStatus.todo)
+        }
+      }).catch((err) => { removeSyncAction('正在同步待办事项列表、分类与完成状态…'); throw err })
+    )
+  } else {
+    console.log('[Sync] Skip todo (timestamp match)')
+  }
+
+  if (force || shouldSync('ebook', getRemoteTs(remoteStatus, 'ebook'))) {
+    addSyncAction('正在同步书库、阅读进度、批注与收藏分类…')
+    parallelPromises.push(
+      ebookStore.syncFromServer().then(() => {
+        removeSyncAction('正在同步书库、阅读进度、批注与收藏分类…')
+        if (remoteStatus) {
+          setLocalSyncTs('ebook', remoteStatus.ebook)
+        }
+      }).catch((err) => { removeSyncAction('正在同步书库、阅读进度、批注与收藏分类…'); throw err })
+    )
+  } else {
+    console.log('[Sync] Skip ebook (timestamp match)')
+  }
+
+  if (force || shouldSync('tools', getRemoteTs(remoteStatus, 'tools'))) {
+    toolsOk = false
+    addSyncAction('正在同步各工具的使用历史记录…')
+    addSyncAction('正在同步 RemoveBg AI 模型权重文件…')
+    parallelPromises.push(
+      Promise.all([
+        syncAllToolHistories().then(() => removeSyncAction('正在同步各工具的使用历史记录…')).catch((err) => { removeSyncAction('正在同步各工具的使用历史记录…'); throw err }),
+        syncRemoveBgModels().then(() => removeSyncAction('正在同步 RemoveBg AI 模型权重文件…')).catch((err) => { removeSyncAction('正在同步 RemoveBg AI 模型权重文件…'); throw err }),
+      ]).then(() => {
+        toolsOk = true
+      })
+    )
+  } else {
+    console.log('[Sync] Skip tools (timestamp match)')
+  }
+
+  const parallelResults = await Promise.allSettled(parallelPromises)
   for (const result of parallelResults) {
     if (result.status === 'rejected') {
       console.error('[Sync] Parallel sync task failed:', result.reason)
@@ -746,11 +909,34 @@ export async function syncAllFromServer(): Promise<void> {
     }
   }
 
-  if (firstErr) {
-    failSyncOp(firstErr)
-  } else {
-    endSyncOp()
+  // Update shared timestamps only if all modules sharing them succeeded
+  if (remoteStatus) {
+    if (chatOk && assistantsOk && privateAssistantOk) {
+      setLocalSyncTs('chat', remoteStatus.chat)
+      setLocalSyncTs('assistants', remoteStatus.chat)
+      setLocalSyncTs('privateAssistant', remoteStatus.chat)
+    }
+    if (toolsOk) {
+      setLocalSyncTs('tools', remoteStatus.tools)
+    }
   }
+
+    if (firstErr) {
+      failSyncOp(firstErr)
+    } else {
+      endSyncOp()
+    }
+  } finally {
+    _syncInProgress = false
+  }
+}
+
+/**
+ * Force a full sync by clearing local timestamps and syncing everything.
+ */
+export async function forceSyncAll(): Promise<void> {
+  localStorage.removeItem(LS_SYNC_TS_KEY)
+  await syncAllFromServer(true)
 }
 
 /**

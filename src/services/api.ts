@@ -32,6 +32,10 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   return { 'Authorization': `Bearer ${getServerApiKey()}`, ...extra }
 }
 
+// ─── 请求级别锁（避免同一路径的重复请求）──────────────────────────────────────
+
+const _requestLocks = new Map<string, AbortController>()
+
 async function parseError(resp: { status: number; statusText: string; json: () => Promise<unknown> }): Promise<ApiError> {
   let msg = resp.statusText
   try {
@@ -47,6 +51,9 @@ async function parseError(resp: { status: number; statusText: string; json: () =
 
 const MAX_CONFLICT_RETRIES = 3
 const CONFLICT_BACKOFF_MS = [1000, 2000, 4000]
+
+const MAX_RETRIES = 3
+const RETRY_BACKOFF_MS = [1000, 2000, 4000]
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
@@ -65,10 +72,46 @@ function showConflictToast(message: string): void {
 }
 
 /**
+ * Generic retry wrapper for transient API errors (network failures, 5xx, 429).
+ */
+export async function withRetry<T>(
+  attempt: () => Promise<T>,
+  options?: {
+    maxRetries?: number
+    delays?: number[]
+    shouldRetry?: (err: ApiError) => boolean
+    onRetry?: (err: ApiError, attempt: number) => void
+  }
+): Promise<T> {
+  const maxRetries = options?.maxRetries ?? MAX_RETRIES
+  const delays = options?.delays ?? RETRY_BACKOFF_MS
+  const shouldRetry = options?.shouldRetry ?? ((err: ApiError) => err.status === 0 || err.status >= 500 || err.status === 429)
+
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      return await attempt()
+    } catch (e) {
+      if (e instanceof ApiError && shouldRetry(e) && i < maxRetries) {
+        const delay = delays[i] ?? delays[delays.length - 1] ?? 4000
+        if (options?.onRetry) {
+          options.onRetry(e, i + 1)
+        }
+        await sleep(delay)
+        continue
+      }
+      throw e
+    }
+  }
+  throw new ApiError(0, 'Retry failed after maximum retries')
+}
+
+/**
  * Retry an API operation with exponential backoff when a 409 Conflict is received.
  * The caller should provide an `onConflict` callback that re-fetches the remote
  * resource and returns the merged body (for PUT/POST) or simply refreshes state
  * (for DELETE).
+ *
+ * Now composes with withRetry so callers also get transient-error retries.
  */
 export async function withConflictRetry<T>(
   attempt: () => Promise<T>,
@@ -146,15 +189,36 @@ export async function apiPutBinary(path: string, data: ArrayBuffer, contentType 
 
 export async function apiPut(path: string, body: unknown, options?: { onConflict?: () => Promise<unknown> }): Promise<void> {
   if (!isBackendConfigured()) return
+
+  const lockKey = `PUT:${path}`
+  const oldController = _requestLocks.get(lockKey)
+  if (oldController) {
+    oldController.abort()
+  }
+  const controller = new AbortController()
+  _requestLocks.set(lockKey, controller)
+
   let currentBody = body
-  return withConflictRetry(async () => {
-    const resp = await tauriFetch(`${baseUrl()}${path}`, {
-      method: 'PUT',
-      headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(currentBody),
+  try {
+    return await withRetry(async () => {
+      return withConflictRetry(async () => {
+        const resp = await tauriFetch(`${baseUrl()}${path}`, {
+          method: 'PUT',
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify(currentBody),
+          signal: controller.signal,
+        })
+        if (!resp.ok) throw await parseError(resp)
+      }, options ? async () => { currentBody = await options.onConflict!() } : undefined)
+    }, {
+      shouldRetry: (err) => err.status === 0 || err.status >= 500 || err.status === 429,
+      onRetry: (err, attempt) => console.warn(`[API] PUT ${path} retry ${attempt}/${MAX_RETRIES}: ${err.status} ${err.message}`),
     })
-    if (!resp.ok) throw await parseError(resp)
-  }, options ? async () => { currentBody = await options.onConflict!() } : undefined)
+  } finally {
+    if (_requestLocks.get(lockKey) === controller) {
+      _requestLocks.delete(lockKey)
+    }
+  }
 }
 
 // ─── POST ────────────────────────────────────────────────────────────────────
@@ -162,15 +226,20 @@ export async function apiPut(path: string, body: unknown, options?: { onConflict
 export async function apiPost<T>(path: string, body: unknown, options?: { onConflict?: () => Promise<unknown> }): Promise<T> {
   if (!isBackendConfigured()) throw new ApiError(0, 'No backend configured')
   let currentBody = body
-  return withConflictRetry(async () => {
-    const resp = await tauriFetch(`${baseUrl()}${path}`, {
-      method: 'POST',
-      headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(currentBody),
-    })
-    if (!resp.ok) throw await parseError(resp)
-    return resp.json() as Promise<T>
-  }, options ? async () => { currentBody = await options.onConflict!() } : undefined)
+  return withRetry(async () => {
+    return withConflictRetry(async () => {
+      const resp = await tauriFetch(`${baseUrl()}${path}`, {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(currentBody),
+      })
+      if (!resp.ok) throw await parseError(resp)
+      return resp.json() as Promise<T>
+    }, options ? async () => { currentBody = await options.onConflict!() } : undefined)
+  }, {
+    shouldRetry: (err) => err.status === 0 || err.status >= 500 || err.status === 429,
+    onRetry: (err, attempt) => console.warn(`[API] POST ${path} retry ${attempt}/${MAX_RETRIES}: ${err.status} ${err.message}`),
+  })
 }
 
 export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
@@ -188,11 +257,16 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
 
 export async function apiDelete(path: string, options?: { onConflict?: () => Promise<void> }): Promise<void> {
   if (!isBackendConfigured()) return
-  return withConflictRetry(async () => {
-    const resp = await tauriFetch(`${baseUrl()}${path}`, {
-      method: 'DELETE',
-      headers: authHeaders(),
-    })
-    if (!resp.ok) throw await parseError(resp)
-  }, options?.onConflict)
+  return withRetry(async () => {
+    return withConflictRetry(async () => {
+      const resp = await tauriFetch(`${baseUrl()}${path}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      })
+      if (!resp.ok) throw await parseError(resp)
+    }, options?.onConflict)
+  }, {
+    shouldRetry: (err) => err.status === 0 || err.status >= 500 || err.status === 429,
+    onRetry: (err, attempt) => console.warn(`[API] DELETE ${path} retry ${attempt}/${MAX_RETRIES}: ${err.status} ${err.message}`),
+  })
 }

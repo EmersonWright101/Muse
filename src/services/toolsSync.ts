@@ -1,4 +1,5 @@
 import { apiGet, apiPut, apiPostForm, apiGetBinary } from './api'
+import { recordSyncTimestamp } from '../utils/syncTimestamp'
 import { settings } from '../modules/tools/stores/toolsSettings'
 
 const TOOL_NAMES = [
@@ -136,6 +137,7 @@ export async function syncAllToolHistories(): Promise<void> {
       console.error(`[Sync] Failed to sync tool history for ${TOOL_NAMES[i]}:`, (results[i] as PromiseRejectedResult).reason)
     }
   }
+  recordSyncTimestamp('tools', new Date().toISOString())
 }
 
 /** Push all local tool histories to server (first-time migration). */

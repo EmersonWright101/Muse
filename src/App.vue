@@ -6,7 +6,8 @@ import { useTodoNotifications } from './modules/todo/composables/useTodoNotifica
 import TitleBar from './components/TitleBar.vue'
 import AppSidebar from './components/AppSidebar.vue'
 import { cleanupTmpDir } from './utils/path'
-import { syncAllFromServer } from './services/syncManager'
+import { tryNewSync } from './services/syncManager2'
+import { drainOfflineQueue, startNetworkMonitor } from './services/offlineQueue'
 import { useTodoStore } from './stores/todo'
 import { useEbookStore } from './stores/ebook'
 
@@ -41,13 +42,23 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+function onOnline() {
+  console.log('[App] Network online, draining offline queue...')
+  drainOfflineQueue().catch(console.error)
+}
+
 onMounted(() => {
   document.addEventListener('keydown', onKeydown)
+  window.addEventListener('online', onOnline)
+  startNetworkMonitor()
   cleanupTmpDir().catch(() => {})
-  syncAllFromServer().catch(() => {})
+  tryNewSync().catch(() => {})
   todo.load().catch(() => {})
 })
-onUnmounted(() => document.removeEventListener('keydown', onKeydown))
+onUnmounted(() => {
+  document.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('online', onOnline)
+})
 
 const panelFloats = computed(() =>
   (route.path === '/travel' && travel.viewMode !== 'editor') ||

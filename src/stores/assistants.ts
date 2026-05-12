@@ -89,7 +89,7 @@ export const useAssistantsStore = defineStore('assistants', () => {
         default_model_id:    a.defaultModelId,
         created_at:         a.createdAt,
         updated_at:         a.updatedAt,
-      }).catch(() => {})
+      }).catch((err) => { console.error('[AssistantsSync] Failed to create assistant on server:', err) })
     }
     await load()
     return a
@@ -141,7 +141,7 @@ export const useAssistantsStore = defineStore('assistants', () => {
             updated_at:         new Date().toISOString(),
           }
         },
-      }).catch(() => {})
+      }).catch((err) => { console.error('[AssistantsSync] Failed to update assistant on server:', err) })
     }
     await load()
   }
@@ -149,7 +149,7 @@ export const useAssistantsStore = defineStore('assistants', () => {
   async function remove(id: string) {
     await deleteAssistant(id)
     if (isBackendConfigured()) {
-      apiDelete(`/api/assistants/${id}`).catch(() => {})
+      apiDelete(`/api/assistants/${id}`).catch((err) => { console.error('[AssistantsSync] Failed to delete assistant on server:', err) })
     }
     await load()
   }
@@ -180,16 +180,20 @@ export const useAssistantsStore = defineStore('assistants', () => {
       if (active.length === 0) {
         if (localAll.length > 0) {
           for (const a of localAll) {
-            await apiPost('/api/assistants', {
-              id:                 a.id,
-              name:               a.name,
-              system_prompt:      a.systemPrompt,
-              color:              a.color,
-              default_provider_id: a.defaultProviderId,
-              default_model_id:    a.defaultModelId,
-              created_at:         a.createdAt,
-              updated_at:         a.updatedAt,
-            }).catch(() => {})
+            try {
+              await apiPost('/api/assistants', {
+                id:                 a.id,
+                name:               a.name,
+                system_prompt:      a.systemPrompt,
+                color:              a.color,
+                default_provider_id: a.defaultProviderId,
+                default_model_id:    a.defaultModelId,
+                created_at:         a.createdAt,
+                updated_at:         a.updatedAt,
+              })
+            } catch (err) {
+              console.error('[AssistantsSync] Failed to push local assistant to server:', err)
+            }
           }
           assistants.value = localAll
           return
@@ -230,16 +234,20 @@ export const useAssistantsStore = defineStore('assistants', () => {
           merged.push(rep)
         } else {
           for (const a of entry.locals) {
-            await apiPost('/api/assistants', {
-              id:                  a.id,
-              name:                a.name,
-              system_prompt:       a.systemPrompt,
-              color:               a.color,
-              default_provider_id: a.defaultProviderId,
-              default_model_id:    a.defaultModelId,
-              created_at:          a.createdAt,
-              updated_at:          a.updatedAt,
-            }).catch(() => {})
+            try {
+              await apiPost('/api/assistants', {
+                id:                  a.id,
+                name:                a.name,
+                system_prompt:       a.systemPrompt,
+                color:               a.color,
+                default_provider_id: a.defaultProviderId,
+                default_model_id:    a.defaultModelId,
+                created_at:          a.createdAt,
+                updated_at:          a.updatedAt,
+              })
+            } catch (err) {
+              console.error('[AssistantsSync] Failed to push local assistant to server:', err)
+            }
             await saveAssistant(a)
             merged.push(a)
           }

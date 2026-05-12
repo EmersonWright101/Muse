@@ -7,7 +7,7 @@ import cloudBlue from '../assets/icons/cloud-blue.svg'
 import cloudGreen from '../assets/icons/cloud-green.svg'
 import cloudRed from '../assets/icons/cloud-red.svg'
 import { syncStatus } from '../stores/syncStatus'
-import { syncAllFromServer } from '../services/syncManager'
+import { tryNewSync } from '../services/syncManager2'
 import { computed, ref, watch } from 'vue'
 
 defineProps<{ panelVisible: boolean }>()
@@ -100,7 +100,7 @@ watch(() => syncStatus.state, (state) => {
       class="titlebar-sync-btn"
       :class="syncStatus.state"
       :title="syncIconTitle"
-      @click="syncAllFromServer().catch(() => {})"
+      @click="tryNewSync().catch(() => {})"
     >
       <img :src="cloudSrc" class="titlebar-cloud-icon" alt="" />
       <Loader2 v-if="syncStatus.state === 'syncing'" :size="10" :stroke-width="3" class="ts-inner-spin" />

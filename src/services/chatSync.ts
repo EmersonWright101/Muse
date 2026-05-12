@@ -15,6 +15,7 @@ import { apiPost, apiPut, apiGet, apiPostForm, apiGetBinary, apiDelete, isBacken
 import { beginSyncOp, endSyncOp, failSyncOp } from '../stores/syncStatus'
 import type { Conversation, ChatMessage } from '../utils/storage'
 import { mergeMessages } from '../utils/storage'
+import { recordSyncTimestamp } from '../utils/syncTimestamp'
 
 interface AttachmentUploadResult { id: string }
 
@@ -45,8 +46,9 @@ async function uploadBinary(
     if (check?.exists && check.id) {
       return check.id
     }
-  } catch {
+  } catch (err) {
     // Backend may not support check endpoint; fall through to normal upload
+    console.warn('[Sync] Attachment check failed:', err)
   }
 
   try {
@@ -57,7 +59,8 @@ async function uploadBinary(
     form.append('message_id', messageId)
     const result = await apiPostForm<AttachmentUploadResult>('/api/chat/attachments', form)
     return result.id
-  } catch {
+  } catch (err) {
+    console.error('[Sync] Attachment upload failed:', err)
     return null
   }
 }
@@ -327,6 +330,7 @@ export async function pushConvToServer(conv: Conversation): Promise<void> {
       },
     })
     endSyncOp()
+    recordSyncTimestamp('chat', new Date().toISOString())
   } catch (err) {
     console.error(`[Sync] Failed to push conversation "${conv.title}" (${conv.id}):`, err)
     failSyncOp(err)
@@ -501,5 +505,13 @@ export async function migrateConvsToServer(localConvs: Conversation[]): Promise<
       }
     }),
   )
-  await apiPost('/api/chat/conversations/batch', batch).catch(() => {})
+  beginSyncOp()
+  try {
+    await apiPost('/api/chat/conversations/batch', batch)
+    endSyncOp()
+    recordSyncTimestamp('chat', new Date().toISOString())
+  } catch (err) {
+    console.error('[Sync] Failed to migrate conversations to server:', err)
+    failSyncOp(err)
+  }
 }

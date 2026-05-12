@@ -508,7 +508,7 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
 
   function scheduleServerPush() {
     if (_serverPushTimer) clearTimeout(_serverPushTimer)
-    _serverPushTimer = setTimeout(() => { pushToServer().catch(() => {}) }, 800)
+    _serverPushTimer = setTimeout(() => { pushToServer().catch((err) => { console.error('[AISettingsSync] Push to server failed:', err) }) }, 800)
   }
 
   watch(providers, () => { persist(); scheduleServerPush() }, { deep: true })

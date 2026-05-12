@@ -14,6 +14,7 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { useAiSettingsStore } from './aiSettings'
 import { apiGet, apiPut, apiDelete, apiPostForm, apiGetBinary, isBackendConfigured } from '../services/api'
 import { beginSyncOp, endSyncOp } from './syncStatus'
+import { recordSyncTimestamp } from '../utils/syncTimestamp'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -471,6 +472,7 @@ export const useHomeStore = defineStore('home', () => {
           } catch { /* ignore */ }
         }
       }
+      recordSyncTimestamp('home', new Date().toISOString())
     } catch { /* ignore */ }
     finally { endSyncOp() }
   }

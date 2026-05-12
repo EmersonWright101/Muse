@@ -84,6 +84,7 @@ async function processFile(filePath: string) {
 let _unlistenDrag: (() => void) | null = null
 
 onMounted(async () => {
+  document.addEventListener('click', onDocClick)
   const unlisten = await getCurrentWebview().onDragDropEvent(async (event) => {
     const { type } = event.payload
     if (type === 'over') {
@@ -101,7 +102,10 @@ onMounted(async () => {
   _unlistenDrag = unlisten
 })
 
-onUnmounted(() => { _unlistenDrag?.() })
+onUnmounted(() => {
+  _unlistenDrag?.()
+  document.removeEventListener('click', onDocClick)
+})
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -123,6 +127,13 @@ function openBook(book: Book) {
 }
 
 function closeMenu() { menuOpenId.value = null }
+
+function onDocClick(e: MouseEvent) {
+  if (!menuOpenId.value) return
+  const target = e.target as HTMLElement
+  if (target.closest('.card-dropdown') || target.closest('.card-menu-btn')) return
+  closeMenu()
+}
 
 async function deleteBook(book: Book) {
   closeMenu()
@@ -228,10 +239,7 @@ const sortedBooks = computed(() =>
       </div>
     </div>
 
-    <!-- Global menu close -->
-    <Teleport to="body">
-      <div v-if="menuOpenId" class="overlay-dismiss" @click="closeMenu" />
-    </Teleport>
+    <!-- Click-outside handled by onDocClick -->
   </div>
 </template>
 
@@ -484,12 +492,6 @@ const sortedBooks = computed(() =>
 .dropdown-item:hover { background: rgba(0,0,0,0.05); }
 .dropdown-item.danger { color: #ff3b30; }
 .dropdown-item.danger:hover { background: rgba(255,59,48,0.08); }
-
-.overlay-dismiss {
-  position: fixed;
-  inset: 0;
-  z-index: 49;
-}
 
 /* Drag-and-drop */
 .book-library.drag-over {

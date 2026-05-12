@@ -23,6 +23,7 @@ import {
   apiDeleteProject,
   type TodoApiConfig,
 } from '../utils/todoApi'
+import { recordSyncTimestamp } from '../utils/syncTimestamp'
 
 export type { TodoTask, TodoProject, Priority, Quadrant, TodoApiConfig }
 export type ViewMode = 'list' | 'calendar' | 'kanban' | 'quadrant'
@@ -423,6 +424,7 @@ export const useTodoStore = defineStore('todo', () => {
           apiStatus.value = 'connected'
           apiError.value = null
           await saveTodos({ version: 1, projects: dedupedProjects, tasks: finalTasks })
+          recordSyncTimestamp('todo', new Date().toISOString())
           return
         } catch (e) {
           _onApiError(e, 'load')

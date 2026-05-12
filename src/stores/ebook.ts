@@ -283,13 +283,15 @@ export const useEbookStore = defineStore('ebook', () => {
           // Update local book record so next time we know where the file is
           const idx = books.value.findIndex(b => b.id === book.id)
           if (idx >= 0) {
-            books.value[idx].filePath = savePath.replace(`${dir}/`, '')
+            // Create a new array reference to trigger reactivity
+            const updated = { ...books.value[idx], filePath: savePath.replace(`${dir}/`, '') }
+            books.value = [...books.value.slice(0, idx), updated, ...books.value.slice(idx + 1)]
             save(LS_BOOKS, books.value)
           }
           console.log('[EbookSync] Download OK:', book.title, `(${book.id})`, `${remote.byteLength} bytes`)
           return uint8ToArrayBuffer(remote)
         }
-        console.warn('[EbookSync] Download returned empty:', book.title, `(${book.id})`)
+        console.error('[EbookSync] Download failed: server returned empty for', book.title, `(${book.id})`)
       }
       return null
     } catch (err) {
@@ -370,6 +372,9 @@ export const useEbookStore = defineStore('ebook', () => {
     delete progress.value[id]
     annotations.value = annotations.value.filter(a => a.bookId !== id)
     sessions.value = sessions.value.filter(s => s.bookId !== id)
+    copilotSessions.value = copilotSessions.value.filter(s => s.bookId !== id)
+    save(LS_COPILOT, copilotSessions.value)
+    await clearAudiobook(id)
     save(LS_BOOKS, books.value)
     save(LS_PROGRESS, progress.value)
     save(LS_ANNOTATIONS, annotations.value)
@@ -1032,16 +1037,16 @@ export const useEbookStore = defineStore('ebook', () => {
       save(LS_COPILOT, copilotSessions.value)
 
       // Pre-download EPUB files for newly discovered remote books.
-      // Use the remote book ID to request the file (so the server can locate it),
-      // but save to the local filePath (so the merged book record stays consistent).
+      // Use the book ID to request the file from the server.
+      // If the local filePath is missing or the file doesn't exist, download it.
       const remoteBookMap = new Map(remoteBooks.map(b => [bookFingerprint(b), b]))
       for (const b of mergedBooks) {
         const fp = bookFingerprint(b)
         const remoteBook = remoteBookMap.get(fp)
         if (remoteBook) {
-          const downloadTarget: Book =
-            remoteBook.id === b.id ? b : { ...remoteBook, filePath: b.filePath }
-          readBookFile(downloadTarget).catch((err) => {
+          // Always use the merged book's ID for the download request.
+          // If filePath is empty, readBookFile will fall back to {bookId}.epub.
+          readBookFile(b).catch((err) => {
             console.error('[EbookSync] readBookFile failed:', b.title, err)
           })
         }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { RefreshCw, CloudOff, Type, Cpu, DollarSign, BookOpen, Star, Database, Server, BarChart3, AlertTriangle, Zap, Clock, Trash2 } from 'lucide-vue-next'
+import { RefreshCw, CloudOff, Type, Cpu, DollarSign, BookOpen, Star, Database, Server, BarChart3, AlertTriangle, Zap, Clock, Trash2, ChevronRight } from 'lucide-vue-next'
 import { apiGet, apiPost, isBackendConfigured } from '../../../services/api'
 import { usePapersStore } from '../../../stores/papers'
 import { useStatisticsStore } from '../../../stores/statistics'
@@ -26,6 +26,20 @@ const error      = ref(false)
 const hoveredKey = ref<string | null>(null)
 const optimizing = ref(false)
 const optimizeMsg = ref('')
+
+// ─── Expandable categories ────────────────────────────────────────────────────
+
+const expandedCategories = ref<Set<string>>(new Set())
+
+function toggleCategory(key: string) {
+  const set = new Set(expandedCategories.value)
+  if (set.has(key)) {
+    set.delete(key)
+  } else {
+    set.add(key)
+  }
+  expandedCategories.value = set
+}
 
 const R    = 72
 const SW   = 24
@@ -273,11 +287,18 @@ onMounted(() => {
         <template v-for="m in modules" :key="m.key">
           <div
             class="legend-row"
-            :class="{ dimmed: hoveredKey && hoveredKey !== m.key, lit: hoveredKey === m.key }"
+            :class="{ dimmed: hoveredKey && hoveredKey !== m.key, lit: hoveredKey === m.key, expandable: m.key === 'ebook' && ebookBreakdown }"
             @mouseenter="hoveredKey = m.key"
             @mouseleave="hoveredKey = null"
+            @click="m.key === 'ebook' && ebookBreakdown && toggleCategory(m.key)"
           >
             <span class="dot" :style="{ background: m.color }" />
+            <ChevronRight
+              v-if="m.key === 'ebook' && ebookBreakdown"
+              :size="13"
+              class="expand-icon"
+              :class="{ expanded: expandedCategories.has(m.key) }"
+            />
             <span class="leg-label">{{ m.label }}</span>
             <div class="leg-bar-wrap">
               <div class="leg-bar-fill" :style="{ width: m.pct + '%', background: m.color }" />
@@ -286,18 +307,20 @@ onMounted(() => {
             <span class="leg-size">{{ formatBytes(m.bytes) }}</span>
           </div>
           <!-- ebook breakdown sub-rows -->
-          <div
-            v-if="m.key === 'ebook' && ebookBreakdown"
-            class="ebook-breakdown"
-          >
+          <Transition name="expand">
             <div
-              v-for="sub in ebookBreakdown" :key="sub.key"
-              class="breakdown-row"
+              v-if="m.key === 'ebook' && ebookBreakdown && expandedCategories.has(m.key)"
+              class="ebook-breakdown"
             >
-              <span class="breakdown-label">{{ sub.label }}</span>
-              <span class="breakdown-size">{{ formatBytes(sub.bytes) }}</span>
+              <div
+                v-for="sub in ebookBreakdown" :key="sub.key"
+                class="breakdown-row"
+              >
+                <span class="breakdown-label">{{ sub.label }}</span>
+                <span class="breakdown-size">{{ formatBytes(sub.bytes) }}</span>
+              </div>
             </div>
-          </div>
+          </Transition>
         </template>
       </div>
     </div>
@@ -669,6 +692,34 @@ svg.spinning { animation: spin 0.8s linear infinite; }
 }
 .breakdown-label { flex: 1; }
 .breakdown-size { font-variant-numeric: tabular-nums; }
+
+/* ── Expandable legend rows ── */
+.legend-row.expandable { cursor: pointer; }
+.expand-icon {
+  color: #8e8e93;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+.expand-icon.expanded {
+  transform: rotate(90deg);
+}
+
+/* expand transition */
+.expand-enter-active,
+.expand-leave-active {
+  transition: max-height 0.25s ease, opacity 0.2s ease;
+  overflow: hidden;
+}
+.expand-enter-from,
+.expand-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+.expand-enter-to,
+.expand-leave-from {
+  max-height: 120px;
+  opacity: 1;
+}
 
 /* ── Storage warning ── */
 .storage-warning {

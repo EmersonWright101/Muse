@@ -22,7 +22,7 @@ const navItems = computed(() => [
   { path: '/todo',      icon: CheckSquare,   labelKey: 'nav.todo',      avatar: false, iconSize: 18 },
   { path: '/ebook',     icon: BookOpen,      labelKey: 'nav.ebook',     avatar: false, iconSize: 20 },
   { path: '/travel',    icon: MapPin,        labelKey: 'nav.travel',    avatar: false },
-  { path: '/tools',     icon: null,          labelKey: 'nav.tools',     avatar: false, customIcon: toolIcon },
+  { path: '/tools',     icon: null,          labelKey: 'nav.tools',     avatar: false, customIcon: toolIcon, customIconSize: 20 },
 ])
 
 const todoStore = useTodoStore()
@@ -168,7 +168,7 @@ onUnmounted(() => {
           :class="{ active: isActive(item.path) }"
           :title="t(item.labelKey)"
         >
-          <img v-if="item.customIcon" :src="item.customIcon" class="nav-custom-icon" />
+          <img v-if="item.customIcon" :src="item.customIcon" class="nav-custom-icon" :style="item.customIconSize ? { width: item.customIconSize + 'px', height: item.customIconSize + 'px' } : {}" />
           <component v-else-if="item.icon" :is="item.icon" :size="item.iconSize || 21" />
         </router-link>
         <span

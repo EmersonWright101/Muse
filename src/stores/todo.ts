@@ -219,7 +219,32 @@ export const useTodoStore = defineStore('todo', () => {
       _updateTimers.delete(taskId)
       const task = tasks.value.find(t => t.id === taskId)
       if (!task) return
-      try { await apiUpdateTask(c, task) }
+      try {
+        await apiUpdateTask(c, task, {
+          onConflict: async () => {
+            const remote = await apiLoadAll(c)
+            const remoteTask = remote.tasks.find(t => t.id === taskId)
+            if (!remoteTask) return task
+            return {
+              ...remoteTask,
+              title: task.title,
+              notes: task.notes,
+              tags: task.tags,
+              dueDate: task.dueDate,
+              dueTime: task.dueTime,
+              priority: task.priority,
+              quadrant: task.quadrant,
+              projectId: task.projectId,
+              starred: task.starred,
+              recurrence: task.recurrence,
+              reminderMinutes: task.reminderMinutes,
+              subtasks: task.subtasks,
+              order: task.order,
+              updatedAt: new Date().toISOString(),
+            }
+          },
+        })
+      }
       catch (e) {
         _onApiError(e, `updateTask ${taskId}`)
         _enqueuePending({ type: 'updateTask', d: { ...task } })
@@ -239,7 +264,22 @@ export const useTodoStore = defineStore('todo', () => {
       _projectUpdateTimers.delete(projectId)
       const project = projects.value.find(p => p.id === projectId)
       if (!project) return
-      try { await apiUpdateProject(c, project) }
+      try {
+        await apiUpdateProject(c, project, {
+          onConflict: async () => {
+            const remote = await apiLoadAll(c)
+            const remoteProject = remote.projects.find(p => p.id === projectId)
+            if (!remoteProject) return project
+            return {
+              ...remoteProject,
+              name: project.name,
+              color: project.color,
+              order: project.order,
+              updatedAt: new Date().toISOString(),
+            }
+          },
+        })
+      }
       catch (e) {
         _onApiError(e, `updateProject ${projectId}`)
         _enqueuePending({ type: 'updateProject', d: { ...project } })

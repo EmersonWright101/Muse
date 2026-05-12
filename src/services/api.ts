@@ -43,6 +43,53 @@ async function parseError(resp: { status: number; statusText: string; json: () =
   return new ApiError(resp.status, msg)
 }
 
+// ─── Conflict retry helpers ──────────────────────────────────────────────────
+
+const MAX_CONFLICT_RETRIES = 3
+const CONFLICT_BACKOFF_MS = [1000, 2000, 4000]
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms))
+}
+
+function showConflictToast(message: string): void {
+  const toast = document.createElement('div')
+  toast.textContent = message
+  toast.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:rgba(51,51,51,0.95);color:#fff;padding:10px 20px;border-radius:8px;z-index:99999;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,0.3);pointer-events:none;white-space:nowrap;'
+  document.body.appendChild(toast)
+  setTimeout(() => {
+    toast.style.transition = 'opacity 0.3s ease'
+    toast.style.opacity = '0'
+    setTimeout(() => toast.remove(), 300)
+  }, 3000)
+}
+
+/**
+ * Retry an API operation with exponential backoff when a 409 Conflict is received.
+ * The caller should provide an `onConflict` callback that re-fetches the remote
+ * resource and returns the merged body (for PUT/POST) or simply refreshes state
+ * (for DELETE).
+ */
+export async function withConflictRetry<T>(
+  attempt: () => Promise<T>,
+  onConflict?: () => Promise<void>,
+): Promise<T> {
+  for (let i = 0; i <= MAX_CONFLICT_RETRIES; i++) {
+    try {
+      return await attempt()
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && onConflict && i < MAX_CONFLICT_RETRIES) {
+        await sleep(CONFLICT_BACKOFF_MS[i] ?? 4000)
+        await onConflict()
+        continue
+      }
+      throw e
+    }
+  }
+  showConflictToast('同步冲突，请刷新')
+  throw new ApiError(409, 'Conflict resolution failed after maximum retries')
+}
+
 // ─── GET ─────────────────────────────────────────────────────────────────────
 
 export async function apiGet<T>(path: string): Promise<T | null> {
@@ -97,27 +144,33 @@ export async function apiPutBinary(path: string, data: ArrayBuffer, contentType 
   if (!resp.ok) throw await parseError(resp)
 }
 
-export async function apiPut(path: string, body: unknown): Promise<void> {
+export async function apiPut(path: string, body: unknown, options?: { onConflict?: () => Promise<unknown> }): Promise<void> {
   if (!isBackendConfigured()) return
-  const resp = await tauriFetch(`${baseUrl()}${path}`, {
-    method: 'PUT',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(body),
-  })
-  if (!resp.ok) throw await parseError(resp)
+  let currentBody = body
+  return withConflictRetry(async () => {
+    const resp = await tauriFetch(`${baseUrl()}${path}`, {
+      method: 'PUT',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(currentBody),
+    })
+    if (!resp.ok) throw await parseError(resp)
+  }, options ? async () => { currentBody = await options.onConflict!() } : undefined)
 }
 
 // ─── POST ────────────────────────────────────────────────────────────────────
 
-export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+export async function apiPost<T>(path: string, body: unknown, options?: { onConflict?: () => Promise<unknown> }): Promise<T> {
   if (!isBackendConfigured()) throw new ApiError(0, 'No backend configured')
-  const resp = await tauriFetch(`${baseUrl()}${path}`, {
-    method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(body),
-  })
-  if (!resp.ok) throw await parseError(resp)
-  return resp.json() as Promise<T>
+  let currentBody = body
+  return withConflictRetry(async () => {
+    const resp = await tauriFetch(`${baseUrl()}${path}`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(currentBody),
+    })
+    if (!resp.ok) throw await parseError(resp)
+    return resp.json() as Promise<T>
+  }, options ? async () => { currentBody = await options.onConflict!() } : undefined)
 }
 
 export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
@@ -133,11 +186,13 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
 
 // ─── DELETE ──────────────────────────────────────────────────────────────────
 
-export async function apiDelete(path: string): Promise<void> {
+export async function apiDelete(path: string, options?: { onConflict?: () => Promise<void> }): Promise<void> {
   if (!isBackendConfigured()) return
-  const resp = await tauriFetch(`${baseUrl()}${path}`, {
-    method: 'DELETE',
-    headers: authHeaders(),
-  })
-  if (!resp.ok) throw await parseError(resp)
+  return withConflictRetry(async () => {
+    const resp = await tauriFetch(`${baseUrl()}${path}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    })
+    if (!resp.ok) throw await parseError(resp)
+  }, options?.onConflict)
 }

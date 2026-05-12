@@ -1163,10 +1163,8 @@ const pdfNative = computed(() => {
 /* ─── Input area ───────────────────────────────────────────────────────────── */
 .input-area {
   flex-shrink: 0;
-  padding: 12px 24px 16px;
-  max-width: 860px;
+  padding: 12px 20px 16px;
   width: 100%;
-  margin: 0 auto;
   box-sizing: border-box;
 }
 

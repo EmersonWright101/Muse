@@ -119,6 +119,28 @@ export const useAssistantsStore = defineStore('assistants', () => {
         default_provider_id: updated.defaultProviderId,
         default_model_id:    updated.defaultModelId,
         updated_at:         updated.updatedAt,
+      }, {
+        onConflict: async () => {
+          const remote = await apiGet<RemoteAssistant>(`/api/assistants/${id}`)
+          if (!remote) {
+            return {
+              name:               updated.name,
+              system_prompt:      updated.systemPrompt,
+              color:              updated.color,
+              default_provider_id: updated.defaultProviderId,
+              default_model_id:    updated.defaultModelId,
+              updated_at:         updated.updatedAt,
+            }
+          }
+          return {
+            name:               updated.name || remote.name,
+            system_prompt:      updated.systemPrompt || remote.systemPrompt,
+            color:              updated.color || remote.color,
+            default_provider_id: updated.defaultProviderId ?? remote.defaultProviderId,
+            default_model_id:    updated.defaultModelId ?? remote.defaultModelId,
+            updated_at:         new Date().toISOString(),
+          }
+        },
       }).catch(() => {})
     }
     await load()

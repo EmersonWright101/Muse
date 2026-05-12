@@ -43,7 +43,7 @@ import {
   readDir,
 } from '@tauri-apps/plugin-fs'
 import { travelNotesDir } from './path'
-import { apiPost, apiPut, apiDelete, apiPostForm, apiGetBinary, isBackendConfigured } from '../services/api'
+import { apiPost, apiPut, apiDelete, apiPostForm, apiGetBinary, apiGet, isBackendConfigured } from '../services/api'
 
 export interface TravelNoteMeta {
   id: string        // filename without .md
@@ -342,6 +342,40 @@ export async function saveTravelNote(
       cover:       note.cover,
       status:      note.status ?? 'visited',
       updated_at:  note.updatedAt,
+    }, {
+      onConflict: async () => {
+        const remote = await apiGet<TravelNote>(`/api/travel/notes/${note.id}`)
+        if (!remote) {
+          return {
+            title:       note.title,
+            content:     note.content,
+            date:        note.date,
+            lat:         note.lat,
+            lng:         note.lng,
+            category_l1: note.categoryL1,
+            category_l2: note.categoryL2,
+            tags:        note.tags ?? [],
+            rating:      note.rating,
+            cover:       note.cover,
+            status:      note.status ?? 'visited',
+            updated_at:  note.updatedAt,
+          }
+        }
+        return {
+          title:       note.title || remote.title,
+          content:     note.content || remote.content,
+          date:        note.date || remote.date,
+          lat:         note.lat ?? remote.lat,
+          lng:         note.lng ?? remote.lng,
+          category_l1: note.categoryL1 || remote.categoryL1,
+          category_l2: note.categoryL2 || remote.categoryL2,
+          tags:        note.tags ?? remote.tags ?? [],
+          rating:      note.rating ?? remote.rating,
+          cover:       note.cover || remote.cover,
+          status:      note.status || remote.status,
+          updated_at:  new Date().toISOString(),
+        }
+      },
     }).catch(async (e: { status?: number }) => {
       if (e?.status === 404) {
         await apiPost('/api/travel/notes', {

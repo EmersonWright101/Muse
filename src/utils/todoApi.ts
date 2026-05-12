@@ -9,6 +9,7 @@
 
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { getBackendConfig, setBackendConfig } from './backendConfig'
+import { withConflictRetry, ApiError } from '../services/api'
 import type { TodoTask, TodoProject } from './todoStorage'
 
 // ─── Config (shared with papers backend) ─────────────────────────────────────
@@ -39,20 +40,24 @@ async function apiFetch<T>(
   method: string,
   path: string,
   body?: unknown,
+  options?: { onConflict?: () => Promise<unknown> },
 ): Promise<T> {
-  const res = await tauriFetch(`${cfg.url}/api/todo${path}`, {
-    method,
-    headers: buildHeaders(cfg),
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
-  // DELETE on a missing resource is idempotent — treat 404 as success.
-  if (method === 'DELETE' && res.status === 404) return ({} as T)
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`[${method} ${path}] HTTP ${res.status}: ${text.slice(0, 200)}`)
-  }
-  const ct = res.headers.get('content-type') ?? ''
-  return ct.includes('application/json') ? res.json() : ({} as T)
+  let currentBody = body
+  return withConflictRetry(async () => {
+    const res = await tauriFetch(`${cfg.url}/api/todo${path}`, {
+      method,
+      headers: buildHeaders(cfg),
+      body: currentBody !== undefined ? JSON.stringify(currentBody) : undefined,
+    })
+    // DELETE on a missing resource is idempotent — treat 404 as success.
+    if (method === 'DELETE' && res.status === 404) return ({} as T)
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new ApiError(res.status, `[${method} ${path}] HTTP ${res.status}: ${text.slice(0, 200)}`)
+    }
+    const ct = res.headers.get('content-type') ?? ''
+    return ct.includes('application/json') ? res.json() : ({} as T)
+  }, options ? async () => { currentBody = await options.onConflict!() } : undefined)
 }
 
 // ─── Health ───────────────────────────────────────────────────────────────────
@@ -83,8 +88,8 @@ export async function apiCreateProject(cfg: TodoApiConfig, p: TodoProject): Prom
   return apiFetch<TodoProject>(cfg, 'POST', '/projects', p)
 }
 
-export async function apiUpdateProject(cfg: TodoApiConfig, p: TodoProject): Promise<void> {
-  return apiFetch(cfg, 'PUT', `/projects/${p.id}`, p)
+export async function apiUpdateProject(cfg: TodoApiConfig, p: TodoProject, options?: { onConflict?: () => Promise<unknown> }): Promise<void> {
+  return apiFetch(cfg, 'PUT', `/projects/${p.id}`, p, options)
 }
 
 export async function apiDeleteProject(cfg: TodoApiConfig, id: string): Promise<void> {
@@ -95,7 +100,7 @@ export async function apiDeleteProject(cfg: TodoApiConfig, id: string): Promise<
 
 // Normalize empty-string nullable fields to null — some backends validate
 // patterns on non-null strings, so "" would fail regex like ^\d{2}:\d{2}$.
-function normalizeTask(t: TodoTask): TodoTask {
+export function normalizeTask(t: TodoTask): TodoTask {
   return {
     ...t,
     projectId:   t.projectId   === '' as any ? null : t.projectId,
@@ -110,12 +115,17 @@ export async function apiCreateTask(cfg: TodoApiConfig, t: TodoTask): Promise<To
   return apiFetch<TodoTask>(cfg, 'POST', '/tasks', normalizeTask(t))
 }
 
-export async function apiUpdateTask(cfg: TodoApiConfig, t: TodoTask): Promise<void> {
+export async function apiUpdateTask(cfg: TodoApiConfig, t: TodoTask, options?: { onConflict?: () => Promise<unknown> }): Promise<void> {
   try {
-    return await apiFetch(cfg, 'PUT', `/tasks/${t.id}`, normalizeTask(t))
+    return await apiFetch(cfg, 'PUT', `/tasks/${t.id}`, normalizeTask(t), options ? {
+      onConflict: async () => {
+        const merged = await options.onConflict!()
+        return normalizeTask(merged as TodoTask)
+      },
+    } : undefined)
   } catch (e) {
     // Task missing on server (e.g. after switching backends) — create it instead
-    if (e instanceof Error && e.message.includes('HTTP 404')) {
+    if (e instanceof ApiError && e.status === 404) {
       await apiFetch(cfg, 'POST', '/tasks', normalizeTask(t))
       return
     }

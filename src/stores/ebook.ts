@@ -731,7 +731,34 @@ export const useEbookStore = defineStore('ebook', () => {
       ttsSettings: ttsSettings.value,
     }
     try {
-      await apiPut('/api/ebook/library', payload)
+      await apiPut('/api/ebook/library', payload, {
+        onConflict: async () => {
+          const remote = await apiGet<RemoteEbookLibrary>('/api/ebook/library')
+          if (!remote) return payload
+          const merged = { ...payload }
+          function unionById<T extends { id: string }>(local: T[], remoteArr: T[]): T[] {
+            const map = new Map(local.map(i => [i.id, i]))
+            for (const r of remoteArr) {
+              if (!map.has(r.id)) map.set(r.id, r)
+            }
+            return Array.from(map.values())
+          }
+          function unionProgress(local: any[], remoteArr: any[]): any[] {
+            const map = new Map(local.map(p => [p.bookId, p]))
+            for (const r of remoteArr) {
+              if (!map.has(r.bookId)) map.set(r.bookId, r)
+            }
+            return Array.from(map.values())
+          }
+          merged.books = unionById(payload.books as any[], remote.books ?? [])
+          merged.progress = unionProgress(payload.progress as any[], remote.progress ?? [])
+          merged.annotations = unionById(payload.annotations as any[], remote.annotations ?? [])
+          merged.sessions = unionById(payload.sessions as any[], remote.sessions ?? [])
+          merged.collections = unionById(payload.collections as any[], remote.collections ?? [])
+          merged.copilotSessions = unionById((payload.copilotSessions ?? []) as any[], remote.copilotSessions ?? [])
+          return merged
+        },
+      })
     } catch (err) {
       console.error('[EbookSync] pushToServer failed:', err)
     }

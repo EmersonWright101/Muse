@@ -1,20 +1,31 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { RefreshCw, CloudOff, Type, Cpu, DollarSign, BookOpen, Star, Database, Server, BarChart3 } from 'lucide-vue-next'
-import { apiGet, isBackendConfigured } from '../../../services/api'
+import { RefreshCw, CloudOff, Type, Cpu, DollarSign, BookOpen, Star, Database, Server, BarChart3, AlertTriangle, Zap, Clock, Trash2 } from 'lucide-vue-next'
+import { apiGet, apiPost, isBackendConfigured } from '../../../services/api'
 import { usePapersStore } from '../../../stores/papers'
 import { useStatisticsStore } from '../../../stores/statistics'
 
 interface ServerStats {
   settings: number; chat: number; home: number
   travel: number; papers: number; todo: number; total: number
-  [key: string]: number | Record<string, number>  // 允许后端返回新的模块数据（如 ebook 等）
+  dedup_savings?: number
+  trash_size?: number
+  orphan_size?: number
+  db_fragmentation?: number
+  last_maintenance_at?: string | null
+  disk_total?: number
+  disk_used?: number
+  disk_free?: number
+  disk_usage_pct?: number
+  [key: string]: number | string | Record<string, number> | null | undefined  // 允许后端返回新的模块数据
 }
 
 const stats      = ref<ServerStats | null>(null)
 const loading    = ref(false)
 const error      = ref(false)
 const hoveredKey = ref<string | null>(null)
+const optimizing = ref(false)
+const optimizeMsg = ref('')
 
 const R    = 72
 const SW   = 24
@@ -69,8 +80,14 @@ const modules = computed(() => {
   if (!stats.value) return []
   const total = stats.value.total || 1
 
-  // 自动收集后端返回的所有模块（排除 total 和内部字段）
-  const keys = Object.keys(stats.value).filter(k => k !== 'total' && !k.startsWith('_'))
+  // 自动收集后端返回的所有模块（排除 total、内部字段、统计指标和非数字值）
+  const META_KEYS = new Set([
+    'dedup_savings', 'trash_size', 'orphan_size', 'db_fragmentation',
+    'disk_total', 'disk_used', 'disk_free', 'disk_usage_pct',
+  ])
+  const keys = Object.keys(stats.value).filter(
+    k => k !== 'total' && !k.startsWith('_') && !META_KEYS.has(k) && typeof stats.value![k] === 'number'
+  )
 
   let colorIdx = 0
   return keys
@@ -134,6 +151,42 @@ async function openStatsPage() {
 async function refreshAll() {
   load()
   if (papers.isConfigured) papers.fetchPaperStatistics()
+}
+
+// ─── Optimization ─────────────────────────────────────────────────────────────
+
+const optimizableSpace = computed(() => (stats.value?.orphan_size || 0) + (stats.value?.trash_size || 0))
+const dedupSavings     = computed(() => stats.value?.dedup_savings || 0)
+const isStorageTight   = computed(() => (stats.value?.disk_usage_pct ?? 0) > 80)
+
+const daysSinceMaintenance = computed(() => {
+  const raw = stats.value?.last_maintenance_at
+  if (!raw) return null
+  const last = new Date(String(raw))
+  const now = new Date()
+  const diff = now.getTime() - last.getTime()
+  return Math.floor(diff / (1000 * 60 * 60 * 24))
+})
+
+async function runOptimize() {
+  if (optimizing.value) return
+  optimizing.value = true
+  optimizeMsg.value = ''
+  try {
+    await apiPost<{ message: string }>('/api/maintenance/optimize', {})
+    optimizeMsg.value = '优化任务已启动，请稍候…'
+    // Refresh after a short delay so background task can make progress
+    setTimeout(async () => {
+      await load()
+      optimizing.value = false
+      optimizeMsg.value = '优化完成'
+      setTimeout(() => { optimizeMsg.value = '' }, 3000)
+    }, 3000)
+  } catch (e) {
+    optimizing.value = false
+    optimizeMsg.value = '优化请求失败'
+    setTimeout(() => { optimizeMsg.value = '' }, 3000)
+  }
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -246,6 +299,45 @@ onMounted(() => {
             </div>
           </div>
         </template>
+      </div>
+    </div>
+
+    <!-- ── Storage warning ──────────────────────────────────────────────────── -->
+    <div v-if="stats && isStorageTight" class="storage-warning">
+      <AlertTriangle :size="16" />
+      <span>存储空间紧张：已使用 {{ stats.disk_usage_pct?.toFixed(1) }}%（{{ formatBytes(stats.disk_used || 0) }} / {{ formatBytes(stats.disk_total || 0) }}）</span>
+    </div>
+
+    <!-- ── Optimization suggestions ─────────────────────────────────────────── -->
+    <div v-if="stats" class="info-card optimize-card">
+      <div class="info-card-title">优化建议</div>
+      <div class="optimize-rows">
+        <div class="optimize-row">
+          <Trash2 :size="14" />
+          <span class="optimize-label">可优化空间</span>
+          <span class="optimize-value">{{ formatBytes(optimizableSpace) }}</span>
+        </div>
+        <div class="optimize-row">
+          <Zap :size="14" />
+          <span class="optimize-label">去重节省</span>
+          <span class="optimize-value">{{ formatBytes(dedupSavings) }}</span>
+        </div>
+        <div class="optimize-row">
+          <Clock :size="14" />
+          <span class="optimize-label">上次维护</span>
+          <span class="optimize-value">{{ daysSinceMaintenance !== null ? `${daysSinceMaintenance} 天前` : '从未' }}</span>
+        </div>
+      </div>
+      <div class="optimize-actions">
+        <button
+          class="action-btn optimize-btn"
+          :disabled="optimizing || optimizableSpace === 0"
+          @click="runOptimize"
+        >
+          <Zap :size="13" :class="{ spinning: optimizing }" />
+          <span>{{ optimizing ? '优化中…' : '立即优化' }}</span>
+        </button>
+        <span v-if="optimizeMsg" class="optimize-msg">{{ optimizeMsg }}</span>
       </div>
     </div>
 
@@ -577,4 +669,34 @@ svg.spinning { animation: spin 0.8s linear infinite; }
 }
 .breakdown-label { flex: 1; }
 .breakdown-size { font-variant-numeric: tabular-nums; }
+
+/* ── Storage warning ── */
+.storage-warning {
+  display: flex; align-items: center; gap: 8px;
+  background: #fff3f0; border: 1px solid #ffccc7;
+  border-radius: 10px; padding: 10px 14px;
+  color: #cf1322; font-size: 13px; font-weight: 500;
+  margin-bottom: 16px;
+}
+.storage-warning svg { color: #cf1322; flex-shrink: 0; }
+
+/* ── Optimization card ── */
+.optimize-card { margin-top: 8px; }
+.optimize-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.optimize-row {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: #3c3c43;
+}
+.optimize-row svg { color: #8e8e93; flex-shrink: 0; }
+.optimize-label { color: #8e8e93; flex: 1; }
+.optimize-value { font-weight: 600; color: #1c1c1e; font-variant-numeric: tabular-nums; }
+
+.optimize-actions { display: flex; align-items: center; gap: 12px; }
+.optimize-btn {
+  background: #223F79; border: none; color: #fff;
+  font-weight: 500;
+}
+.optimize-btn:hover:not(:disabled) { background: #1a3261; }
+.optimize-btn:disabled { opacity: 0.5; cursor: default; background: #223F79; }
+.optimize-msg { font-size: 12px; color: #52BA6F; font-weight: 500; }
 </style>

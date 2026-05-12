@@ -18,6 +18,13 @@ import { mergeMessages } from '../utils/storage'
 
 interface AttachmentUploadResult { id: string }
 
+async function sha256Base64(base64: string): Promise<string> {
+  const binary = Uint8Array.from(atob(base64), c => c.charCodeAt(0))
+  const hashBuffer = await crypto.subtle.digest('SHA-256', binary)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 async function uploadBinary(
   base64: string,
   filename: string,
@@ -25,6 +32,23 @@ async function uploadBinary(
   conversationId: string,
   messageId: string,
 ): Promise<string | null> {
+  try {
+    const hash = await sha256Base64(base64)
+    const check = await apiPost<{ exists: boolean; id?: string }>('/api/chat/attachments/check', {
+      conversation_id: conversationId,
+      message_id: messageId,
+      filename,
+      mimeType,
+      hash,
+      size: Uint8Array.from(atob(base64), c => c.charCodeAt(0)).length,
+    })
+    if (check?.exists && check.id) {
+      return check.id
+    }
+  } catch {
+    // Backend may not support check endpoint; fall through to normal upload
+  }
+
   try {
     const binary = Uint8Array.from(atob(base64), c => c.charCodeAt(0))
     const form = new FormData()
@@ -280,7 +304,28 @@ export async function pushConvToServer(conv: Conversation): Promise<void> {
   try {
     const cleaned = await prepareConvForServer(conv)
     // PUT is now an upsert on the backend: creates if not found, updates if found.
-    await apiPut(`/api/chat/conversations/${cleaned.id}`, conversationToServerBody(cleaned, { trashed_at: null, expiry_at: null }))
+    await apiPut(`/api/chat/conversations/${cleaned.id}`, conversationToServerBody(cleaned, { trashed_at: null, expiry_at: null }), {
+      onConflict: async () => {
+        const remote = await apiGet<RemoteConv>(`/api/chat/conversations/${cleaned.id}`)
+        if (!remote) return conversationToServerBody(cleaned, { trashed_at: null, expiry_at: null })
+        const remoteConv = remoteMetaToConversation(remote)
+        const merged: Conversation = {
+          ...remoteConv,
+          title: conv.title || remoteConv.title,
+          pinned: conv.pinned ?? remoteConv.pinned,
+          assistantId: conv.assistantId ?? remoteConv.assistantId,
+          contextCutoffMsgId: conv.contextCutoffMsgId ?? remoteConv.contextCutoffMsgId,
+          contextCutoffPoints: conv.contextCutoffPoints ?? remoteConv.contextCutoffPoints,
+          titleGenerated: conv.titleGenerated ?? remoteConv.titleGenerated,
+          defaultProviderId: conv.defaultProviderId ?? remoteConv.defaultProviderId,
+          defaultModelId: conv.defaultModelId ?? remoteConv.defaultModelId,
+          messages: mergeMessages(remoteConv.messages, conv.messages),
+          updatedAt: new Date().toISOString(),
+        }
+        const mergedCleaned = await prepareConvForServer(merged)
+        return conversationToServerBody(mergedCleaned, { trashed_at: null, expiry_at: null })
+      },
+    })
     endSyncOp()
   } catch (err) {
     console.error(`[Sync] Failed to push conversation "${conv.title}" (${conv.id}):`, err)
@@ -296,7 +341,28 @@ export async function updateConvOnServer(conv: Conversation): Promise<void> {
   beginSyncOp()
   try {
     const cleaned = await prepareConvForServer(conv)
-    await apiPut(`/api/chat/conversations/${cleaned.id}`, conversationToServerBody(cleaned))
+    await apiPut(`/api/chat/conversations/${cleaned.id}`, conversationToServerBody(cleaned), {
+      onConflict: async () => {
+        const remote = await apiGet<RemoteConv>(`/api/chat/conversations/${cleaned.id}`)
+        if (!remote) return conversationToServerBody(cleaned)
+        const remoteConv = remoteMetaToConversation(remote)
+        const merged: Conversation = {
+          ...remoteConv,
+          title: conv.title || remoteConv.title,
+          pinned: conv.pinned ?? remoteConv.pinned,
+          assistantId: conv.assistantId ?? remoteConv.assistantId,
+          contextCutoffMsgId: conv.contextCutoffMsgId ?? remoteConv.contextCutoffMsgId,
+          contextCutoffPoints: conv.contextCutoffPoints ?? remoteConv.contextCutoffPoints,
+          titleGenerated: conv.titleGenerated ?? remoteConv.titleGenerated,
+          defaultProviderId: conv.defaultProviderId ?? remoteConv.defaultProviderId,
+          defaultModelId: conv.defaultModelId ?? remoteConv.defaultModelId,
+          messages: mergeMessages(remoteConv.messages, conv.messages),
+          updatedAt: new Date().toISOString(),
+        }
+        const mergedCleaned = await prepareConvForServer(merged)
+        return conversationToServerBody(mergedCleaned)
+      },
+    })
     endSyncOp()
   } catch (err) {
     console.error(`[Sync] Failed to update conversation "${conv.title}" (${conv.id}):`, err)

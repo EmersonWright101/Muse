@@ -449,7 +449,7 @@ const DEFAULT_TITLE = '新对话'
  */
 export function mergeConversationsByContent(localConvs: Conversation[], remoteConvs: Conversation[]): Conversation[] {
   const all = [...localConvs, ...remoteConvs]
-  const byTitle = new Map<string, Conversation[]>()
+  const byTitle = new Map<string, { local: Conversation[]; remote: Conversation[] }>()
   const result: Conversation[] = []
 
   for (const conv of all) {
@@ -457,26 +457,33 @@ export function mergeConversationsByContent(localConvs: Conversation[], remoteCo
       result.push(conv)
       continue
     }
-    const list = byTitle.get(conv.title) ?? []
-    list.push(conv)
-    byTitle.set(conv.title, list)
+    const isRemote = remoteConvs.some(r => r.id === conv.id)
+    const g = byTitle.get(conv.title) ?? { local: [], remote: [] }
+    if (isRemote) g.remote.push(conv)
+    else g.local.push(conv)
+    byTitle.set(conv.title, g)
   }
 
   for (const group of byTitle.values()) {
-    if (group.length === 1) {
-      result.push(group[0])
+    const groupAll = [...group.local, ...group.remote]
+    if (groupAll.length === 1) {
+      result.push(groupAll[0])
       continue
     }
 
-    const canonicalId = group.map(c => c.id).sort((a, b) => a.localeCompare(b))[0]
-    const latestUpdatedAt = group.reduce((max, c) => (c.updatedAt > max ? c.updatedAt : max), group[0].updatedAt)
+    // Prefer a remote ID as canonical so the server always has the record.
+    // Fallback to lexicographically smallest local ID if no remote exists.
+    const canonicalId = group.remote.length > 0
+      ? group.remote.map(c => c.id).sort((a, b) => a.localeCompare(b))[0]
+      : group.local.map(c => c.id).sort((a, b) => a.localeCompare(b))[0]
+    const latestUpdatedAt = groupAll.reduce((max, c) => (c.updatedAt > max ? c.updatedAt : max), groupAll[0].updatedAt)
 
     let mergedMessages: ChatMessage[] = []
-    for (const conv of group) {
+    for (const conv of groupAll) {
       mergedMessages = mergeMessages(mergedMessages, conv.messages)
     }
 
-    const newest = group.reduce((latest, c) => (c.updatedAt > latest.updatedAt ? c : latest), group[0])
+    const newest = groupAll.reduce((latest, c) => (c.updatedAt > latest.updatedAt ? c : latest), groupAll[0])
 
     result.push({
       ...newest,

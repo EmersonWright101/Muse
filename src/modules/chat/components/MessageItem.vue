@@ -72,6 +72,7 @@ import { useAiSettingsStore } from '../../../stores/aiSettings'
 import { useStatisticsStore } from '../../../stores/statistics'
 
 import type { WebSearchResult } from '../../../utils/storage'
+import appIcon from '../../../assets/app-icon.png'
 
 
 const props = defineProps<{ message: ChatMessage; streaming?: boolean; webSearchResults?: WebSearchResult[] }>()
@@ -640,7 +641,7 @@ function resultDomain(url: string): string {
     <!-- User avatar -->
     <div v-if="isUser" class="avatar user-avatar">
       <img v-if="userAvatar" :src="userAvatar" class="avatar-logo" alt="" />
-      <div v-else class="avatar-mark user-avatar-fallback">U</div>
+      <img v-else :src="appIcon" class="avatar-logo" alt="" />
     </div>
 
     <!-- Message bubble -->

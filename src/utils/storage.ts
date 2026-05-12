@@ -639,8 +639,32 @@ export function mergeConversation(
   const base = newerIsRemote ? remote : local
   const merged: Conversation = { ...base, messages }
 
-  const localChanged = JSON.stringify(merged) !== JSON.stringify(local)
-  const remoteChanged = JSON.stringify(merged) !== JSON.stringify(remote)
+  // Compare key fields instead of full JSON to avoid false positives from
+  // message-array ordering differences introduced by mergeMessages sorting.
+  function same(a: Conversation, b: Conversation): boolean {
+    if (a.updatedAt !== b.updatedAt) return false
+    if (a.title !== b.title) return false
+    if (a.pinned !== b.pinned) return false
+    if (a.assistantId !== b.assistantId) return false
+    if (a.model !== b.model) return false
+    if (a.providerId !== b.providerId) return false
+    if (a.messages.length !== b.messages.length) return false
+    // Sort by id so order doesn't matter
+    const sortById = (msgs: ChatMessage[]) => [...msgs].sort((x, y) => x.id.localeCompare(y.id))
+    const aMsgs = sortById(a.messages)
+    const bMsgs = sortById(b.messages)
+    for (let i = 0; i < aMsgs.length; i++) {
+      const am = aMsgs[i]
+      const bm = bMsgs[i]
+      if (am.id !== bm.id || am.content !== bm.content || am.role !== bm.role || am.timestamp !== bm.timestamp) {
+        return false
+      }
+    }
+    return true
+  }
+
+  const localChanged = !same(merged, local)
+  const remoteChanged = !same(merged, remote)
 
   return { merged, localChanged, remoteChanged }
 }

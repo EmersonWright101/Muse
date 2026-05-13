@@ -1,5 +1,5 @@
 /**
- * New sync manager built on top of syncEngine.
+ * Sync manager built on top of syncEngine (manifest-based protocol).
  *
  * Registers SyncModules for all data domains and orchestrates sync.
  * No merge/dedup/conflict logic lives here — everything is delegated
@@ -14,8 +14,9 @@ import {
   clearSyncState,
 } from './syncEngine'
 import { drainOfflineQueue } from './offlineQueue'
+import { syncAllToolHistories } from './toolsSync'
 import type { SyncModule } from './syncEngine'
-import { isBackendConfigured, getServerApiKey } from './api'
+import { isBackendConfigured, getServerApiKey, apiPut } from './api'
 import {
   beginSyncOp,
   endSyncOp,
@@ -27,6 +28,12 @@ import {
 } from '../stores/syncStatus'
 import { recordSyncTimestamp } from '../utils/syncTimestamp'
 import type { Conversation, Assistant } from '../utils/storage'
+
+function safeIso(val: any, fallback: string): string {
+  if (!val) return fallback
+  const d = new Date(val)
+  return isNaN(d.getTime()) ? fallback : d.toISOString()
+}
 import type { TodoData } from '../utils/todoStorage'
 import type { TravelNote } from '../utils/travelStorage'
 import type { NoteItem } from '../utils/notesStorage'
@@ -475,6 +482,11 @@ async function applyIncrementalChatState(mergedItems: Conversation[], deletedIds
   const { useChatStore } = await import('../stores/chat')
 
   for (const conv of mergedItems) {
+    if (!conv.id) continue
+    // Skip junk: no title and no messages
+    if (!conv.title && (!conv.messages || conv.messages.length === 0)) continue
+    // Normalize null/empty title
+    if (!conv.title) conv.title = '新对话'
     await saveConversationLocalOnly(conv)
   }
 
@@ -483,6 +495,29 @@ async function applyIncrementalChatState(mergedItems: Conversation[], deletedIds
   }
 
   useChatStore().loadList()
+}
+
+/** Remove locally saved conversations that have no title and no messages (server junk). */
+async function purgeEmptyChatConversations(): Promise<void> {
+  try {
+    const { listConversations, loadConversation, deleteConversationLocalOnly } = await import('../utils/storage')
+    const { useChatStore } = await import('../stores/chat')
+    const metas = await listConversations()
+    const junkIds: string[] = []
+    for (const meta of metas) {
+      if (meta.title && meta.title.trim()) continue
+      const full = await loadConversation(meta.id)
+      const hasContent = full?.messages?.some(m => m.role !== 'system' && m.content?.trim())
+      if (!hasContent) junkIds.push(meta.id)
+    }
+    for (const id of junkIds) await deleteConversationLocalOnly(id)
+    if (junkIds.length > 0) {
+      console.log(`[Sync] Purged ${junkIds.length} empty no-title conversations`)
+      useChatStore().loadList()
+    }
+  } catch (err) {
+    console.warn('[Sync] purgeEmptyChatConversations failed:', err)
+  }
 }
 
 async function serializeChatState(state: Conversation[]): Promise<any> {
@@ -615,11 +650,11 @@ async function getEbookManifest(): Promise<{ id: string; updatedAt?: string }[]>
   const store = useEbookStore()
   const now = new Date().toISOString()
   const manifest = [
-    ...store.books.map((b: any) => ({ id: `book:${b.id}`, updatedAt: new Date(b.updatedAt || b.addedAt).toISOString() })),
-    ...Object.values(store.progress).map((p: any) => ({ id: `progress:${p.bookId}`, updatedAt: new Date(p.updatedAt).toISOString() })),
-    ...store.annotations.map((a: any) => ({ id: `annotation:${a.id}`, updatedAt: new Date(a.updatedAt).toISOString() })),
-    ...store.sessions.map((s: any) => ({ id: `session:${s.id}`, updatedAt: new Date(s.startedAt).toISOString() })),
-    ...store.collections.map((c: any) => ({ id: `collection:${c.id}`, updatedAt: new Date(c.updatedAt || c.createdAt).toISOString() })),
+    ...store.books.map((b: any) => ({ id: `book:${b.id}`, updatedAt: safeIso(b.updatedAt || b.addedAt, now) })),
+    ...Object.values(store.progress).map((p: any) => ({ id: `progress:${p.bookId}`, updatedAt: safeIso(p.updatedAt, now) })),
+    ...store.annotations.map((a: any) => ({ id: `annotation:${a.id}`, updatedAt: safeIso(a.updatedAt, now) })),
+    ...store.sessions.map((s: any) => ({ id: `session:${s.id}`, updatedAt: safeIso(s.startedAt, now) })),
+    ...store.collections.map((c: any) => ({ id: `collection:${c.id}`, updatedAt: safeIso(c.updatedAt || c.createdAt, now) })),
     { id: 'meta:copilotSessions', updatedAt: now },
     { id: 'meta:ttsPlaybackPos', updatedAt: now },
     { id: 'meta:ttsSettings', updatedAt: now },
@@ -1032,6 +1067,21 @@ export async function syncAllFromServer(force = false): Promise<void> {
       }
     }
 
+    // Clean up junk conversations (no title + no content) accumulated from server.
+    purgeEmptyChatConversations().catch(() => {})
+
+    // Tools sync uses individual PUT endpoints (not manifest-based), run separately.
+    try {
+      setSyncModule('工具')
+      addSyncAction('正在同步工具历史记录…')
+      await syncAllToolHistories()
+      removeSyncAction('正在同步工具历史记录…')
+    } catch (err) {
+      console.error('[SyncManager2] tools sync failed:', err)
+      firstErr ??= err
+      removeSyncAction('正在同步工具历史记录…')
+    }
+
     setSyncModule(null)
     setSyncAction(null)
 
@@ -1059,22 +1109,33 @@ export async function forceSyncAll(): Promise<void> {
   await syncAllFromServer(true)
 }
 
-/**
- * Try the new sync protocol first, with fallback to the old one.
- * Respects localStorage flag `muse-use-new-sync`.
- */
 export async function tryNewSync(force = false): Promise<void> {
-  const useNew = localStorage.getItem('muse-use-new-sync') === 'true' || force
-  if (!useNew) {
-    const { syncAllFromServer } = await import('./syncManager')
-    return syncAllFromServer(force)
-  }
+  await syncAllFromServer(force)
+}
 
+// ─── Settings push helpers ────────────────────────────────────────────────────
+// Called from settings UI components whenever a value changes, to push just
+// the changed key-group to the server without triggering a full sync.
+
+export async function pushGeneralSettings(): Promise<void> {
+  await apiPut('/api/settings/general', {
+    value: {
+      locale:            localStorage.getItem('muse-locale') ?? 'zh-CN',
+      currency:          localStorage.getItem('muse-currency') ?? 'cny',
+      trashRetentionDays: parseInt(localStorage.getItem('muse-trash-retention-days') ?? '30') || 30,
+    },
+  }).catch(() => {})
+}
+
+export async function pushProfileSettings(): Promise<void> {
+  await apiPut('/api/settings/profile', {
+    value: { avatar: localStorage.getItem('muse-user-avatar') },
+  }).catch(() => {})
+}
+
+export async function pushChatUiSettings(): Promise<void> {
   try {
-    await syncAllFromServer(force)
-  } catch (err) {
-    console.error('[Sync] New sync protocol failed, falling back to old:', err)
-    const { syncAllFromServer } = await import('./syncManager')
-    return syncAllFromServer(force)
-  }
+    const variantLayout = JSON.parse(localStorage.getItem('muse-variant-layout') ?? '{}')
+    await apiPut('/api/settings/chatUi', { value: { variantLayout } }).catch(() => {})
+  } catch { /* ignore malformed JSON */ }
 }

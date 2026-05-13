@@ -213,7 +213,7 @@ export async function listConversations(): Promise<ConversationMeta[]> {
   return index.sort((a, b) => {
     if (a.pinned && !b.pinned) return -1;
     if (!a.pinned && b.pinned) return 1;
-    return b.updatedAt.localeCompare(a.updatedAt);
+    return (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '');
   });
 }
 
@@ -268,7 +268,7 @@ export async function saveConversationLocalOnly(conv: Conversation): Promise<voi
     const lastMsg = conv.messages.filter(m => m.role !== 'system').at(-1);
     const meta: ConversationMeta = {
       id:          conv.id,
-      title:       conv.title,
+      title:       conv.title || '新对话',
       createdAt:   conv.createdAt,
       updatedAt:   conv.updatedAt,
       preview:     lastMsg ? lastMsg.content.slice(0, 80).replace(/\n/g, ' ') : '',
@@ -288,8 +288,11 @@ export async function saveConversation(conv: Conversation): Promise<void> {
   const path = `${await convDir()}/${conv.id}.json`;
   await atomicWriteTextFile(path, JSON.stringify(conv, null, 2));
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
-  // Push to backend (fire-and-forget; upsert via POST→fallback-to-PUT)
-  if (isBackendConfigured()) {
+  // Push to backend once the conversation has an AI response (skip empty new-conversation saves).
+  const hasAiResponse = conv.messages.some(
+    m => m.role === 'assistant' && (m.content?.trim() || m.mediaOutputs?.length)
+  );
+  if (isBackendConfigured() && hasAiResponse) {
     pushConvToServer(conv).catch((err) => { console.error('[Storage] Failed to push conversation to server:', err); });
   }
 
@@ -299,7 +302,7 @@ export async function saveConversation(conv: Conversation): Promise<void> {
     const lastMsg = conv.messages.filter(m => m.role !== 'system').at(-1);
     const meta: ConversationMeta = {
       id:          conv.id,
-      title:       conv.title,
+      title:       conv.title || '新对话',
       createdAt:   conv.createdAt,
       updatedAt:   conv.updatedAt,
       preview:     lastMsg ? lastMsg.content.slice(0, 80).replace(/\n/g, ' ') : '',
@@ -504,7 +507,12 @@ export async function restoreConversationFromTrash(id: string): Promise<void> {
   });
 
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
-  restoreConvOnServer(id).catch((err) => { console.error('[Storage] Failed to restore conversation on server:', err); });
+  try {
+    const conv = JSON.parse(await readTextFile(convPath)) as Conversation;
+    restoreConvOnServer(id, conv.updatedAt).catch((err) => { console.error('[Storage] Failed to restore conversation on server:', err); });
+  } catch {
+    restoreConvOnServer(id, new Date().toISOString()).catch(() => {});
+  }
 }
 
 export async function permanentDeleteFromTrash(id: string): Promise<void> {

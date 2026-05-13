@@ -23,6 +23,11 @@ watch(() => ebookStore.activeBookId, (id, prevId) => {
   else if (prevId && !id && route.path.startsWith('/ebook')) showPanel.value = true
 })
 
+// Restore sidebar panel when leaving ebook route (activeBookId may still be set)
+watch(() => route.path, (path) => {
+  if (!path.startsWith('/ebook')) showPanel.value = true
+})
+
 useTodoNotifications()
 
 // Prevent global Cmd+A / Ctrl+A from selecting the entire UI, but keep it inside editors.
@@ -96,11 +101,9 @@ const isChatWindow = computed(() => route.path === '/chat-window')
         <TitleBar :panel-visible="showPanel" @toggle="showPanel = !showPanel" />
 
         <div class="content-area" :class="{ 'panel-floats': panelFloats, 'ebook-panel-active': ebookPanelActive }">
-          <Transition name="panel-slide">
-            <div v-show="showPanel && routeHasSidebar" class="panel-column" :class="panelBgClass">
-              <router-view name="sidebar" />
-            </div>
-          </Transition>
+          <div v-show="showPanel && routeHasSidebar" class="panel-column" :class="panelBgClass">
+            <router-view name="sidebar" />
+          </div>
           <div class="main-column">
             <router-view name="main" />
           </div>

@@ -280,7 +280,7 @@ function remoteMetaToConversation(remote: RemoteConv): Conversation {
 function conversationToServerBody(cleaned: Conversation, extra?: Record<string, unknown>): Record<string, unknown> {
   return {
     id:                     cleaned.id,
-    title:                  cleaned.title,
+    title:                  cleaned.title || '新对话',
     provider_id:            cleaned.providerId,
     model:                  cleaned.model,
     pinned:                 cleaned.pinned ?? false,
@@ -386,11 +386,11 @@ export async function trashConvOnServer(id: string, trashedAt: string, expiryAt:
   }
 }
 
-export async function restoreConvOnServer(id: string): Promise<void> {
+export async function restoreConvOnServer(id: string, updatedAt: string): Promise<void> {
   if (!isBackendConfigured()) return
   beginSyncOp()
   try {
-    await apiPost(`/api/chat/conversations/${id}/restore`, {})
+    await apiPost(`/api/chat/conversations/${id}/restore?updatedAt=${encodeURIComponent(updatedAt)}`, {})
     endSyncOp()
   } catch (err) {
     console.error(`[Sync] Failed to restore conversation ${id}:`, err)

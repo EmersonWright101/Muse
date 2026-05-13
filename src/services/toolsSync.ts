@@ -114,7 +114,7 @@ async function getToolStore(name: ToolName) {
   }
 }
 
-/** Load and sync all tool histories. Call from syncManager. */
+/** Load and sync all tool histories. Called from syncManager2. */
 export async function syncAllToolHistories(): Promise<void> {
   const results = await Promise.allSettled(
     TOOL_NAMES.map(async (name) => {

@@ -11,8 +11,7 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { useHomeStore, DEFAULT_PROMPT, FREQUENCY_OPTIONS } from '../../../stores/home'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
 import { useStatisticsStore } from '../../../stores/statistics'
-import { pushGeneralSettings } from '../../../services/syncManager'
-import { tryNewSync } from '../../../services/syncManager2'
+import { pushGeneralSettings, tryNewSync } from '../../../services/syncManager2'
 
 const { locale, t } = useI18n()
 const statsStore = useStatisticsStore()
@@ -112,17 +111,6 @@ function saveBackendConn() {
   papers.persistConn()
   papersPingResult.value = null
   tryNewSync().catch(() => {})
-}
-
-// New sync protocol toggle
-const useNewSync = ref(localStorage.getItem('muse-use-new-sync') === 'true')
-
-function toggleNewSync() {
-  useNewSync.value = !useNewSync.value
-  localStorage.setItem('muse-use-new-sync', String(useNewSync.value))
-  if (useNewSync.value) {
-    tryNewSync(true).catch(() => {})
-  }
 }
 
 async function pingBackend() {
@@ -532,17 +520,6 @@ async function confirmDeleteOld() {
         </div>
       </div>
 
-      <!-- New sync protocol toggle -->
-      <div class="toggle-row" style="margin-top: 8px;">
-        <span class="toggle-label">使用新的同步协议（实验性）</span>
-        <button
-          class="toggle-btn"
-          :class="{ active: useNewSync }"
-          @click="toggleNewSync"
-        >
-          <div class="toggle-thumb" />
-        </button>
-      </div>
     </div>
 
     <!-- Migrate confirm dialog -->

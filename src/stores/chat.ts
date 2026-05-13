@@ -975,9 +975,15 @@ export const useChatStore = defineStore('chat', () => {
 
   // Coalesces rapid back-to-back loadList() calls (e.g. concurrent stream completions).
   let _loadListTimer: ReturnType<typeof setTimeout> | null = null
+  let _isLoadingList = false
   function scheduleLoadList() {
     if (_loadListTimer) clearTimeout(_loadListTimer)
-    _loadListTimer = setTimeout(() => { _loadListTimer = null; loadList() }, 50)
+    _loadListTimer = setTimeout(async () => {
+      _loadListTimer = null
+      if (_isLoadingList) return
+      _isLoadingList = true
+      try { await loadList() } finally { _isLoadingList = false }
+    }, 50)
   }
 
   // ─── Open conversation ──────────────────────────────────────────────────
@@ -1189,7 +1195,7 @@ export const useChatStore = defineStore('chat', () => {
       providerId: pid,
     })
     conv.messages.push(assistantMsg)
-    conv.updatedAt = new Date().toISOString()
+    conv.updatedAt = assistantMsg.timestamp
 
     // Mark this conversation as streaming
     streamingConvIds.add(conv.id)
@@ -1344,7 +1350,7 @@ export const useChatStore = defineStore('chat', () => {
         _streamingTexts.delete(conv.id)
         _streamingReasonings.delete(conv.id)
         _videoProgressMap.delete(assistantMsg.id)
-        conv.updatedAt = new Date().toISOString()
+        conv.updatedAt = assistantMsg.timestamp
         await saveConversation(conv)
         scheduleLoadList()
         // Generate AI title after the first completed assistant reply
@@ -1849,7 +1855,7 @@ export const useChatStore = defineStore('chat', () => {
           msg.variants![vi].usage = usageWithDuration
         }
         cleanupVariant()
-        conv.updatedAt = new Date().toISOString()
+        conv.updatedAt = msg.timestamp
         await saveConversation(conv)
         await loadList()
       },

@@ -220,16 +220,29 @@ function notePath(id: string): Promise<string> {
 
 // ─── Groups ──────────────────────────────────────────────────────────────────
 
-const GROUPS_FILENAME = '.groups.json'
+const GROUPS_FILENAME = 'groups.json'
+const GROUPS_FILENAME_LEGACY = '.groups.json'
 
 export async function loadGroups(): Promise<NoteGroup[]> {
   const dir = await notesDir()
   const path = `${dir}/${GROUPS_FILENAME}`
   try {
-    if (!(await exists(path))) return []
-    const raw = await readTextFile(path)
-    const groups = JSON.parse(raw) as NoteGroup[]
-    return Array.isArray(groups) ? groups : []
+    if (await exists(path)) {
+      const raw = await readTextFile(path)
+      const groups = JSON.parse(raw) as NoteGroup[]
+      return Array.isArray(groups) ? groups : []
+    }
+    // Migrate from old dot-prefixed filename (Tauri scope doesn't allow hidden files)
+    const legacy = `${dir}/${GROUPS_FILENAME_LEGACY}`
+    if (await exists(legacy)) {
+      const raw = await readTextFile(legacy)
+      const groups = JSON.parse(raw) as NoteGroup[]
+      if (Array.isArray(groups) && groups.length > 0) {
+        await writeTextFile(path, JSON.stringify(groups, null, 2))
+      }
+      return Array.isArray(groups) ? groups : []
+    }
+    return []
   } catch { return [] }
 }
 

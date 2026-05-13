@@ -97,8 +97,8 @@ const filtered = computed(() => {
   const q = searchQuery.value.toLowerCase().trim()
   if (!q) return list
   return list.filter(c =>
-    c.title.toLowerCase().includes(q) ||
-    c.preview.toLowerCase().includes(q) ||
+    c.title?.toLowerCase().includes(q) ||
+    c.preview?.toLowerCase().includes(q) ||
     fullTextIds.value.has(c.id),
   )
 })
@@ -117,9 +117,9 @@ function assistantShortName(id: string): string {
 const renamingId  = ref<string | null>(null)
 const renameInput = ref('')
 
-function startRename(id: string, title: string) {
+function startRename(id: string, title: string | null | undefined) {
   renamingId.value  = id
-  renameInput.value = title
+  renameInput.value = title ?? ''
 }
 
 async function finishRename(id: string) {
@@ -136,14 +136,17 @@ function handleRenameKeydown(e: KeyboardEvent, id: string) {
 
 // ─── Title truncation ────────────────────────────────────────────────────────
 
-function truncateTitle(title: string, max = 12): string {
-  return title.length > max ? title.slice(0, max) + '…' : title
+function truncateTitle(title: string | null | undefined, max = 12): string {
+  const t = title?.trim() || '新对话'
+  return t.length > max ? t.slice(0, max) + '…' : t
 }
 
 // ─── Time formatting ──────────────────────────────────────────────────────────
 
-function formatTime(iso: string): string {
+function formatTime(iso: string | null | undefined): string {
+  if (!iso) return ''
   const d   = new Date(iso)
+  if (isNaN(d.getTime())) return ''
   const now = new Date()
   const days = Math.floor((now.getTime() - d.getTime()) / 86400_000)
   if (days === 0) return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
@@ -595,7 +598,7 @@ function daysUntilExpiry(deletedAt: string): number {
           class="trash-item"
           @click="chat.openTrashPreview(item.id)"
         >
-          <span class="trash-item-title" :title="item.title">{{ item.title.length > 16 ? item.title.slice(0, 16) + '…' : item.title }}</span>
+          <span class="trash-item-title" :title="item.title ?? ''">{{ (item.title ?? '').length > 16 ? (item.title ?? '').slice(0, 16) + '…' : (item.title ?? '') }}</span>
           <span class="trash-item-days">{{ daysUntilExpiry(item.deletedAt) }}天</span>
           <div class="trash-item-actions">
             <button

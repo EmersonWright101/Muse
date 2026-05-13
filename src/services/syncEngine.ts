@@ -236,7 +236,8 @@ export async function syncModule(moduleName: string): Promise<boolean> {
     if (supportsManifest) {
       // Manifest 模式：构建轻量清单，仅收集变化的完整数据
       manifest = await mod.getManifest!()
-      const previousManifest = extractManifestFromState(previousState)
+      // Use the saved manifest from last sync (not previousState which is never written for manifest path)
+      const previousManifest = getLastSyncedManifest(moduleName) ?? []
       const lightweightResult = computeLightweightChangeset(
         manifest,
         previousManifest,

@@ -29,10 +29,13 @@ import { recordSyncTimestamp } from '../utils/syncTimestamp'
 import type { Conversation, Assistant } from '../utils/storage'
 import type { TodoData } from '../utils/todoStorage'
 import type { TravelNote } from '../utils/travelStorage'
+import type { NoteItem } from '../utils/notesStorage'
 import { loadTodos, saveTodos } from '../utils/todoStorage'
 import { listTravelNotes, loadTravelNote, saveTravelNote } from '../utils/travelStorage'
+import { listNotes, loadNote, saveNote } from '../utils/notesStorage'
 import { useTodoStore } from '../stores/todo'
 import { useTravelStore } from '../stores/travel'
+import { useNotesStore } from '../stores/notes'
 
 // ─── Settings module ─────────────────────────────────────────────────────────
 
@@ -46,6 +49,7 @@ interface SettingsState {
   chatUi?: any
   privateAssistant?: any
   travelCopilot?: any
+  notesCopilot?: any
   paperCopilot?: any
   statistics?: any
   ebookTts?: any
@@ -59,6 +63,7 @@ async function getSettingsState(): Promise<SettingsState> {
     { useHomeStore },
     { useAssistantSettingsStore },
     { useTravelCopilotStore },
+    { useNotesCopilotStore },
     { usePaperCopilotStore },
     { useStatisticsStore },
     { useEbookStore },
@@ -69,6 +74,7 @@ async function getSettingsState(): Promise<SettingsState> {
     import('../stores/home'),
     import('../stores/assistantSettings'),
     import('../stores/travelCopilot'),
+    import('../stores/notesCopilot'),
     import('../stores/paperCopilot'),
     import('../stores/statistics'),
     import('../stores/ebook'),
@@ -80,6 +86,7 @@ async function getSettingsState(): Promise<SettingsState> {
   const homeStore = useHomeStore()
   const assistantSettingsStore = useAssistantSettingsStore()
   const travelCopilotStore = useTravelCopilotStore()
+  const notesCopilotStore = useNotesCopilotStore()
   const paperCopilotStore = usePaperCopilotStore()
   const statisticsStore = useStatisticsStore()
   const ebookStore = useEbookStore()
@@ -157,6 +164,14 @@ async function getSettingsState(): Promise<SettingsState> {
       completionWords: travelCopilotStore.completionWords,
       triggerDelay: travelCopilotStore.triggerDelay,
       contextChars: travelCopilotStore.contextChars,
+    },
+    notesCopilot: {
+      enabled: notesCopilotStore.enabled,
+      providerId: notesCopilotStore.providerId,
+      modelId: notesCopilotStore.modelId,
+      completionWords: notesCopilotStore.completionWords,
+      triggerDelay: notesCopilotStore.triggerDelay,
+      contextChars: notesCopilotStore.contextChars,
     },
     paperCopilot: {
       defaultContextMode: paperCopilotStore.defaultContextMode,
@@ -286,6 +301,22 @@ async function applySettingsState(state: SettingsState): Promise<void> {
     }
     localStorage.setItem('muse-travel-copilot', JSON.stringify(payload))
     localStorage.setItem('muse-travel-copilot-modified-at', new Date().toISOString())
+    store.reload()
+  }
+
+  if (state.notesCopilot) {
+    const { useNotesCopilotStore } = await import('../stores/notesCopilot')
+    const store = useNotesCopilotStore()
+    const payload = {
+      enabled: state.notesCopilot.enabled ?? store.enabled,
+      providerId: state.notesCopilot.providerId ?? store.providerId,
+      modelId: state.notesCopilot.modelId ?? store.modelId,
+      completionWords: state.notesCopilot.completionWords ?? store.completionWords,
+      triggerDelay: state.notesCopilot.triggerDelay ?? store.triggerDelay,
+      contextChars: state.notesCopilot.contextChars ?? store.contextChars,
+    }
+    localStorage.setItem('muse-notes-copilot', JSON.stringify(payload))
+    localStorage.setItem('muse-notes-copilot-modified-at', new Date().toISOString())
     store.reload()
   }
 
@@ -784,6 +815,108 @@ const travelModule: SyncModule<TravelNote[]> = {
   },
 }
 
+// ─── Notes module ────────────────────────────────────────────────────────────
+
+async function getNotesState(): Promise<any[]> {
+  const { loadGroups } = await import('../utils/notesStorage')
+  const groups = await loadGroups()
+  const groupItems = groups.map(g => ({
+    id: `group:${g.id}`,
+    _type: 'group',
+    name: g.name,
+    sortOrder: g.sortOrder,
+    createdAt: g.createdAt,
+    updatedAt: g.updatedAt,
+    _version: (g as any)._version ?? 0,
+  }))
+
+  const metas = await listNotes()
+  const notes = await Promise.all(metas.map(m => loadNote(m.id)))
+  const noteItems = notes.filter((n): n is NoteItem => !!n).map(n => ({
+    id: `note:${n.id}`,
+    _type: 'note',
+    groupId: n.groupId,
+    title: n.title,
+    content: n.content,
+    tags: n.tags,
+    cover: n.cover,
+    date: n.date,
+    createdAt: n.createdAt,
+    updatedAt: n.updatedAt,
+    _version: (n as any)._version ?? 0,
+  }))
+
+  return [...groupItems, ...noteItems]
+}
+
+async function getNotesManifest(): Promise<{ id: string; updatedAt?: string; _version?: number }[]> {
+  const { loadGroups } = await import('../utils/notesStorage')
+  const groups = await loadGroups()
+  const metas = await listNotes()
+  return [
+    ...groups.map(g => ({ id: `group:${g.id}`, updatedAt: g.updatedAt, _version: (g as any)._version ?? 0 })),
+    ...metas.map(m => ({ id: `note:${m.id}`, updatedAt: m.updatedAt, _version: (m as any)._version ?? 0 })),
+  ]
+}
+
+async function applyNotesState(state: any[]): Promise<void> {
+  const { saveGroups } = await import('../utils/notesStorage')
+  const groups = state
+    .filter((i: any) => i.id?.startsWith('group:'))
+    .map((i: any) => ({ ...i, id: i.id.replace('group:', '') }))
+  const notes = state
+    .filter((i: any) => i.id?.startsWith('note:'))
+    .map((i: any) => ({ ...i, id: i.id.replace('note:', '') }))
+
+  await saveGroups(groups)
+  for (const note of notes) {
+    await saveNote(note, { sync: false })
+  }
+  useNotesStore().loadList()
+}
+
+async function applyIncrementalNotesState(mergedItems: any[], deletedIds: string[]): Promise<void> {
+  const { deleteNoteLocalOnly, loadGroups, saveGroups } = await import('../utils/notesStorage')
+  const currentGroups = await loadGroups()
+  const groupMap = new Map(currentGroups.map(g => [g.id, g]))
+
+  for (const item of mergedItems) {
+    if (item.id?.startsWith('group:')) {
+      const id = item.id.replace('group:', '')
+      groupMap.set(id, { ...item, id })
+    } else if (item.id?.startsWith('note:')) {
+      const id = item.id.replace('note:', '')
+      const note = { ...item, id }
+      await saveNote(note, { sync: false, preserveUpdatedAt: true })
+    }
+  }
+
+  for (const id of deletedIds) {
+    if (id.startsWith('group:')) {
+      groupMap.delete(id.replace('group:', ''))
+    } else if (id.startsWith('note:')) {
+      await deleteNoteLocalOnly(id.replace('note:', ''))
+    }
+  }
+
+  await saveGroups(Array.from(groupMap.values()))
+  useNotesStore().loadList()
+}
+
+const notesModule: SyncModule<any[]> = {
+  name: 'notes',
+  getState: getNotesState,
+  getManifest: getNotesManifest,
+  getLastSyncedState: () => getLastSyncedState('notes') as any[] | null,
+  applyState: applyNotesState,
+  applyIncrementalState: applyIncrementalNotesState,
+  serialize: (state) => state,
+  deserialize: (raw) => {
+    const items = Array.isArray(raw) ? raw : raw?.items ?? []
+    return items
+  },
+}
+
 // ─── Assistants module ───────────────────────────────────────────────────────
 
 async function getAssistantsState(): Promise<Assistant[]> {
@@ -840,6 +973,7 @@ function registerAllModules() {
   registerSyncModule(todoModule)
   registerSyncModule(ebookModule)
   registerSyncModule(travelModule)
+  registerSyncModule(notesModule)
   registerSyncModule(assistantsModule)
 }
 
@@ -867,7 +1001,7 @@ export async function syncAllFromServer(force = false): Promise<void> {
 
   beginSyncOp()
 
-  const modules = ['settings', 'assistants', 'chat', 'todo', 'ebook', 'travel']
+  const modules = ['settings', 'assistants', 'chat', 'todo', 'ebook', 'travel', 'notes']
   let firstErr: unknown
 
   if (force) {
@@ -884,6 +1018,7 @@ export async function syncAllFromServer(force = false): Promise<void> {
             : moduleName === 'todo' ? '待办'
             : moduleName === 'ebook' ? '电子书'
             : moduleName === 'travel' ? '旅行笔记'
+            : moduleName === 'notes' ? '笔记'
             : moduleName,
         )
         addSyncAction(`正在同步 ${moduleName}…`)

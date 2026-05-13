@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings, BookOpen } from 'lucide-vue-next'
+import { MessageSquare, MapPin, CheckSquare, BarChart3, Settings, BookOpen, NotebookPen } from 'lucide-vue-next'
 import toolIcon from '../assets/icons/tool.svg'
 import { apiPut } from '../services/api'
 import assistantIcon from '../assets/icons/AIAssistant@2x.svg'
@@ -19,6 +19,7 @@ const isWindows = navigator.userAgent.includes('Windows')
 const navItems = computed(() => [
   { path: '/chat',      icon: MessageSquare, labelKey: 'nav.chat',      avatar: false },
   { path: '/assistant', icon: null,          labelKey: 'nav.assistant', customIcon: assistantIcon },
+  { path: '/notes',     icon: NotebookPen,   labelKey: 'nav.notes',     avatar: false, iconSize: 20 },
   { path: '/todo',      icon: CheckSquare,   labelKey: 'nav.todo',      avatar: false, iconSize: 18 },
   { path: '/ebook',     icon: BookOpen,      labelKey: 'nav.ebook',     avatar: false, iconSize: 20 },
   { path: '/travel',    icon: MapPin,        labelKey: 'nav.travel',    avatar: false },

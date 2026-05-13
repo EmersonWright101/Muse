@@ -55,6 +55,13 @@ const router = createRouter({
       },
     },
     {
+      path: '/notes',
+      components: {
+        sidebar: () => import('../modules/notes/NotesSidebar.vue'),
+        main: () => import('../modules/notes/NotesMain.vue'),
+      },
+    },
+    {
       path: '/statistics',
       components: {
         sidebar: () => import('../modules/statistics/StatisticsSidebar.vue'),

@@ -5,9 +5,13 @@ import { apiGet, apiPost, isBackendConfigured } from '../../../services/api'
 import { usePapersStore } from '../../../stores/papers'
 import { useStatisticsStore } from '../../../stores/statistics'
 
+interface BreakdownMap {
+  [module: string]: Record<string, number> | undefined
+}
+
 interface ServerStats {
   settings: number; chat: number; home: number
-  travel: number; papers: number; todo: number; total: number
+  travel: number; papers: number; todo: number; notes: number; total: number
   dedup_savings?: number
   trash_size?: number
   orphan_size?: number
@@ -17,7 +21,8 @@ interface ServerStats {
   disk_used?: number
   disk_free?: number
   disk_usage_pct?: number
-  [key: string]: number | string | Record<string, number> | null | undefined  // 允许后端返回新的模块数据
+  _breakdown?: BreakdownMap
+  [key: string]: number | string | Record<string, number> | BreakdownMap | null | undefined
 }
 
 const stats      = ref<ServerStats | null>(null)
@@ -72,6 +77,7 @@ const MODULE_META: Record<string, { label: string; color: string }> = {
   settings: { label: '设置',     color: '#20BDB8' },
   todo:     { label: 'Todo',     color: '#F0A830' },
   ebook:    { label: '图书',     color: '#E85D75' },
+  notes:    { label: '笔记',     color: '#6B8E23' },
 }
 
 const DEFAULT_COLORS = [
@@ -80,15 +86,32 @@ const DEFAULT_COLORS = [
   '#4682B4', '#D2691E', '#8B4513', '#708090',
 ]
 
-const ebookBreakdown = computed(() => {
-  const b = stats.value?._breakdown as Record<string, number> | undefined
+// 各模块子分类标签映射
+const BREAKDOWN_LABELS: Record<string, Record<string, string>> = {
+  ebook:    { db: '数据库',       files: 'EPUB 文件',   tts: '有声书音频' },
+  travel:   { notes: '笔记内容',   images: '图片' },
+  home:     { posters: '海报图片' },
+  chat:     { messages: '消息记录', attachments: '附件' },
+  papers:   { pdfs: 'PDF 文件',   metadata: '论文数据',  chats: '论文对话' },
+  todo:     { tasks: '任务数据' },
+  settings: { settings_data: '设置数据', conversations: '助手对话', assistants: '助手提示词' },
+  notes:    { notes: '笔记内容',   images: '图片' },
+}
+
+function getModuleBreakdown(moduleKey: string) {
+  const b = stats.value?._breakdown?.[moduleKey]
   if (!b) return null
-  return [
-    { key: 'ebook_db',    label: '  └ 数据库',    bytes: b.ebook_db || 0 },
-    { key: 'ebook_files', label: '  └ EPUB 文件', bytes: b.ebook_files || 0 },
-    { key: 'ebook_tts',   label: '  └ 有声书音频', bytes: b.ebook_tts || 0 },
-  ]
-})
+  const labels = BREAKDOWN_LABELS[moduleKey]
+  if (!labels) return null
+  const items = Object.entries(b)
+    .map(([key, bytes]) => ({
+      key: `${moduleKey}_${key}`,
+      label: `  └ ${labels[key] ?? key}`,
+      bytes: bytes || 0,
+    }))
+    .filter(item => item.bytes > 0 || Object.keys(labels).includes(item.key.replace(`${moduleKey}_`, '')))
+  return items.length ? items : null
+}
 
 const modules = computed(() => {
   if (!stats.value) return []
@@ -287,14 +310,14 @@ onMounted(() => {
         <template v-for="m in modules" :key="m.key">
           <div
             class="legend-row"
-            :class="{ dimmed: hoveredKey && hoveredKey !== m.key, lit: hoveredKey === m.key, expandable: m.key === 'ebook' && ebookBreakdown }"
+            :class="{ dimmed: hoveredKey && hoveredKey !== m.key, lit: hoveredKey === m.key, expandable: !!getModuleBreakdown(m.key) }"
             @mouseenter="hoveredKey = m.key"
             @mouseleave="hoveredKey = null"
-            @click="m.key === 'ebook' && ebookBreakdown && toggleCategory(m.key)"
+            @click="getModuleBreakdown(m.key) && toggleCategory(m.key)"
           >
             <span class="dot" :style="{ background: m.color }" />
             <ChevronRight
-              v-if="m.key === 'ebook' && ebookBreakdown"
+              v-if="getModuleBreakdown(m.key)"
               :size="13"
               class="expand-icon"
               :class="{ expanded: expandedCategories.has(m.key) }"
@@ -306,14 +329,14 @@ onMounted(() => {
             <span class="leg-pct">{{ m.pct.toFixed(1) }}%</span>
             <span class="leg-size">{{ formatBytes(m.bytes) }}</span>
           </div>
-          <!-- ebook breakdown sub-rows -->
+          <!-- module breakdown sub-rows -->
           <Transition name="expand">
             <div
-              v-if="m.key === 'ebook' && ebookBreakdown && expandedCategories.has(m.key)"
-              class="ebook-breakdown"
+              v-if="getModuleBreakdown(m.key) && expandedCategories.has(m.key)"
+              class="module-breakdown"
             >
               <div
-                v-for="sub in ebookBreakdown" :key="sub.key"
+                v-for="sub in getModuleBreakdown(m.key)" :key="sub.key"
                 class="breakdown-row"
               >
                 <span class="breakdown-label">{{ sub.label }}</span>
@@ -674,8 +697,8 @@ svg.spinning { animation: spin 0.8s linear infinite; }
 .storage-label { color: #8e8e93; flex: 1; }
 .storage-value { font-weight: 600; color: #1c1c1e; }
 
-/* ebook breakdown sub-rows */
-.ebook-breakdown {
+/* module breakdown sub-rows */
+.module-breakdown {
   padding-left: 19px;
   margin-bottom: 6px;
   display: flex;

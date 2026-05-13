@@ -44,6 +44,7 @@ export interface Collection {
   id: string
   name: string
   createdAt: number
+  updatedAt: number
 }
 
 export interface Book {
@@ -58,6 +59,7 @@ export interface Book {
   publisher: string
   description: string
   addedAt: number
+  updatedAt: number
   lastReadAt: number | null
   totalProgress: number      // 0–100
   readStatus: ReadStatus
@@ -343,10 +345,12 @@ export const useEbookStore = defineStore('ebook', () => {
 
   // ─── Library management ─────────────────────────────────────────────────────
 
-  function addBook(meta: Omit<Book, 'addedAt' | 'lastReadAt' | 'totalProgress'>): Book {
+  function addBook(meta: Omit<Book, 'addedAt' | 'updatedAt' | 'lastReadAt' | 'totalProgress'>): Book {
+    const now = Date.now()
     const book: Book = {
       ...meta,
-      addedAt: Date.now(),
+      addedAt: now,
+      updatedAt: now,
       lastReadAt: null,
       totalProgress: 0,
     }
@@ -359,7 +363,7 @@ export const useEbookStore = defineStore('ebook', () => {
   function updateBook(id: string, patch: Partial<Book>) {
     const idx = books.value.findIndex(b => b.id === id)
     if (idx < 0) return
-    books.value[idx] = { ...books.value[idx], ...patch }
+    books.value[idx] = { ...books.value[idx], ...patch, updatedAt: Date.now() }
     save(LS_BOOKS, books.value)
     schedulePushToServer()
   }
@@ -535,7 +539,8 @@ export const useEbookStore = defineStore('ebook', () => {
   // ─── Collections ─────────────────────────────────────────────────────────────
 
   function addCollection(name: string): Collection {
-    const col: Collection = { id: uuid(), name, createdAt: Date.now() }
+    const now = Date.now()
+    const col: Collection = { id: uuid(), name, createdAt: now, updatedAt: now }
     collections.value.push(col)
     save(LS_COLLECTIONS, collections.value)
     pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
@@ -546,6 +551,7 @@ export const useEbookStore = defineStore('ebook', () => {
     collections.value = collections.value.filter(c => c.id !== id)
     books.value.forEach(b => {
       b.collectionIds = b.collectionIds.filter(cid => cid !== id)
+      b.updatedAt = Date.now()
     })
     save(LS_COLLECTIONS, collections.value)
     save(LS_BOOKS, books.value)
@@ -559,6 +565,7 @@ export const useEbookStore = defineStore('ebook', () => {
     books.value[idx].collectionIds = add
       ? [...new Set([...ids, collectionId])]
       : ids.filter(id => id !== collectionId)
+    books.value[idx].updatedAt = Date.now()
     save(LS_BOOKS, books.value)
     schedulePushToServer()
   }

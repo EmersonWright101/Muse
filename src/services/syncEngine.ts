@@ -22,14 +22,23 @@ export interface Changeset {
   deletes: Array<{ id: string; deletedAt: string }>
 }
 
+export interface LightweightItem {
+  id: string
+  updatedAt?: string
+  _version?: number
+}
+
 export interface SyncRequest {
-  clientState: any
+  clientState?: any
+  manifest?: LightweightItem[]
   changes: Changeset
   since: string | null
 }
 
 export interface SyncResponse {
-  merged: any
+  merged?: any
+  mergedItems?: any[]
+  deletedIds?: string[]
   tombstones: Array<{ id: string; tableName: string; deletedAt: string }>
   syncedAt: string
   serverChanges: Changeset
@@ -39,10 +48,14 @@ export interface SyncModule<T> {
   name: string
   /** 获取当前完整状态 */
   getState: () => Promise<T> | T
+  /** 获取当前轻量清单（id + updatedAt + _version）用于 manifest 模式 */
+  getManifest?: () => Promise<LightweightItem[]> | LightweightItem[]
   /** 获取上次同步的状态（默认从 localStorage 读取） */
   getLastSyncedState: () => T | null
-  /** 保存同步后的状态 */
+  /** 保存同步后的完整状态 */
   applyState: (state: T) => Promise<void>
+  /** 增量保存同步后的状态（仅覆盖变化的 + 删除标记的） */
+  applyIncrementalState?: (mergedItems: T, deletedIds: string[]) => Promise<void>
   /** 序列化（可返回 Promise，例如需要上传附件） */
   serialize: (state: T) => any | Promise<any>
   /** 反序列化（可返回 Promise，例如需要下载附件） */
@@ -122,6 +135,57 @@ export function computeChangeset<T extends { id: string; updatedAt?: string }>(
 }
 
 /**
+ * 从已同步的完整状态中提取轻量清单。
+ */
+function extractManifestFromState(state: any): LightweightItem[] {
+  if (!Array.isArray(state)) return []
+  return state.map((item: any) => ({
+    id: item.id,
+    updatedAt: item.updatedAt,
+    _version: item._version,
+  }))
+}
+
+/**
+ * 基于轻量清单（manifest）计算 changeset。
+ * 对比 currentManifest 和 previousManifest 的 updatedAt / _version，
+ * 仅对真正变化的项收集完整数据。
+ */
+export function computeLightweightChangeset<T extends { id: string }>(
+  currentManifest: LightweightItem[],
+  previousManifest: LightweightItem[],
+  currentFullItems: T[],
+  tombstones?: Record<string, string>,
+): { manifest: LightweightItem[]; changes: Changeset } {
+  const prevMap = new Map(previousManifest.map(p => [p.id, p]))
+  const fullMap = new Map(currentFullItems.map(c => [c.id, c]))
+
+  const upserts: T[] = []
+  const deletes: Array<{ id: string; deletedAt: string }> = []
+
+  for (const curr of currentManifest) {
+    const prev = prevMap.get(curr.id)
+    let changed = !prev || prev.updatedAt !== curr.updatedAt
+    if (!changed && prev!._version !== undefined && curr._version !== undefined && prev!._version !== curr._version) {
+      changed = true
+    }
+    if (changed) {
+      const full = fullMap.get(curr.id)
+      if (full) upserts.push(full)
+    }
+  }
+
+  for (const [id] of prevMap) {
+    if (!currentManifest.find(m => m.id === id)) {
+      if (tombstones?.[id]) continue
+      deletes.push({ id, deletedAt: new Date().toISOString() })
+    }
+  }
+
+  return { manifest: currentManifest, changes: { upserts, deletes } }
+}
+
+/**
  * 计算对象类型数据的 changeset。
  * 将整个对象作为一个 upsert 项（id 固定为 __root__）。
  */
@@ -163,39 +227,78 @@ export async function syncModule(moduleName: string): Promise<boolean> {
     const since = localStorage.getItem(`muse-sync-since-${moduleName}`)
     const tombstones = await getTombstones(moduleName)
 
-    // 2. 计算 changeset
-    const changes = mod.computeChangeset
-      ? mod.computeChangeset(currentState, previousState)
-      : computeChangeset(
-          Array.isArray(currentState) ? currentState : [currentState],
-          Array.isArray(previousState) ? previousState : [],
-          tombstones,
-        )
+    // 判断是否使用 manifest 模式
+    const supportsManifest = !!mod.getManifest && !!mod.applyIncrementalState
+    let manifest: LightweightItem[] | undefined
+    let changes: Changeset
+    let requestBody: SyncRequest
 
-    // 3. 序列化当前状态
-    const serializedState = await mod.serialize(currentState)
+    if (supportsManifest) {
+      // Manifest 模式：构建轻量清单，仅收集变化的完整数据
+      manifest = await mod.getManifest!()
+      const previousManifest = extractManifestFromState(previousState)
+      const lightweightResult = computeLightweightChangeset(
+        manifest,
+        previousManifest,
+        Array.isArray(currentState) ? currentState : [currentState] as any,
+        tombstones,
+      )
+      changes = lightweightResult.changes
 
-    // 4. 发送同步请求（带指数退避重试）
+      // 仅序列化变化的 upserts
+      const serializedUpserts = Array.isArray(currentState)
+        ? await mod.serialize(changes.upserts as any)
+        : changes.upserts
+
+      requestBody = {
+        manifest: lightweightResult.manifest,
+        changes: { upserts: serializedUpserts, deletes: changes.deletes },
+        since,
+      }
+    } else {
+      // 传统模式：序列化完整状态
+      const changeset = mod.computeChangeset
+        ? mod.computeChangeset(currentState, previousState)
+        : computeChangeset(
+            Array.isArray(currentState) ? currentState : [currentState],
+            Array.isArray(previousState) ? previousState : [],
+            tombstones,
+          )
+      changes = changeset
+      requestBody = {
+        clientState: await mod.serialize(currentState),
+        changes,
+        since,
+      }
+    }
+
+    // 2. 发送同步请求（带指数退避重试）
     let lastError: unknown
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const response = await apiPost<SyncResponse>(`/api/sync/${moduleName}`, {
-          clientState: serializedState,
-          changes,
-          since,
-        })
+        const response = await apiPost<SyncResponse>(`/api/sync/${moduleName}`, requestBody)
 
         if (!response) {
           console.warn(`[SyncEngine] ${moduleName} sync returned null`)
           return false
         }
 
-        // 5. 应用合并结果到本地
-        const mergedRaw = unwrapMergedResponse(response.merged, moduleName)
-        const mergedState = await mod.deserialize(mergedRaw)
-        await mod.applyState(mergedState)
+        // 3. 应用合并结果到本地
+        if (supportsManifest && response.mergedItems !== undefined) {
+          // 增量 apply：仅覆盖变化的 + 删除标记的
+          const mergedItems = await mod.deserialize(response.mergedItems)
+          await mod.applyIncrementalState!(mergedItems, response.deletedIds || [])
+          // 保存 manifest 快照用于下次对比
+          if (manifest) saveLastSyncedManifest(moduleName, manifest)
+        } else {
+          // 全量 apply（向后兼容）
+          const mergedRaw = unwrapMergedResponse(response.merged, moduleName)
+          const mergedState = await mod.deserialize(mergedRaw)
+          await mod.applyState(mergedState)
+          saveLastSyncedState(moduleName, mergedRaw)
+        }
 
-        // 6. 保存 tombstones（记录服务器确认已删除的 ID）
+        // 4. 保存 tombstones（记录服务器确认已删除的 ID）
         if (response.tombstones && response.tombstones.length > 0) {
           const existing = await getTombstones(moduleName)
           for (const t of response.tombstones) {
@@ -204,11 +307,8 @@ export async function syncModule(moduleName: string): Promise<boolean> {
           await setTombstones(moduleName, existing)
         }
 
-        // 7. 记录同步时间
+        // 5. 记录同步时间
         localStorage.setItem(`muse-sync-since-${moduleName}`, response.syncedAt)
-
-        // 8. 保存同步后的状态快照（用于下次计算 changeset）
-        saveLastSyncedState(moduleName, mergedRaw)
 
         return true
       } catch (err) {
@@ -326,10 +426,23 @@ export function getLastSyncedState(module: string): any | null {
   }
 }
 
+export function saveLastSyncedManifest(module: string, manifest: LightweightItem[]) {
+  localStorage.setItem(`muse-sync-manifest-${module}`, JSON.stringify(manifest))
+}
+
+export function getLastSyncedManifest(module: string): LightweightItem[] | null {
+  try {
+    return JSON.parse(localStorage.getItem(`muse-sync-manifest-${module}`) || 'null')
+  } catch {
+    return null
+  }
+}
+
 /** 清除某个模块的同步状态（用于强制全量同步） */
 export async function clearSyncState(module: string): Promise<void> {
   localStorage.removeItem(`muse-sync-since-${module}`)
   localStorage.removeItem(`muse-sync-state-${module}`)
+  localStorage.removeItem(`muse-sync-manifest-${module}`)
   localStorage.removeItem(`muse-sync-tombstones-${module}`)
 
   try {

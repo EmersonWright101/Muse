@@ -147,9 +147,10 @@ export const useAssistantsStore = defineStore('assistants', () => {
   }
 
   async function remove(id: string) {
+    const assistant = assistants.value.find(a => a.id === id)
     await deleteAssistant(id)
-    if (isBackendConfigured()) {
-      apiDelete(`/api/assistants/${id}`).catch((err) => { console.error('[AssistantsSync] Failed to delete assistant on server:', err) })
+    if (isBackendConfigured() && assistant) {
+      apiDelete(`/api/assistants/${id}?updated_at=${encodeURIComponent(assistant.updatedAt)}`).catch((err) => { console.error('[AssistantsSync] Failed to delete assistant on server:', err) })
     }
     await load()
   }

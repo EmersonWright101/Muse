@@ -402,15 +402,19 @@ export async function saveTravelNote(
   }
 }
 
-export async function deleteTravelNote(id: string, opts: { sync?: boolean; deletedAt?: string } = {}): Promise<void> {
+export async function deleteTravelNoteLocalOnly(id: string, deletedAt?: string): Promise<void> {
   try {
     const path = await notePath(id)
     if (await exists(path)) await remove(path)
   } catch { /* ignore */ }
   const map = getDeletedTravelNotes()
-  map[id] = opts.deletedAt ?? new Date().toISOString()
+  map[id] = deletedAt ?? new Date().toISOString()
   localStorage.setItem(LS_DELETED_TRAVEL_KEY, JSON.stringify(map))
   localStorage.setItem('muse-ts-travel-notes', new Date().toISOString())
+}
+
+export async function deleteTravelNote(id: string, opts: { sync?: boolean; deletedAt?: string } = {}): Promise<void> {
+  await deleteTravelNoteLocalOnly(id, opts.deletedAt)
   if (opts.sync !== false) apiDelete(`/api/travel/notes/${id}`).catch(() => {})
 }
 

@@ -47,6 +47,7 @@ export interface TodoProject {
   color: string
   icon: string
   createdAt: string
+  updatedAt: string
   order: number
 }
 
@@ -124,12 +125,14 @@ export function newProject(partial: Partial<TodoProject> = {}): TodoProject {
   ]
   const PROJECT_ICONS = ['📁', '🏠', '💼', '🎯', '📚', '🏃', '🎨', '🛒']
   const idx = Math.floor(Math.random() * PROJECT_COLORS.length)
+  const now = new Date().toISOString()
   return {
     id: crypto.randomUUID(),
     name: '',
     color: PROJECT_COLORS[idx],
     icon: PROJECT_ICONS[idx],
-    createdAt: new Date().toISOString(),
+    createdAt: now,
+    updatedAt: now,
     order: Date.now(),
     ...partial,
   }

@@ -33,7 +33,6 @@ import { loadTodos, saveTodos } from '../utils/todoStorage'
 import { listTravelNotes, loadTravelNote, saveTravelNote } from '../utils/travelStorage'
 import { useTodoStore } from '../stores/todo'
 import { useTravelStore } from '../stores/travel'
-import { useEbookStore } from '../stores/ebook'
 
 // ─── Settings module ─────────────────────────────────────────────────────────
 
@@ -423,12 +422,33 @@ async function getChatState(): Promise<Conversation[]> {
   return convs.filter((c): c is Conversation => !!c)
 }
 
+async function getChatManifest(): Promise<{ id: string; updatedAt?: string; _version?: number }[]> {
+  const { listConversations } = await import('../utils/storage')
+  const metas = await listConversations()
+  return metas.map(m => ({ id: m.id, updatedAt: m.updatedAt }))
+}
+
 async function applyChatState(state: Conversation[]): Promise<void> {
   const { saveConversationLocalOnly } = await import('../utils/storage')
   const { useChatStore } = await import('../stores/chat')
 
   for (const conv of state) {
     await saveConversationLocalOnly(conv)
+  }
+
+  useChatStore().loadList()
+}
+
+async function applyIncrementalChatState(mergedItems: Conversation[], deletedIds: string[]): Promise<void> {
+  const { saveConversationLocalOnly, deleteConversationLocalOnly } = await import('../utils/storage')
+  const { useChatStore } = await import('../stores/chat')
+
+  for (const conv of mergedItems) {
+    await saveConversationLocalOnly(conv)
+  }
+
+  for (const id of deletedIds) {
+    await deleteConversationLocalOnly(id)
   }
 
   useChatStore().loadList()
@@ -449,110 +469,273 @@ async function deserializeChatState(raw: any): Promise<Conversation[]> {
 const chatModule: SyncModule<Conversation[]> = {
   name: 'chat',
   getState: getChatState,
+  getManifest: getChatManifest,
   getLastSyncedState: () => getLastSyncedState('chat') as Conversation[] | null,
   applyState: applyChatState,
+  applyIncrementalState: applyIncrementalChatState,
   serialize: serializeChatState,
   deserialize: deserializeChatState,
 }
 
 // ─── Todo module ─────────────────────────────────────────────────────────────
 
-async function getTodoState(): Promise<TodoData> {
-  return await loadTodos()
+async function getTodoState(): Promise<any[]> {
+  const data = await loadTodos()
+  return [
+    ...data.projects.map(p => ({ ...p, id: `project:${p.id}`, _type: 'project' })),
+    ...data.tasks.map(t => ({ ...t, id: `task:${t.id}`, _type: 'task' })),
+  ]
 }
 
-async function applyTodoState(state: TodoData): Promise<void> {
-  await saveTodos(state)
+async function getTodoManifest(): Promise<{ id: string; updatedAt?: string }[]> {
+  const data = await loadTodos()
+  return [
+    ...data.projects.map(p => ({ id: `project:${p.id}`, updatedAt: p.updatedAt })),
+    ...data.tasks.map(t => ({ id: `task:${t.id}`, updatedAt: t.updatedAt })),
+  ]
+}
+
+async function applyTodoState(state: any[]): Promise<void> {
+  const projects = state
+    .filter((item: any) => item.id?.startsWith('project:'))
+    .map((item: any) => ({ ...item, id: item.id.replace('project:', '') }))
+  const tasks = state
+    .filter((item: any) => item.id?.startsWith('task:'))
+    .map((item: any) => ({ ...item, id: item.id.replace('task:', '') }))
+  const data: TodoData = { version: 1, projects, tasks }
+  await saveTodos(data)
   const store = useTodoStore()
-  store.projects = state.projects
-  store.tasks = state.tasks
+  store.projects = projects
+  store.tasks = tasks
 }
 
-const todoModule: SyncModule<TodoData> = {
+async function applyIncrementalTodoState(mergedItems: any[], deletedIds: string[]): Promise<void> {
+  const current = await loadTodos()
+  const currentProjectMap = new Map(current.projects.map(p => [p.id, p]))
+  const currentTaskMap = new Map(current.tasks.map(t => [t.id, t]))
+
+  for (const item of mergedItems) {
+    if (item.id?.startsWith('project:')) {
+      const id = item.id.replace('project:', '')
+      currentProjectMap.set(id, { ...item, id })
+    } else if (item.id?.startsWith('task:')) {
+      const id = item.id.replace('task:', '')
+      currentTaskMap.set(id, { ...item, id })
+    }
+  }
+
+  for (const id of deletedIds) {
+    if (id.startsWith('project:')) {
+      currentProjectMap.delete(id.replace('project:', ''))
+    } else if (id.startsWith('task:')) {
+      currentTaskMap.delete(id.replace('task:', ''))
+    }
+  }
+
+  const data: TodoData = {
+    version: 1,
+    projects: Array.from(currentProjectMap.values()),
+    tasks: Array.from(currentTaskMap.values()),
+  }
+  await saveTodos(data)
+  const store = useTodoStore()
+  store.projects = data.projects
+  store.tasks = data.tasks
+}
+
+const todoModule: SyncModule<any[]> = {
   name: 'todo',
   getState: getTodoState,
-  getLastSyncedState: () => getLastSyncedState('todo') as TodoData | null,
+  getManifest: getTodoManifest,
+  getLastSyncedState: () => getLastSyncedState('todo') as any[] | null,
   applyState: applyTodoState,
+  applyIncrementalState: applyIncrementalTodoState,
   serialize: (state) => state,
   deserialize: (raw) => {
-    if (Array.isArray(raw)) raw = raw[0]
-    return raw as TodoData
+    const items = Array.isArray(raw) ? raw : raw?.items ?? []
+    return items
   },
 }
 
 // ─── Ebook module ────────────────────────────────────────────────────────────
 
-async function getEbookState(): Promise<any> {
+async function getEbookState(): Promise<any[]> {
+  const { useEbookStore } = await import('../stores/ebook')
   const store = useEbookStore()
-  return {
-    books: store.books,
-    progress: store.progress,
-    annotations: store.annotations,
-    sessions: store.sessions,
-    collections: store.collections,
-    settings: store.settings,
-    // Heavy fields omitted from the sync protocol to avoid oversized payloads:
-    // - copilotSessions: contains full message history and can be very large.
-    // - ttsJobStates: ephemeral TTS generation state.
-    // These should be synced independently or not at all.
-    ttsPlaybackPos: store.ttsPlaybackPos,
-    ttsSettings: store.ttsSettings,
+  const now = new Date().toISOString()
+  const coreItems = [
+    ...store.books.map((b: any) => ({ ...b, id: `book:${b.id}`, _type: 'book' })),
+    ...Object.values(store.progress).map((p: any) => ({ ...p, id: `progress:${p.bookId}`, _type: 'progress' })),
+    ...store.annotations.map((a: any) => ({ ...a, id: `annotation:${a.id}`, _type: 'annotation' })),
+    ...store.sessions.map((s: any) => ({ ...s, id: `session:${s.id}`, _type: 'session' })),
+    ...store.collections.map((c: any) => ({ ...c, id: `collection:${c.id}`, _type: 'collection' })),
+  ]
+  const metaItems = [
+    { id: 'meta:copilotSessions', _type: 'meta', key: 'copilotSessions', value: store.copilotSessions, updatedAt: now },
+    { id: 'meta:ttsPlaybackPos', _type: 'meta', key: 'ttsPlaybackPos', value: store.ttsPlaybackPos, updatedAt: now },
+    { id: 'meta:ttsSettings', _type: 'meta', key: 'ttsSettings', value: store.ttsSettings, updatedAt: now },
+    { id: 'meta:settings', _type: 'meta', key: 'settings', value: store.settings, updatedAt: now },
+  ]
+  return [...coreItems, ...metaItems]
+}
+
+async function getEbookManifest(): Promise<{ id: string; updatedAt?: string }[]> {
+  const { useEbookStore } = await import('../stores/ebook')
+  const store = useEbookStore()
+  const now = new Date().toISOString()
+  const manifest = [
+    ...store.books.map((b: any) => ({ id: `book:${b.id}`, updatedAt: new Date(b.updatedAt || b.addedAt).toISOString() })),
+    ...Object.values(store.progress).map((p: any) => ({ id: `progress:${p.bookId}`, updatedAt: new Date(p.updatedAt).toISOString() })),
+    ...store.annotations.map((a: any) => ({ id: `annotation:${a.id}`, updatedAt: new Date(a.updatedAt).toISOString() })),
+    ...store.sessions.map((s: any) => ({ id: `session:${s.id}`, updatedAt: new Date(s.startedAt).toISOString() })),
+    ...store.collections.map((c: any) => ({ id: `collection:${c.id}`, updatedAt: new Date(c.updatedAt || c.createdAt).toISOString() })),
+    { id: 'meta:copilotSessions', updatedAt: now },
+    { id: 'meta:ttsPlaybackPos', updatedAt: now },
+    { id: 'meta:ttsSettings', updatedAt: now },
+    { id: 'meta:settings', updatedAt: now },
+  ]
+  // Include cached TTS audio metadata from localStorage
+  try {
+    const ttsAudioCache = JSON.parse(localStorage.getItem('muse-ebook-tts-audio-meta') || '{}')
+    for (const [, items] of Object.entries(ttsAudioCache)) {
+      for (const item of items as any[]) {
+        manifest.push({ id: item.id, updatedAt: item.updatedAt })
+      }
+    }
+  } catch { /* ignore */ }
+  return manifest
+}
+
+async function applyEbookState(state: any[]): Promise<void> {
+  const { useEbookStore } = await import('../stores/ebook')
+  const store = useEbookStore()
+
+  const books = state.filter((i: any) => i.id?.startsWith('book:')).map((i: any) => ({ ...i, id: i.id.replace('book:', '') }))
+  const progressEntries = state.filter((i: any) => i.id?.startsWith('progress:')).map((i: any) => [i.bookId, { ...i, id: i.id.replace('progress:', '') }])
+  const annotations = state.filter((i: any) => i.id?.startsWith('annotation:')).map((i: any) => ({ ...i, id: i.id.replace('annotation:', '') }))
+  const sessions = state.filter((i: any) => i.id?.startsWith('session:')).map((i: any) => ({ ...i, id: i.id.replace('session:', '') }))
+  const collections = state.filter((i: any) => i.id?.startsWith('collection:')).map((i: any) => ({ ...i, id: i.id.replace('collection:', '') }))
+
+  store.books = books
+  store.progress = Object.fromEntries(progressEntries)
+  store.annotations = annotations
+  store.sessions = sessions
+  store.collections = collections
+
+  localStorage.setItem('muse-ebook-books', JSON.stringify(books))
+  localStorage.setItem('muse-ebook-progress', JSON.stringify(Object.fromEntries(progressEntries)))
+  localStorage.setItem('muse-ebook-annotations', JSON.stringify(annotations))
+  localStorage.setItem('muse-ebook-sessions', JSON.stringify(sessions))
+  localStorage.setItem('muse-ebook-collections', JSON.stringify(collections))
+
+  // Apply meta items
+  for (const item of state.filter((i: any) => i.id?.startsWith('meta:'))) {
+    const key = item.key
+    if (key === 'copilotSessions') store.copilotSessions = item.value || []
+    else if (key === 'ttsPlaybackPos') store.ttsPlaybackPos = item.value || {}
+    else if (key === 'ttsSettings') store.ttsSettings = item.value || {}
+    else if (key === 'settings') store.settings = item.value || {}
   }
 }
 
-async function applyEbookState(state: any): Promise<void> {
+async function applyIncrementalEbookState(mergedItems: any[], deletedIds: string[]): Promise<void> {
+  const { useEbookStore } = await import('../stores/ebook')
   const store = useEbookStore()
 
-  // Apply state in batches to avoid UI blocking with large datasets
-  const keys: string[] = ['books', 'progress', 'annotations', 'sessions', 'collections', 'settings', 'ttsPlaybackPos', 'ttsSettings']
-  const BATCH_SIZE = 3
-
-  for (let i = 0; i < keys.length; i += BATCH_SIZE) {
-    const batch = keys.slice(i, i + BATCH_SIZE)
-    for (const key of batch) {
-      if (state[key] !== undefined) {
-        ;(store as any)[key] = state[key]
-      }
-    }
-    if (i + BATCH_SIZE < keys.length) {
-      await new Promise(resolve => requestAnimationFrame(resolve))
+  for (const item of mergedItems) {
+    if (item.id?.startsWith('book:')) {
+      const id = item.id.replace('book:', '')
+      const idx = store.books.findIndex((b: any) => b.id === id)
+      if (idx >= 0) store.books[idx] = { ...item, id }
+      else store.books.push({ ...item, id })
+    } else if (item.id?.startsWith('progress:')) {
+      store.progress[item.bookId] = { ...item, id: item.id.replace('progress:', '') }
+    } else if (item.id?.startsWith('annotation:')) {
+      const id = item.id.replace('annotation:', '')
+      const idx = store.annotations.findIndex((a: any) => a.id === id)
+      if (idx >= 0) store.annotations[idx] = { ...item, id }
+      else store.annotations.push({ ...item, id })
+    } else if (item.id?.startsWith('session:')) {
+      const id = item.id.replace('session:', '')
+      const idx = store.sessions.findIndex((s: any) => s.id === id)
+      if (idx >= 0) store.sessions[idx] = { ...item, id }
+      else store.sessions.push({ ...item, id })
+    } else if (item.id?.startsWith('collection:')) {
+      const id = item.id.replace('collection:', '')
+      const idx = store.collections.findIndex((c: any) => c.id === id)
+      if (idx >= 0) store.collections[idx] = { ...item, id }
+      else store.collections.push({ ...item, id })
+    } else if (item.id?.startsWith('meta:')) {
+      const key = item.key
+      if (key === 'copilotSessions') store.copilotSessions = item.value || []
+      else if (key === 'ttsPlaybackPos') store.ttsPlaybackPos = item.value || {}
+      else if (key === 'ttsSettings') store.ttsSettings = item.value || {}
+      else if (key === 'settings') store.settings = item.value || {}
     }
   }
 
-  const storageMap: Record<string, string> = {
-    books: 'muse-ebook-books',
-    progress: 'muse-ebook-progress',
-    annotations: 'muse-ebook-annotations',
-    sessions: 'muse-ebook-sessions',
-    collections: 'muse-ebook-collections',
-    settings: 'muse-ebook-settings',
-    ttsSettings: 'muse-ebook-tts-settings',
-    ttsPlaybackPos: 'muse-ebook-tts-playback',
+  for (const id of deletedIds) {
+    if (id.startsWith('book:')) store.books = store.books.filter((b: any) => b.id !== id.replace('book:', ''))
+    else if (id.startsWith('progress:')) delete store.progress[id.replace('progress:', '')]
+    else if (id.startsWith('annotation:')) store.annotations = store.annotations.filter((a: any) => a.id !== id.replace('annotation:', ''))
+    else if (id.startsWith('session:')) store.sessions = store.sessions.filter((s: any) => s.id !== id.replace('session:', ''))
+    else if (id.startsWith('collection:')) store.collections = store.collections.filter((c: any) => c.id !== id.replace('collection:', ''))
+    else if (id.startsWith('meta:')) {
+      const key = id.replace('meta:', '')
+      if (key === 'copilotSessions') store.copilotSessions = []
+      else if (key === 'ttsPlaybackPos') store.ttsPlaybackPos = {}
+      else if (key === 'ttsSettings') store.ttsSettings = { ...store.ttsSettings }
+      else if (key === 'settings') store.settings = { ...store.settings }
+    }
   }
 
-  for (let i = 0; i < keys.length; i += BATCH_SIZE) {
-    const batch = keys.slice(i, i + BATCH_SIZE)
-    for (const key of batch) {
-      const lsKey = storageMap[key]
-      if (lsKey && state[key] !== undefined) {
-        localStorage.setItem(lsKey, JSON.stringify(state[key]))
+  localStorage.setItem('muse-ebook-books', JSON.stringify(store.books))
+  localStorage.setItem('muse-ebook-progress', JSON.stringify(store.progress))
+  localStorage.setItem('muse-ebook-annotations', JSON.stringify(store.annotations))
+  localStorage.setItem('muse-ebook-sessions', JSON.stringify(store.sessions))
+  localStorage.setItem('muse-ebook-collections', JSON.stringify(store.collections))
+  localStorage.setItem('muse-ebook-copilot-sessions', JSON.stringify(store.copilotSessions))
+  localStorage.setItem('muse-ebook-tts-positions', JSON.stringify(store.ttsPlaybackPos))
+  localStorage.setItem('muse-ebook-tts-settings', JSON.stringify(store.ttsSettings))
+  localStorage.setItem('muse-ebook-settings', JSON.stringify(store.settings))
+
+  // Cache TTS audio metadata from server
+  const ttsAudioItems = mergedItems.filter((i: any) => i.id?.startsWith('ttsAudio:'))
+  if (ttsAudioItems.length > 0 || deletedIds.some((id: string) => id.startsWith('ttsAudio:'))) {
+    try {
+      const existingCache = JSON.parse(localStorage.getItem('muse-ebook-tts-audio-meta') || '{}')
+      for (const item of ttsAudioItems) {
+        const bookId = item.bookId
+        if (!existingCache[bookId]) existingCache[bookId] = []
+        const idx = existingCache[bookId].findIndex((x: any) => x.id === item.id)
+        if (idx >= 0) existingCache[bookId][idx] = item
+        else existingCache[bookId].push(item)
       }
-    }
-    if (i + BATCH_SIZE < keys.length) {
-      await new Promise(resolve => requestAnimationFrame(resolve))
-    }
+      for (const id of deletedIds) {
+        if (!id.startsWith('ttsAudio:')) continue
+        const parts = id.replace('ttsAudio:', '').split(':')
+        const bookId = parts[0]
+        if (existingCache[bookId]) {
+          existingCache[bookId] = existingCache[bookId].filter((x: any) => x.id !== id)
+          if (existingCache[bookId].length === 0) delete existingCache[bookId]
+        }
+      }
+      localStorage.setItem('muse-ebook-tts-audio-meta', JSON.stringify(existingCache))
+    } catch { /* ignore */ }
   }
 }
 
-const ebookModule: SyncModule<any> = {
+const ebookModule: SyncModule<any[]> = {
   name: 'ebook',
   getState: getEbookState,
-  getLastSyncedState: () => getLastSyncedState('ebook'),
+  getManifest: getEbookManifest,
+  getLastSyncedState: () => getLastSyncedState('ebook') as any[] | null,
   applyState: applyEbookState,
+  applyIncrementalState: applyIncrementalEbookState,
   serialize: (state) => state,
   deserialize: (raw) => {
-    if (Array.isArray(raw)) raw = raw[0]
-    return raw
+    const items = Array.isArray(raw) ? raw : raw?.items ?? []
+    return items
   },
 }
 
@@ -564,6 +747,11 @@ async function getTravelState(): Promise<TravelNote[]> {
   return notes.filter((n): n is TravelNote => !!n)
 }
 
+async function getTravelManifest(): Promise<{ id: string; updatedAt?: string }[]> {
+  const metas = await listTravelNotes()
+  return metas.map(m => ({ id: m.id, updatedAt: m.updatedAt }))
+}
+
 async function applyTravelState(state: TravelNote[]): Promise<void> {
   for (const note of state) {
     await saveTravelNote(note, { sync: false })
@@ -571,11 +759,24 @@ async function applyTravelState(state: TravelNote[]): Promise<void> {
   useTravelStore().loadList()
 }
 
+async function applyIncrementalTravelState(mergedItems: TravelNote[], deletedIds: string[]): Promise<void> {
+  const { deleteTravelNoteLocalOnly } = await import('../utils/travelStorage')
+  for (const note of mergedItems) {
+    await saveTravelNote(note, { sync: false })
+  }
+  for (const id of deletedIds) {
+    await deleteTravelNoteLocalOnly(id)
+  }
+  useTravelStore().loadList()
+}
+
 const travelModule: SyncModule<TravelNote[]> = {
   name: 'travel',
   getState: getTravelState,
+  getManifest: getTravelManifest,
   getLastSyncedState: () => getLastSyncedState('travel') as TravelNote[] | null,
   applyState: applyTravelState,
+  applyIncrementalState: applyIncrementalTravelState,
   serialize: (state) => state,
   deserialize: (raw) => {
     const items = Array.isArray(raw) ? raw : raw?.items ?? []
@@ -590,6 +791,12 @@ async function getAssistantsState(): Promise<Assistant[]> {
   return await listAssistants()
 }
 
+async function getAssistantsManifest(): Promise<{ id: string; updatedAt?: string }[]> {
+  const { listAssistants } = await import('../utils/storage')
+  const list = await listAssistants()
+  return list.map(a => ({ id: a.id, updatedAt: a.updatedAt }))
+}
+
 async function applyAssistantsState(state: Assistant[]): Promise<void> {
   const { saveAssistant } = await import('../utils/storage')
   const { useAssistantsStore } = await import('../stores/assistants')
@@ -599,11 +806,25 @@ async function applyAssistantsState(state: Assistant[]): Promise<void> {
   useAssistantsStore().assistants = state
 }
 
+async function applyIncrementalAssistantsState(mergedItems: Assistant[], deletedIds: string[]): Promise<void> {
+  const { saveAssistant, deleteAssistantLocalOnly, listAssistants } = await import('../utils/storage')
+  const { useAssistantsStore } = await import('../stores/assistants')
+  for (const a of mergedItems) {
+    await saveAssistant(a)
+  }
+  for (const id of deletedIds) {
+    await deleteAssistantLocalOnly(id)
+  }
+  useAssistantsStore().assistants = await listAssistants()
+}
+
 const assistantsModule: SyncModule<Assistant[]> = {
   name: 'assistants',
   getState: getAssistantsState,
+  getManifest: getAssistantsManifest,
   getLastSyncedState: () => getLastSyncedState('assistants') as Assistant[] | null,
   applyState: applyAssistantsState,
+  applyIncrementalState: applyIncrementalAssistantsState,
   serialize: (state) => state,
   deserialize: (raw) => {
     const items = Array.isArray(raw) ? raw : raw?.items ?? []

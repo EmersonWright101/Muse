@@ -351,7 +351,7 @@ export function applyRemoteDeletedConversations(remote: Record<string, string>) 
   }
 }
 
-export async function deleteConversation(id: string): Promise<void> {
+export async function deleteConversationLocalOnly(id: string): Promise<void> {
   try {
     const path = `${await convDir()}/${id}.json`;
     if (await exists(path)) await remove(path);
@@ -366,6 +366,10 @@ export async function deleteConversation(id: string): Promise<void> {
   localStorage.setItem(LS_DELETED_CONVERSATIONS_KEY, JSON.stringify(map));
   saveDiskTombstones(map);
   localStorage.setItem('muse-ts-conversations', new Date().toISOString());
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  await deleteConversationLocalOnly(id);
   deleteConvOnServer(id).catch((err) => { console.error('[Storage] Failed to delete conversation on server:', err); });
 }
 
@@ -577,7 +581,7 @@ export async function saveAssistant(assistant: Assistant): Promise<void> {
   localStorage.setItem('muse-ts-assistants', new Date().toISOString());
 }
 
-export async function deleteAssistant(id: string): Promise<void> {
+export async function deleteAssistantLocalOnly(id: string): Promise<void> {
   await assistantsMutex.run(async () => {
     const list = await listAssistants();
     await atomicWriteTextFile(await assistantsPath(), JSON.stringify(list.filter(a => a.id !== id), null, 2));
@@ -587,6 +591,10 @@ export async function deleteAssistant(id: string): Promise<void> {
   localStorage.setItem(LS_DELETED_ASSISTANTS_KEY, JSON.stringify(map));
   saveDiskTombstones(map);
   localStorage.setItem('muse-ts-assistants', new Date().toISOString());
+}
+
+export async function deleteAssistant(id: string): Promise<void> {
+  await deleteAssistantLocalOnly(id);
 }
 
 /** Generate a UUID v4. */

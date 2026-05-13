@@ -641,7 +641,7 @@ export const useTodoStore = defineStore('todo', () => {
   function updateProject(id: string, patch: Partial<TodoProject>) {
     const idx = projects.value.findIndex(p => p.id === id)
     if (idx === -1) return
-    projects.value[idx] = { ...projects.value[idx], ...patch }
+    projects.value[idx] = { ...projects.value[idx], ...patch, updatedAt: new Date().toISOString() }
     _scheduleProjectUpdate(id)
   }
 

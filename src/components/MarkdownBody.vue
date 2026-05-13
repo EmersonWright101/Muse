@@ -26,7 +26,15 @@ import ruby from 'highlight.js/lib/languages/ruby'
 import php from 'highlight.js/lib/languages/php'
 import r from 'highlight.js/lib/languages/r'
 import DOMPurify from 'dompurify'
+import katex from 'katex'
 import MermaidBlock from '../modules/chat/components/MermaidBlock.vue'
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
 
 // Register languages, guarding against re-registration on module reload
 function reg(name: string, lang: Parameters<typeof hljs.registerLanguage>[1]) {
@@ -83,8 +91,87 @@ renderer.link = ({ href, title, text }: Tokens.Link) => {
 
 function renderMarkdown(md: string): string {
   try {
-    const raw = marked.parse(md, { renderer, breaks: true }) as string
-    return DOMPurify.sanitize(raw, { ADD_ATTR: ['onclick', 'data-action', 'data-src', 'data-href', 'title'] })
+    // 1. Protect code blocks so their $ signs aren't treated as math
+    const codeBlocks: string[] = []
+    let protectedMd = md.replace(/```[\s\S]*?```/g, (match) => {
+      const idx = codeBlocks.length
+      codeBlocks.push(match)
+      return `<!--CODE_BLOCK_${idx}-->`
+    })
+
+    // 2. Protect inline code
+    const inlineCodes: string[] = []
+    protectedMd = protectedMd.replace(/`[^`]+`/g, (match) => {
+      const idx = inlineCodes.length
+      inlineCodes.push(match)
+      return `<!--INLINE_CODE_${idx}-->`
+    })
+
+    // 3. Protect display math
+    const displayMaths: string[] = []
+    protectedMd = protectedMd.replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => {
+      const idx = displayMaths.length
+      displayMaths.push(tex.trim())
+      return `<!--DISPLAY_MATH_${idx}-->`
+    })
+
+    // 4. Protect inline math (manual scan to avoid lookbehind for old WebKit)
+    const inlineMaths: string[] = []
+    let mi = 0
+    while (mi < protectedMd.length) {
+      const start = protectedMd.indexOf('$', mi)
+      if (start === -1) break
+      // Skip if part of a display-math placeholder or consecutive $$
+      if (protectedMd[start + 1] === '$') { mi = start + 2; continue }
+      const end = protectedMd.indexOf('$', start + 1)
+      if (end === -1) break
+      if (protectedMd[end + 1] === '$') { mi = end + 2; continue }
+      const tex = protectedMd.slice(start + 1, end).trim()
+      inlineMaths.push(tex)
+      protectedMd = protectedMd.slice(0, start) + `<!--INLINE_MATH_${inlineMaths.length - 1}-->` + protectedMd.slice(end + 1)
+      mi = start + `<!--INLINE_MATH_${inlineMaths.length - 1}-->`.length
+    }
+
+    // 5. Parse markdown
+    let html = marked.parse(protectedMd, { renderer, breaks: true }) as string
+
+    // 6. Restore display math with KaTeX
+    html = html.replace(/<!--DISPLAY_MATH_(\d+)-->/g, (_, idx) => {
+      try {
+        return katex.renderToString(displayMaths[+idx], {
+          displayMode: true,
+          throwOnError: false,
+          strict: false,
+        })
+      } catch {
+        return escapeHtml(`$$${displayMaths[+idx]}$$`)
+      }
+    })
+
+    // 7. Restore inline math with KaTeX
+    html = html.replace(/<!--INLINE_MATH_(\d+)-->/g, (_, idx) => {
+      try {
+        return katex.renderToString(inlineMaths[+idx], {
+          displayMode: false,
+          throwOnError: false,
+          strict: false,
+        })
+      } catch {
+        return escapeHtml(`$${inlineMaths[+idx]}$`)
+      }
+    })
+
+    // 8. Restore code blocks (re-parse so renderer.code runs)
+    html = html.replace(/<!--CODE_BLOCK_(\d+)-->/g, (_, idx) => {
+      return marked.parse(codeBlocks[+idx], { renderer, breaks: true }) as string
+    })
+
+    // 9. Restore inline code
+    html = html.replace(/<!--INLINE_CODE_(\d+)-->/g, (_, idx) => {
+      return renderer.codespan({ text: inlineCodes[+idx].slice(1, -1) } as Tokens.Codespan)
+    })
+
+    return DOMPurify.sanitize(html, { ADD_ATTR: ['onclick', 'data-action', 'data-src', 'data-href', 'title'] })
   } catch {
     return md
   }

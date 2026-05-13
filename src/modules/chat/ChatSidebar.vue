@@ -308,6 +308,8 @@ async function saveForm() {
 async function removeAssistant(id: string) {
   if (filterAssistantId.value === id) filterAssistantId.value = null
   await assistants.remove(id)
+  showForm.value = false
+  editingId.value = null
 }
 
 // ─── Export ───────────────────────────────────────────────────────────────────

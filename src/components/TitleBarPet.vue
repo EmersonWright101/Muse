@@ -13,6 +13,8 @@ const scene = computed(() => {
   if (p.startsWith('/todo'))       return 'todo'
   if (p.startsWith('/assistant'))  return 'assistant'
   if (p.startsWith('/statistics')) return 'stats'
+  if (p.startsWith('/settings'))   return 'settings'
+  if (p.startsWith('/tools'))      return 'tools'
   return null
 })
 </script>
@@ -21,185 +23,342 @@ const scene = computed(() => {
   <div v-if="scene" class="pet-wrap" aria-hidden="true">
     <Transition name="pet" mode="out-in">
 
-      <!-- Chat: cat + robot with travelling dots -->
-      <svg v-if="scene === 'chat'" key="chat" viewBox="0 0 80 32" class="pet-svg">
-        <g class="c-cat-nod">
-          <polygon points="11,12 14,6 17,12" fill="#FF9B50"/>
-          <polygon points="19,12 22,6 25,12" fill="#FF9B50"/>
-          <polygon points="12,12 14,8 16,12"  fill="#FFB8C6"/>
-          <polygon points="20,12 22,8 24,12"  fill="#FFB8C6"/>
-          <circle cx="18" cy="17" r="7"   fill="#FF9B50" stroke="#D4711E" stroke-width="0.8"/>
-          <circle cx="15" cy="15.5" r="1.2" fill="#3D2B1F"/>
-          <circle cx="21" cy="15.5" r="1.2" fill="#3D2B1F"/>
-          <circle cx="15.5" cy="15" r="0.4" fill="white"/>
-          <circle cx="21.5" cy="15" r="0.4" fill="white"/>
-          <circle cx="18"   cy="18.5" r="0.7" fill="#FF6B9D"/>
-          <path d="M16.2,19.5 Q18,21 19.8,19.5" stroke="#3D2B1F" stroke-width="0.7" fill="none" stroke-linecap="round"/>
+      <!-- Chat -->
+      <svg v-if="scene === 'chat'" key="chat" viewBox="0 0 240 60" class="pet-svg">
+        <g transform="translate(28,32)">
+          <path d="M14,5 Q24,-3 18,-12" stroke="#EF7C00" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+          <ellipse cx="0" cy="6" rx="12" ry="14" fill="#EF7C00"/>
+          <ellipse cx="0" cy="10" rx="6.5" ry="8" fill="#FFC480"/>
+          <ellipse cx="-6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <ellipse cx="6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <path d="M-7,-2 Q0,1 7,-2" stroke="#003D7C" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+          <circle cx="0" cy="0.5" r="1.1" fill="#FFD580"/>
+          <circle cx="0" cy="-11" r="10" fill="#EF7C00"/>
+          <path d="M-8,-16 L-6,-22 L-2,-17 Z" fill="#EF7C00"/>
+          <path d="M2,-17 L6,-22 L8,-16 Z" fill="#EF7C00"/>
+          <path d="M-6,-17 L-6,-20 L-4,-17 Z" fill="#F4A6A6"/>
+          <path d="M4,-17 L6,-20 L6,-17 Z" fill="#F4A6A6"/>
+          <ellipse cx="-3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <ellipse cx="3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <circle cx="-3" cy="-12" r="0.5" fill="white"/>
+          <circle cx="4" cy="-12" r="0.5" fill="white"/>
+          <path d="M-1.3,-7 L1.3,-7 L0,-5.5 Z" fill="#D88B95"/>
+          <path d="M0,-5.5 Q-1.5,-3.5 -2.5,-4.2 M0,-5.5 Q1.5,-3.5 2.5,-4.2" stroke="#2C3E50" stroke-width="0.6" fill="none" stroke-linecap="round"/>
         </g>
+        <g class="n-msg n-m1"><rect x="68" y="6" width="60" height="14" rx="7" fill="#003D7C"/><circle cx="86" cy="13" r="1.3" fill="white"/><circle cx="98" cy="13" r="1.3" fill="white"/><circle cx="110" cy="13" r="1.3" fill="white"/></g>
+        <g class="n-msg n-m2"><rect x="118" y="24" width="88" height="14" rx="7" fill="#EF7C00"/><rect x="130" y="29" width="40" height="1.6" rx="0.8" fill="white" opacity="0.9"/><rect x="130" y="33" width="62" height="1.6" rx="0.8" fill="white" opacity="0.9"/></g>
+        <g class="n-msg n-m3"><rect x="72" y="42" width="70" height="14" rx="7" fill="#003D7C"/><rect x="84" y="47" width="36" height="1.6" rx="0.8" fill="white" opacity="0.9"/><rect x="84" y="51" width="48" height="1.6" rx="0.8" fill="white" opacity="0.9"/></g>
+      </svg>
 
-        <g class="c-dots">
-          <circle cx="34" cy="16" r="1.9" fill="#C4C4D4"/>
-          <circle cx="40" cy="16" r="1.9" fill="#C4C4D4"/>
-          <circle cx="46" cy="16" r="1.9" fill="#C4C4D4"/>
+      <!-- Notes -->
+      <svg v-else-if="scene === 'notes'" key="notes" viewBox="0 0 240 60" class="pet-svg">
+        <g transform="translate(28,32)">
+          <path d="M14,5 Q24,-3 18,-12" stroke="#EF7C00" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+          <ellipse cx="0" cy="6" rx="12" ry="14" fill="#EF7C00"/>
+          <ellipse cx="0" cy="10" rx="6.5" ry="8" fill="#FFC480"/>
+          <ellipse cx="-6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <ellipse cx="6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <path d="M-7,-2 Q0,1 7,-2" stroke="#003D7C" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+          <circle cx="0" cy="0.5" r="1.1" fill="#FFD580"/>
+          <circle cx="0" cy="-11" r="10" fill="#EF7C00"/>
+          <path d="M-8,-16 L-6,-22 L-2,-17 Z" fill="#EF7C00"/>
+          <path d="M2,-17 L6,-22 L8,-16 Z" fill="#EF7C00"/>
+          <path d="M-6,-17 L-6,-20 L-4,-17 Z" fill="#F4A6A6"/>
+          <path d="M4,-17 L6,-20 L6,-17 Z" fill="#F4A6A6"/>
+          <ellipse cx="-3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <ellipse cx="3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <circle cx="-3" cy="-12" r="0.5" fill="white"/>
+          <circle cx="4" cy="-12" r="0.5" fill="white"/>
+          <path d="M-1.3,-7 L1.3,-7 L0,-5.5 Z" fill="#D88B95"/>
+          <path d="M0,-5.5 Q-1.5,-3.5 -2.5,-4.2 M0,-5.5 Q1.5,-3.5 2.5,-4.2" stroke="#2C3E50" stroke-width="0.6" fill="none" stroke-linecap="round"/>
         </g>
-
-        <g class="c-bot-nod">
-          <line x1="62" y1="8" x2="62" y2="4" stroke="#FFD43B" stroke-width="1.6" stroke-linecap="round"/>
-          <circle cx="62" cy="3"   r="2"   fill="#FFD43B"/>
-          <rect   x="54" y="8" width="16" height="14" rx="2.5" fill="#5B9BD5" stroke="#3070B0" stroke-width="0.8"/>
-          <rect   x="56.5" y="11" width="4" height="3" rx="1" fill="#00E676"/>
-          <rect   x="63.5" y="11" width="4" height="3" rx="1" fill="#00E676"/>
-          <circle cx="54"   cy="15" r="1.3" fill="#3A6090"/>
-          <circle cx="70"   cy="15" r="1.3" fill="#3A6090"/>
-          <path d="M57,19.5 L59,21 L62,19.5 L65,21 L67,19.5" stroke="#3070B0" stroke-width="0.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="56" y="6" width="178" height="48" rx="2" fill="none" stroke="#003D7C" stroke-width="0.7" opacity="0.55"/>
+        <line x1="66" y1="6" x2="66" y2="54" stroke="#EF7C00" stroke-width="0.6" opacity="0.45"/>
+        <circle cx="61" cy="15" r="0.8" fill="#003D7C" opacity="0.35"/>
+        <circle cx="61" cy="30" r="0.8" fill="#003D7C" opacity="0.35"/>
+        <circle cx="61" cy="45" r="0.8" fill="#003D7C" opacity="0.35"/>
+        <rect x="72" y="14" width="120" height="2" rx="1" fill="#003D7C" opacity="0.6" class="n-nl n-nl1"/>
+        <rect x="72" y="22" width="140" height="2" rx="1" fill="#003D7C" opacity="0.6" class="n-nl n-nl2"/>
+        <rect x="72" y="30" width="108" height="2" rx="1" fill="#003D7C" opacity="0.6" class="n-nl n-nl3"/>
+        <rect x="72" y="38" width="128" height="2" rx="1" fill="#003D7C" opacity="0.6" class="n-nl n-nl1"/>
+        <g class="n-pen" transform="translate(206,28)">
+          <rect x="-1" y="-10" width="2.5" height="15" rx="1" fill="#EF7C00" transform="rotate(40)"/>
+          <path d="M7,-3 L9,0 L4,4 Z" fill="#003D7C" transform="rotate(40)"/>
         </g>
       </svg>
 
-      <!-- Notes: cat writing, lines appear on paper -->
-      <svg v-else-if="scene === 'notes'" key="notes" viewBox="0 0 80 32" class="pet-svg">
-        <rect x="40" y="5" width="28" height="24" rx="2" fill="white" stroke="#D8D8E0" stroke-width="1"/>
-        <line x1="44" y1="11" x2="64" y2="11" stroke="#B0B8D0" stroke-width="1.1" stroke-linecap="round" class="c-ln1" stroke-dasharray="20" stroke-dashoffset="20"/>
-        <line x1="44" y1="16" x2="64" y2="16" stroke="#B0B8D0" stroke-width="1.1" stroke-linecap="round" class="c-ln2" stroke-dasharray="20" stroke-dashoffset="20"/>
-        <line x1="44" y1="21" x2="57" y2="21" stroke="#B0B8D0" stroke-width="1.1" stroke-linecap="round" class="c-ln3" stroke-dasharray="13" stroke-dashoffset="13"/>
-
-        <g class="c-cat-bob">
-          <polygon points="11,12 14,6 17,12" fill="#FF9B50"/>
-          <polygon points="19,12 22,6 25,12" fill="#FF9B50"/>
-          <polygon points="12,12 14,8 16,12"  fill="#FFB8C6"/>
-          <polygon points="20,12 22,8 24,12"  fill="#FFB8C6"/>
-          <circle cx="18" cy="17" r="7"   fill="#FF9B50" stroke="#D4711E" stroke-width="0.8"/>
-          <circle cx="15" cy="15.5" r="1.2" fill="#3D2B1F"/>
-          <circle cx="21" cy="15.5" r="1.2" fill="#3D2B1F"/>
-          <circle cx="15.5" cy="15" r="0.4" fill="white"/>
-          <circle cx="21.5" cy="15" r="0.4" fill="white"/>
-          <circle cx="18"   cy="18.5" r="0.7" fill="#FF6B9D"/>
-          <path d="M16.2,19.5 Q18,21 19.8,19.5" stroke="#3D2B1F" stroke-width="0.7" fill="none" stroke-linecap="round"/>
-          <path d="M25,17 Q31,14 37,12" stroke="#D4711E" stroke-width="1.3" fill="none" stroke-linecap="round"/>
+      <!-- Ebook -->
+      <svg v-else-if="scene === 'ebook'" key="ebook" viewBox="0 0 240 60" class="pet-svg">
+        <g transform="translate(28,32)">
+          <path d="M14,5 Q24,-3 18,-12" stroke="#EF7C00" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+          <ellipse cx="0" cy="6" rx="12" ry="14" fill="#EF7C00"/>
+          <ellipse cx="0" cy="10" rx="6.5" ry="8" fill="#FFC480"/>
+          <ellipse cx="-6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <ellipse cx="6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <path d="M-7,-2 Q0,1 7,-2" stroke="#003D7C" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+          <circle cx="0" cy="0.5" r="1.1" fill="#FFD580"/>
+          <circle cx="0" cy="-11" r="10" fill="#EF7C00"/>
+          <path d="M-8,-16 L-6,-22 L-2,-17 Z" fill="#EF7C00"/>
+          <path d="M2,-17 L6,-22 L8,-16 Z" fill="#EF7C00"/>
+          <path d="M-6,-17 L-6,-20 L-4,-17 Z" fill="#F4A6A6"/>
+          <path d="M4,-17 L6,-20 L6,-17 Z" fill="#F4A6A6"/>
+          <g class="n-scan">
+            <ellipse cx="-3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+            <ellipse cx="3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+            <circle cx="-3" cy="-12" r="0.5" fill="white"/>
+            <circle cx="4" cy="-12" r="0.5" fill="white"/>
+          </g>
+          <path d="M-1.3,-7 L1.3,-7 L0,-5.5 Z" fill="#D88B95"/>
+          <path d="M0,-5.5 Q-1.5,-3.5 -2.5,-4.2 M0,-5.5 Q1.5,-3.5 2.5,-4.2" stroke="#2C3E50" stroke-width="0.6" fill="none" stroke-linecap="round"/>
         </g>
+        <path d="M148,8 L74,12 L74,52 L148,49 Z" fill="none" stroke="#003D7C" stroke-width="0.7" opacity="0.6"/>
+        <g class="n-page">
+          <path d="M148,8 L222,12 L222,52 L148,49 Z" fill="none" stroke="#003D7C" stroke-width="0.7" opacity="0.6"/>
+          <line x1="157" y1="18" x2="214" y2="20" stroke="#003D7C" stroke-width="0.5" opacity="0.5"/>
+          <line x1="157" y1="26" x2="216" y2="28" stroke="#003D7C" stroke-width="0.5" opacity="0.5"/>
+          <line x1="157" y1="34" x2="214" y2="36" stroke="#003D7C" stroke-width="0.5" opacity="0.5"/>
+          <line x1="157" y1="42" x2="208" y2="44" stroke="#EF7C00" stroke-width="0.7" opacity="0.65"/>
+        </g>
+        <line x1="148" y1="8" x2="148" y2="49" stroke="#003D7C" stroke-width="0.7" opacity="0.6"/>
+        <line x1="84" y1="18" x2="140" y2="16" stroke="#003D7C" stroke-width="0.5" opacity="0.5"/>
+        <line x1="84" y1="26" x2="143" y2="24" stroke="#003D7C" stroke-width="0.5" opacity="0.5"/>
+        <line x1="84" y1="34" x2="138" y2="32" stroke="#003D7C" stroke-width="0.5" opacity="0.5"/>
+        <line x1="84" y1="42" x2="134" y2="40" stroke="#003D7C" stroke-width="0.5" opacity="0.5"/>
+      </svg>
 
-        <g class="c-pencil">
-          <rect   x="34.5" y="5"  width="3.5" height="12" rx="1" fill="#FFD43B"/>
-          <rect   x="34.5" y="5"  width="3.5" height="3"  rx="1" fill="#C8B0A8"/>
-          <rect   x="34.8" y="16.5" width="2.9" height="1.5" fill="#F5CBA0"/>
-          <polygon points="34.5,18 38,18 36.25,22" fill="#FFAA00"/>
+      <!-- Todo -->
+      <svg v-else-if="scene === 'todo'" key="todo" viewBox="0 0 240 60" class="pet-svg">
+        <g transform="translate(28,32)">
+          <path d="M14,5 Q24,-3 18,-12" stroke="#EF7C00" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+          <ellipse cx="0" cy="6" rx="12" ry="14" fill="#EF7C00"/>
+          <ellipse cx="0" cy="10" rx="6.5" ry="8" fill="#FFC480"/>
+          <ellipse cx="-6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <ellipse cx="6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <path d="M-7,-2 Q0,1 7,-2" stroke="#003D7C" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+          <circle cx="0" cy="0.5" r="1.1" fill="#FFD580"/>
+          <circle cx="0" cy="-11" r="10" fill="#EF7C00"/>
+          <path d="M-8,-16 L-6,-22 L-2,-17 Z" fill="#EF7C00"/>
+          <path d="M2,-17 L6,-22 L8,-16 Z" fill="#EF7C00"/>
+          <path d="M-6,-17 L-6,-20 L-4,-17 Z" fill="#F4A6A6"/>
+          <path d="M4,-17 L6,-20 L6,-17 Z" fill="#F4A6A6"/>
+          <ellipse cx="-3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <ellipse cx="3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <circle cx="-3" cy="-12" r="0.5" fill="white"/>
+          <circle cx="4" cy="-12" r="0.5" fill="white"/>
+          <path d="M-1.3,-7 L1.3,-7 L0,-5.5 Z" fill="#D88B95"/>
+          <path d="M0,-5.5 Q-1.5,-3.5 -2.5,-4.2 M0,-5.5 Q1.5,-3.5 2.5,-4.2" stroke="#2C3E50" stroke-width="0.6" fill="none" stroke-linecap="round"/>
+        </g>
+        <rect x="60" y="9" width="11" height="11" rx="1.5" fill="none" stroke="#003D7C" stroke-width="1.1"/>
+        <rect x="78" y="13" width="152" height="2.5" rx="1.2" fill="#003D7C" opacity="0.5"/>
+        <path d="M62,15 L65,18 L70,11" stroke="#EF7C00" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round" class="n-chk n-chk1"/>
+        <rect x="60" y="25" width="11" height="11" rx="1.5" fill="none" stroke="#003D7C" stroke-width="1.1"/>
+        <rect x="78" y="29" width="136" height="2.5" rx="1.2" fill="#003D7C" opacity="0.5"/>
+        <path d="M62,31 L65,34 L70,27" stroke="#EF7C00" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round" class="n-chk n-chk2"/>
+        <rect x="60" y="41" width="11" height="11" rx="1.5" fill="none" stroke="#003D7C" stroke-width="1.1"/>
+        <rect x="78" y="45" width="144" height="2.5" rx="1.2" fill="#003D7C" opacity="0.5"/>
+        <path d="M62,47 L65,50 L70,43" stroke="#EF7C00" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round" class="n-chk n-chk3"/>
+      </svg>
+
+      <!-- Assistant -->
+      <svg v-else-if="scene === 'assistant'" key="assistant" viewBox="0 0 240 60" class="pet-svg">
+        <g transform="translate(28,32)">
+          <path d="M14,5 Q24,-3 18,-12" stroke="#EF7C00" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+          <ellipse cx="0" cy="6" rx="12" ry="14" fill="#EF7C00"/>
+          <ellipse cx="0" cy="10" rx="6.5" ry="8" fill="#FFC480"/>
+          <ellipse cx="-6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <ellipse cx="6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <path d="M-7,-2 Q0,1 7,-2" stroke="#003D7C" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+          <circle cx="0" cy="0.5" r="1.1" fill="#FFD580"/>
+          <circle cx="0" cy="-11" r="10" fill="#EF7C00"/>
+          <path d="M-8,-16 L-6,-22 L-2,-17 Z" fill="#EF7C00"/>
+          <path d="M2,-17 L6,-22 L8,-16 Z" fill="#EF7C00"/>
+          <path d="M-6,-17 L-6,-20 L-4,-17 Z" fill="#F4A6A6"/>
+          <path d="M4,-17 L6,-20 L6,-17 Z" fill="#F4A6A6"/>
+          <ellipse cx="-3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <ellipse cx="3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <circle cx="-3" cy="-12" r="0.5" fill="white"/>
+          <circle cx="4" cy="-12" r="0.5" fill="white"/>
+          <g class="n-gls">
+            <circle cx="-3.5" cy="-11" r="3.5" fill="none" stroke="#003D7C" stroke-width="1.1"/>
+            <circle cx="3.5" cy="-11" r="3.5" fill="none" stroke="#003D7C" stroke-width="1.1"/>
+            <path d="M-7,-11 L-9,-11.5" stroke="#003D7C" stroke-width="1"/>
+            <path d="M7,-11 L9,-11.5" stroke="#003D7C" stroke-width="1"/>
+          </g>
+          <path d="M-1.3,-7 L1.3,-7 L0,-5.5 Z" fill="#D88B95"/>
+          <path d="M-2,-4 Q0,-2 2,-4" stroke="#2C3E50" stroke-width="0.6" fill="none" stroke-linecap="round"/>
+        </g>
+        <rect x="56" y="6" width="178" height="48" rx="2" fill="none" stroke="#003D7C" stroke-width="0.7" opacity="0.55"/>
+        <rect x="63" y="11" width="80" height="3" rx="1" fill="#003D7C"/>
+        <rect x="63" y="19" width="162" height="1.5" rx="0.7" fill="#003D7C" opacity="0.5" class="n-pl1"/>
+        <rect x="63" y="24" width="146" height="1.5" rx="0.7" fill="#003D7C" opacity="0.5" class="n-pl2"/>
+        <rect x="63" y="29" width="154" height="2" rx="1" fill="#EF7C00" opacity="0.75" class="n-pl3"/>
+        <rect x="63" y="34" width="138" height="1.5" rx="0.7" fill="#003D7C" opacity="0.5" class="n-pl4"/>
+        <rect x="63" y="39" width="166" height="1.5" rx="0.7" fill="#003D7C" opacity="0.5" class="n-pl5"/>
+        <rect x="63" y="44" width="128" height="1.5" rx="0.7" fill="#003D7C" opacity="0.5" class="n-pl6"/>
+        <rect x="63" y="49" width="150" height="1.5" rx="0.7" fill="#003D7C" opacity="0.5" class="n-pl1"/>
+      </svg>
+
+      <!-- Travel -->
+      <svg v-else-if="scene === 'travel'" key="travel" viewBox="0 0 240 60" class="pet-svg">
+        <line x1="0" y1="54" x2="240" y2="54" stroke="#003D7C" stroke-width="0.5" opacity="0.25"/>
+        <g class="n-cl1">
+          <ellipse cx="0" cy="10" rx="10" ry="3.5" fill="#003D7C" opacity="0.2"/>
+          <ellipse cx="6" cy="7" rx="7" ry="3" fill="#003D7C" opacity="0.2"/>
+        </g>
+        <g class="n-walk">
+          <g transform="translate(68,32)">
+            <path d="M14,5 Q24,-3 18,-12" stroke="#EF7C00" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+            <ellipse cx="0" cy="6" rx="12" ry="14" fill="#EF7C00"/>
+            <ellipse cx="0" cy="10" rx="6.5" ry="8" fill="#FFC480"/>
+            <ellipse cx="-6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+            <ellipse cx="6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+            <path d="M-7,-2 Q0,1 7,-2" stroke="#003D7C" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+            <circle cx="0" cy="0.5" r="1.1" fill="#FFD580"/>
+            <circle cx="0" cy="-11" r="10" fill="#EF7C00"/>
+            <path d="M-8,-16 L-6,-22 L-2,-17 Z" fill="#EF7C00"/>
+            <path d="M2,-17 L6,-22 L8,-16 Z" fill="#EF7C00"/>
+            <path d="M-6,-17 L-6,-20 L-4,-17 Z" fill="#F4A6A6"/>
+            <path d="M4,-17 L6,-20 L6,-17 Z" fill="#F4A6A6"/>
+            <ellipse cx="-3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+            <ellipse cx="3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+            <circle cx="-3" cy="-12" r="0.5" fill="white"/>
+            <circle cx="4" cy="-12" r="0.5" fill="white"/>
+            <path d="M-1.3,-7 L1.3,-7 L0,-5.5 Z" fill="#D88B95"/>
+            <path d="M0,-5.5 Q-1.5,-3.5 -2.5,-4.2 M0,-5.5 Q1.5,-3.5 2.5,-4.2" stroke="#2C3E50" stroke-width="0.6" fill="none" stroke-linecap="round"/>
+            <rect x="11" y="-3" width="5" height="11" rx="2" fill="#EF7C00"/>
+            <line x1="17" y1="1" x2="30" y2="10" stroke="#5C5C5C" stroke-width="1.2" stroke-linecap="round"/>
+          </g>
+          <rect x="118" y="22" width="34" height="24" rx="2.5" fill="#003D7C"/>
+          <rect x="123" y="26" width="24" height="2.5" rx="1" fill="#EF7C00"/>
+          <rect x="129" y="15" width="11" height="8" rx="1.5" fill="none" stroke="#003D7C" stroke-width="1.3"/>
+          <rect x="123" y="32" width="4" height="2.5" fill="#FFC480"/>
+          <rect x="141" y="32" width="4" height="2.5" fill="#FFC480"/>
+          <g class="n-wh"><circle cx="124" cy="47" r="2.5" fill="#1F2937"/><line x1="124" y1="44.7" x2="124" y2="49.3" stroke="#FFC480" stroke-width="0.6"/></g>
+          <g class="n-wh"><circle cx="145" cy="47" r="2.5" fill="#1F2937"/><line x1="145" y1="44.7" x2="145" y2="49.3" stroke="#FFC480" stroke-width="0.6"/></g>
         </g>
       </svg>
 
-      <!-- Travel: cat riding a paper plane -->
-      <svg v-else-if="scene === 'travel'" key="travel" viewBox="0 0 80 32" class="pet-svg">
-        <g class="c-fly-group">
-          <polygon points="73,18 22,10 34,19 22,26" fill="#A8D8F0" stroke="#5B9BD5" stroke-width="0.8" stroke-linejoin="round"/>
-          <polygon points="73,18 22,10 42,18"        fill="#D4EEFA" stroke="#5B9BD5" stroke-width="0.6" stroke-linejoin="round"/>
-          <line x1="34" y1="19" x2="73" y2="18" stroke="#8EC4E0" stroke-width="0.5"/>
-          <g transform="translate(31,-2)">
-            <polygon points="-2,11 1,5  4,11" fill="#FF9B50"/>
-            <polygon points=" 5,11 8,5 11,11" fill="#FF9B50"/>
-            <polygon points="-1,11 1,7  3,11" fill="#FFB8C6"/>
-            <polygon points=" 6,11 8,7 10,11" fill="#FFB8C6"/>
-            <circle cx="4.5" cy="15" r="6" fill="#FF9B50" stroke="#D4711E" stroke-width="0.8"/>
-            <path d="M2,14 Q3.5,15.5 5,14" stroke="#3D2B1F" stroke-width="0.9" fill="none" stroke-linecap="round"/>
-            <path d="M6,14 Q7.5,15.5 9,14" stroke="#3D2B1F" stroke-width="0.9" fill="none" stroke-linecap="round"/>
-            <circle cx="4.5" cy="17" r="0.7" fill="#FF6B9D"/>
+      <!-- Stats -->
+      <svg v-else-if="scene === 'stats'" key="stats" viewBox="0 0 240 60" class="pet-svg">
+        <g transform="translate(28,32)">
+          <path d="M14,5 Q24,-3 18,-12" stroke="#EF7C00" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+          <ellipse cx="0" cy="6" rx="12" ry="14" fill="#EF7C00"/>
+          <ellipse cx="0" cy="10" rx="6.5" ry="8" fill="#FFC480"/>
+          <ellipse cx="-6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <ellipse cx="6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <path d="M-7,-2 Q0,1 7,-2" stroke="#003D7C" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+          <circle cx="0" cy="0.5" r="1.1" fill="#FFD580"/>
+          <circle cx="0" cy="-11" r="10" fill="#EF7C00"/>
+          <path d="M-8,-16 L-6,-22 L-2,-17 Z" fill="#EF7C00"/>
+          <path d="M2,-17 L6,-22 L8,-16 Z" fill="#EF7C00"/>
+          <path d="M-6,-17 L-6,-20 L-4,-17 Z" fill="#F4A6A6"/>
+          <path d="M4,-17 L6,-20 L6,-17 Z" fill="#F4A6A6"/>
+          <ellipse cx="-4" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <ellipse cx="3" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <circle cx="-3.5" cy="-12" r="0.5" fill="white"/>
+          <circle cx="2.5" cy="-12" r="0.5" fill="white"/>
+          <path d="M-1.3,-7 L1.3,-7 L0,-5.5 Z" fill="#D88B95"/>
+          <path d="M0,-5.5 Q-1.5,-3.5 -2.5,-4.2 M0,-5.5 Q1.5,-3.5 2.5,-4.2" stroke="#2C3E50" stroke-width="0.6" fill="none" stroke-linecap="round"/>
+        </g>
+        <line x1="56" y1="52" x2="232" y2="52" stroke="#003D7C" stroke-width="0.6" opacity="0.4"/>
+        <line x1="56" y1="6" x2="56" y2="52" stroke="#003D7C" stroke-width="0.6" opacity="0.4"/>
+        <rect x="65" y="38" width="15" height="14" fill="#003D7C" class="n-bar n-b1"/>
+        <rect x="95" y="28" width="15" height="24" fill="#EF7C00" class="n-bar n-b2"/>
+        <rect x="125" y="32" width="15" height="20" fill="#003D7C" class="n-bar n-b3"/>
+        <rect x="155" y="20" width="15" height="32" fill="#EF7C00" class="n-bar n-b4"/>
+        <rect x="185" y="14" width="15" height="38" fill="#003D7C" class="n-bar n-b5"/>
+        <rect x="215" y="24" width="15" height="28" fill="#EF7C00" class="n-bar n-b6"/>
+        <g class="n-pt" transform="translate(186,7)">
+          <path d="M0,8 L-8,0 L-2,1 L-6,-4 L-4,-6 L0,-1 L1,-6 Z" fill="#EF7C00"/>
+        </g>
+      </svg>
+
+      <!-- Settings -->
+      <svg v-else-if="scene === 'settings'" key="settings" viewBox="0 0 240 60" class="pet-svg">
+        <g transform="translate(28,32)">
+          <path d="M14,5 Q24,-3 18,-12" stroke="#EF7C00" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+          <ellipse cx="0" cy="6" rx="12" ry="14" fill="#EF7C00"/>
+          <ellipse cx="0" cy="10" rx="6.5" ry="8" fill="#FFC480"/>
+          <ellipse cx="-6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <ellipse cx="6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <path d="M-7,-2 Q0,1 7,-2" stroke="#003D7C" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+          <circle cx="0" cy="0.5" r="1.1" fill="#FFD580"/>
+          <circle cx="0" cy="-11" r="10" fill="#EF7C00"/>
+          <path d="M-8,-16 L-6,-22 L-2,-17 Z" fill="#EF7C00"/>
+          <path d="M2,-17 L6,-22 L8,-16 Z" fill="#EF7C00"/>
+          <path d="M-6,-17 L-6,-20 L-4,-17 Z" fill="#F4A6A6"/>
+          <path d="M4,-17 L6,-20 L6,-17 Z" fill="#F4A6A6"/>
+          <ellipse cx="-3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <ellipse cx="3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <circle cx="-3" cy="-12" r="0.5" fill="white"/>
+          <circle cx="4" cy="-12" r="0.5" fill="white"/>
+          <path d="M-1.3,-7 L1.3,-7 L0,-5.5 Z" fill="#D88B95"/>
+          <path d="M0,-5.5 Q-1.5,-3.5 -2.5,-4.2 M0,-5.5 Q1.5,-3.5 2.5,-4.2" stroke="#2C3E50" stroke-width="0.6" fill="none" stroke-linecap="round"/>
+        </g>
+        <!-- Large gear (CW) -->
+        <g transform="translate(122,31)">
+          <g class="n-gear-big">
+            <rect x="-3" y="-17" width="6" height="7" rx="1.5" fill="#003D7C" opacity="0.65"/>
+            <rect x="-3" y="-17" width="6" height="7" rx="1.5" fill="#003D7C" opacity="0.65" transform="rotate(60)"/>
+            <rect x="-3" y="-17" width="6" height="7" rx="1.5" fill="#003D7C" opacity="0.65" transform="rotate(120)"/>
+            <rect x="-3" y="-17" width="6" height="7" rx="1.5" fill="#003D7C" opacity="0.65" transform="rotate(180)"/>
+            <rect x="-3" y="-17" width="6" height="7" rx="1.5" fill="#003D7C" opacity="0.65" transform="rotate(240)"/>
+            <rect x="-3" y="-17" width="6" height="7" rx="1.5" fill="#003D7C" opacity="0.65" transform="rotate(300)"/>
+            <circle cx="0" cy="0" r="11" fill="none" stroke="#003D7C" stroke-width="1.5" opacity="0.65"/>
+            <circle cx="0" cy="0" r="4" fill="#003D7C" opacity="0.65"/>
+          </g>
+        </g>
+        <!-- Small gear (CCW) -->
+        <g transform="translate(178,22)">
+          <g class="n-gear-sm">
+            <rect x="-2" y="-12" width="4" height="6" rx="1" fill="#EF7C00" opacity="0.7"/>
+            <rect x="-2" y="-12" width="4" height="6" rx="1" fill="#EF7C00" opacity="0.7" transform="rotate(72)"/>
+            <rect x="-2" y="-12" width="4" height="6" rx="1" fill="#EF7C00" opacity="0.7" transform="rotate(144)"/>
+            <rect x="-2" y="-12" width="4" height="6" rx="1" fill="#EF7C00" opacity="0.7" transform="rotate(216)"/>
+            <rect x="-2" y="-12" width="4" height="6" rx="1" fill="#EF7C00" opacity="0.7" transform="rotate(288)"/>
+            <circle cx="0" cy="0" r="7.5" fill="none" stroke="#EF7C00" stroke-width="1.3" opacity="0.7"/>
+            <circle cx="0" cy="0" r="2.5" fill="#EF7C00" opacity="0.7"/>
           </g>
         </g>
       </svg>
 
-      <!-- Ebook: cat peeking over an open book -->
-      <svg v-else-if="scene === 'ebook'" key="ebook" viewBox="0 0 80 32" class="pet-svg">
-        <path d="M10,23 Q40,18 70,23 L70,30 Q40,25 10,30 Z" fill="#F5E6D3" stroke="#C49A6C" stroke-width="0.9"/>
-        <line x1="40" y1="18.5" x2="40" y2="30" stroke="#C49A6C" stroke-width="0.9"/>
-        <line x1="14" y1="25"   x2="36" y2="23"  stroke="#C49A6C" stroke-width="0.7" opacity="0.5"/>
-        <line x1="14" y1="27.5" x2="36" y2="25.5" stroke="#C49A6C" stroke-width="0.7" opacity="0.5"/>
-        <line x1="44" y1="23"   x2="66" y2="25"   stroke="#C49A6C" stroke-width="0.7" opacity="0.5"/>
-        <line x1="44" y1="25.5" x2="66" y2="27.5" stroke="#C49A6C" stroke-width="0.7" opacity="0.5"/>
-
-        <g class="c-cat-peek">
-          <polygon points="33,14 36,7  39,14" fill="#FF9B50"/>
-          <polygon points="41,14 44,7  47,14" fill="#FF9B50"/>
-          <polygon points="34.5,14 36,9  37.5,14" fill="#FFB8C6"/>
-          <polygon points="42.5,14 44,9  45.5,14" fill="#FFB8C6"/>
-          <circle cx="40" cy="19" r="7" fill="#FF9B50" stroke="#D4711E" stroke-width="0.8"/>
-          <ellipse cx="37" cy="18.5" rx="1.4" ry="1.1" fill="#3D2B1F"/>
-          <ellipse cx="43" cy="18.5" rx="1.4" ry="1.1" fill="#3D2B1F"/>
-          <circle  cx="37.5" cy="18" r="0.4" fill="white"/>
-          <circle  cx="43.5" cy="18" r="0.4" fill="white"/>
-          <circle  cx="40"   cy="21" r="0.7" fill="#FF6B9D"/>
+      <!-- Tools -->
+      <svg v-else-if="scene === 'tools'" key="tools" viewBox="0 0 240 60" class="pet-svg">
+        <g transform="translate(28,32)">
+          <path d="M14,5 Q24,-3 18,-12" stroke="#EF7C00" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+          <ellipse cx="0" cy="6" rx="12" ry="14" fill="#EF7C00"/>
+          <ellipse cx="0" cy="10" rx="6.5" ry="8" fill="#FFC480"/>
+          <ellipse cx="-6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <ellipse cx="6" cy="18" rx="3.5" ry="2" fill="#EF7C00"/>
+          <path d="M-7,-2 Q0,1 7,-2" stroke="#003D7C" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+          <circle cx="0" cy="0.5" r="1.1" fill="#FFD580"/>
+          <circle cx="0" cy="-11" r="10" fill="#EF7C00"/>
+          <path d="M-8,-16 L-6,-22 L-2,-17 Z" fill="#EF7C00"/>
+          <path d="M2,-17 L6,-22 L8,-16 Z" fill="#EF7C00"/>
+          <path d="M-6,-17 L-6,-20 L-4,-17 Z" fill="#F4A6A6"/>
+          <path d="M4,-17 L6,-20 L6,-17 Z" fill="#F4A6A6"/>
+          <ellipse cx="-3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <ellipse cx="3.5" cy="-11" rx="1.8" ry="2.2" fill="#003D7C"/>
+          <circle cx="-3" cy="-12" r="0.5" fill="white"/>
+          <circle cx="4" cy="-12" r="0.5" fill="white"/>
+          <path d="M-1.3,-7 L1.3,-7 L0,-5.5 Z" fill="#D88B95"/>
+          <path d="M0,-5.5 Q-1.5,-3.5 -2.5,-4.2 M0,-5.5 Q1.5,-3.5 2.5,-4.2" stroke="#2C3E50" stroke-width="0.6" fill="none" stroke-linecap="round"/>
         </g>
-      </svg>
-
-      <!-- Todo: cat bouncing, checkmark draws itself -->
-      <svg v-else-if="scene === 'todo'" key="todo" viewBox="0 0 80 32" class="pet-svg">
-        <rect x="43" y="8" width="24" height="22" rx="2" fill="white" stroke="#D0D0D8" stroke-width="1"/>
-        <rect x="50" y="5" width="10" height="6"  rx="2.5" fill="#D8D8E0"/>
-        <circle cx="55" cy="6.5" r="1.5" fill="white" stroke="#C8C8D0" stroke-width="0.8"/>
-        <rect x="47"   y="15" width="7.5" height="7.5" rx="1.5" fill="none" stroke="#B0BCC8" stroke-width="1.2"/>
-        <path d="M48.5,18.8 L51,21.5 L56,15.5"
-              stroke="#34C759" stroke-width="2" fill="none"
-              stroke-linecap="round" stroke-linejoin="round"
-              class="c-check"/>
-        <line x1="58" y1="17.5" x2="64" y2="17.5" stroke="#C8D0DC" stroke-width="1.1" stroke-linecap="round"/>
-        <line x1="58" y1="21"   x2="62" y2="21"   stroke="#C8D0DC" stroke-width="1.1" stroke-linecap="round"/>
-
-        <g class="c-cat-happy">
-          <polygon points="10,12 13,5 16,12" fill="#FF9B50"/>
-          <polygon points="18,12 21,5 24,12" fill="#FF9B50"/>
-          <polygon points="11.5,12 13,7.5 14.5,12" fill="#FFB8C6"/>
-          <polygon points="19.5,12 21,7.5 22.5,12" fill="#FFB8C6"/>
-          <circle cx="17" cy="17" r="7" fill="#FF9B50" stroke="#D4711E" stroke-width="0.8"/>
-          <path d="M13.5,15.5 Q15,17 16.5,15.5" stroke="#3D2B1F" stroke-width="1"   fill="none" stroke-linecap="round"/>
-          <path d="M18.5,15.5 Q20,17 21.5,15.5" stroke="#3D2B1F" stroke-width="1"   fill="none" stroke-linecap="round"/>
-          <circle cx="17" cy="19.5" r="0.8" fill="#FF6B9D"/>
-          <path d="M15,20.5 Q17,22 19,20.5"    stroke="#3D2B1F" stroke-width="0.7" fill="none" stroke-linecap="round"/>
+        <!-- Wrench (swings about bottom) -->
+        <g transform="translate(118,30)">
+          <g class="n-wrench">
+            <rect x="-2.5" y="-3" width="5" height="22" rx="2.5" fill="#003D7C" opacity="0.65"/>
+            <circle cx="0" cy="-10" r="8.5" fill="#003D7C" opacity="0.65"/>
+            <circle cx="0" cy="-10" r="5.5" fill="white"/>
+            <circle cx="0" cy="-10" r="2.2" fill="#003D7C" opacity="0.65"/>
+            <path d="M-4.5,20 Q-5,24 0,24 Q5,24 4.5,20" stroke="#003D7C" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.65"/>
+          </g>
         </g>
-      </svg>
-
-      <!-- Assistant: cat thinking, stars twinkling -->
-      <svg v-else-if="scene === 'assistant'" key="assistant" viewBox="0 0 80 32" class="pet-svg">
-        <g class="c-star1">
-          <path d="M58,4 L59.4,7.8 L63.5,7.8 L60.3,10 L61.7,13.8 L58,11.6 L54.3,13.8 L55.7,10 L52.5,7.8 L56.6,7.8 Z" fill="#FFD43B"/>
-        </g>
-        <g class="c-star2">
-          <path d="M71,14 L71.8,16.4 L74.5,16.4 L72.5,17.8 L73.3,20.2 L71,18.8 L68.7,20.2 L69.5,17.8 L67.5,16.4 L70.2,16.4 Z" fill="#FF9B50"/>
-        </g>
-
-        <g class="c-cat-think">
-          <polygon points="11,12 14,6 17,12" fill="#FF9B50"/>
-          <polygon points="19,12 22,6 25,12" fill="#FF9B50"/>
-          <polygon points="12,12 14,8 16,12"  fill="#FFB8C6"/>
-          <polygon points="20,12 22,8 24,12"  fill="#FFB8C6"/>
-          <circle cx="18" cy="17" r="7"   fill="#FF9B50" stroke="#D4711E" stroke-width="0.8"/>
-          <circle cx="15" cy="15"   r="1.2" fill="#3D2B1F"/>
-          <circle cx="21" cy="15"   r="1.2" fill="#3D2B1F"/>
-          <circle cx="15.7" cy="14.4" r="0.4" fill="white"/>
-          <circle cx="21.7" cy="14.4" r="0.4" fill="white"/>
-          <circle cx="18"   cy="18.5" r="0.7" fill="#FF6B9D"/>
-          <path d="M16.2,19.5 Q18,21 19.8,19.5" stroke="#3D2B1F" stroke-width="0.7" fill="none" stroke-linecap="round"/>
-        </g>
-        <circle cx="28" cy="10" r="1.2" fill="#D8D8E8" class="c-bubble1"/>
-        <circle cx="32" cy="7"  r="1.6" fill="#D8D8E8" class="c-bubble2"/>
-        <circle cx="37" cy="5"  r="2"   fill="#D8D8E8" class="c-bubble3"/>
-      </svg>
-
-      <!-- Stats: cat watching animated bar chart -->
-      <svg v-else-if="scene === 'stats'" key="stats" viewBox="0 0 80 32" class="pet-svg">
-        <line x1="37" y1="9"  x2="37" y2="30" stroke="#E0E0E8" stroke-width="1" stroke-linecap="round"/>
-        <line x1="37" y1="30" x2="72" y2="30" stroke="#E0E0E8" stroke-width="1" stroke-linecap="round"/>
-        <rect x="40" y="20" width="7" height="10" rx="1.5" fill="#5B9BD5" class="c-bar1"/>
-        <rect x="51" y="14" width="7" height="16" rx="1.5" fill="#FF9B50" class="c-bar2"/>
-        <rect x="62" y="17" width="7" height="13" rx="1.5" fill="#34C759" class="c-bar3"/>
-
-        <g class="c-cat-bob">
-          <polygon points="10,12 13,6 16,12" fill="#FF9B50"/>
-          <polygon points="18,12 21,6 24,12" fill="#FF9B50"/>
-          <polygon points="11,12 13,8 15,12"  fill="#FFB8C6"/>
-          <polygon points="19,12 21,8 23,12"  fill="#FFB8C6"/>
-          <circle cx="17" cy="17" r="7"   fill="#FF9B50" stroke="#D4711E" stroke-width="0.8"/>
-          <circle cx="14.5" cy="15.5" r="1.2" fill="#3D2B1F"/>
-          <circle cx="20.5" cy="15.5" r="1.2" fill="#3D2B1F"/>
-          <circle cx="15.3" cy="15"   r="0.4" fill="white"/>
-          <circle cx="21.3" cy="15"   r="0.4" fill="white"/>
-          <circle cx="17"   cy="18.5" r="0.7" fill="#FF6B9D"/>
-          <path d="M15.2,19.5 Q17,21 18.8,19.5" stroke="#3D2B1F" stroke-width="0.7" fill="none" stroke-linecap="round"/>
+        <!-- Sparkle star -->
+        <g transform="translate(196,24)">
+          <g class="n-sparkle">
+            <path d="M0,-11 L2.8,-4 L10,-4 L4.5,0.5 L6.5,8 L0,4 L-6.5,8 L-4.5,0.5 L-10,-4 L-2.8,-4 Z" fill="#EF7C00" opacity="0.75"/>
+          </g>
         </g>
       </svg>
 
@@ -231,184 +390,130 @@ const scene = computed(() => {
 .pet-enter-from   { opacity: 0; transform: translateY(3px); }
 .pet-leave-to     { opacity: 0; transform: translateY(-3px); }
 
-/* ══════════════════════════════════════════════════════
-   CHAT
-══════════════════════════════════════════════════════ */
-@keyframes cat-nod {
-  0%, 55%, 100% { transform: rotate(0deg); }
-  15%           { transform: rotate(-10deg) translateY(-1px); }
-  35%           { transform: rotate(0deg); }
+/* ══ CHAT ══════════════════════════════════════════════ */
+@keyframes nus-msg {
+  0%, 6%   { opacity: 0; transform: translateY(2px) scale(0.88); }
+  18%, 72% { opacity: 1; transform: translateY(0) scale(1); }
+  84%, 100%{ opacity: 0; }
 }
-@keyframes bot-nod {
-  0%, 49%, 100% { transform: rotate(0deg); }
-  65%           { transform: rotate(10deg) translateY(-1px); }
-  82%           { transform: rotate(0deg); }
-}
-@keyframes dots-travel {
-  0%        { transform: translateX(0);    opacity: 0; }
-  8%        { transform: translateX(0);    opacity: 1; }
-  42%       { transform: translateX(22px); opacity: 1; }
-  52%       { transform: translateX(22px); opacity: 0; }
-  53%       { transform: translateX(-8px); opacity: 0; }
-  62%       { transform: translateX(-8px); opacity: 1; }
-  90%       { transform: translateX(0);    opacity: 1; }
-  100%      { transform: translateX(0);    opacity: 0; }
-}
+.n-msg { transform-origin: left center; transform-box: fill-box; }
+.n-m1  { animation: nus-msg 4s ease-in-out infinite 0s; }
+.n-m2  { animation: nus-msg 4s ease-in-out infinite 1.3s; }
+.n-m3  { animation: nus-msg 4s ease-in-out infinite 2.6s; }
 
-.c-cat-nod {
-  animation: cat-nod 3.2s ease-in-out infinite;
-  transform-box: fill-box;
-  transform-origin: 50% 90%;
+/* ══ NOTES ═════════════════════════════════════════════ */
+@keyframes nus-pen {
+  0%, 100% { transform: translate(-2px,-1px) rotate(-12deg); }
+  50%      { transform: translate(2px,1px) rotate(10deg); }
 }
-.c-bot-nod {
-  animation: bot-nod 3.2s ease-in-out infinite;
-  transform-box: fill-box;
-  transform-origin: 50% 90%;
+@keyframes nus-line {
+  0%, 10%  { transform: scaleX(0); }
+  32%, 92% { transform: scaleX(1); }
+  100%     { transform: scaleX(0); }
 }
-.c-dots { animation: dots-travel 3.2s ease-in-out infinite; transform-box: fill-box; }
+.n-pen { animation: nus-pen 1.3s ease-in-out infinite; transform-origin: top right; transform-box: fill-box; }
+.n-nl  { transform-origin: left center; transform-box: fill-box; }
+.n-nl1 { animation: nus-line 4s ease-in-out infinite 0.1s; }
+.n-nl2 { animation: nus-line 4s ease-in-out infinite 0.7s; }
+.n-nl3 { animation: nus-line 4s ease-in-out infinite 1.3s; }
 
-/* ══════════════════════════════════════════════════════
-   NOTES
-══════════════════════════════════════════════════════ */
-@keyframes cat-bob {
+/* ══ EBOOK ═════════════════════════════════════════════ */
+@keyframes nus-pgflip {
+  0%, 60%  { transform: scaleX(1); }
+  74%      { transform: scaleX(-1); }
+  88%, 100%{ transform: scaleX(1); }
+}
+@keyframes nus-scan {
+  0%, 100% { transform: translateX(-1.2px); }
+  50%      { transform: translateX(1.2px); }
+}
+/* transform-origin: 0% 50% with fill-box = left-edge (spine) × vertical-center — no overflow */
+.n-page { animation: nus-pgflip 4s ease-in-out infinite; transform-box: fill-box; transform-origin: 0% 50%; }
+.n-scan { animation: nus-scan 1.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+
+/* ══ TODO ══════════════════════════════════════════════ */
+@keyframes nus-chk {
+  0%, 25%  { opacity: 0; transform: scale(0.2); }
+  42%, 92% { opacity: 1; transform: scale(1); }
+  100%     { opacity: 0; }
+}
+.n-chk  { transform-origin: center; transform-box: fill-box; }
+.n-chk1 { animation: nus-chk 4s ease-out infinite 0.2s; }
+.n-chk2 { animation: nus-chk 4s ease-out infinite 0.9s; }
+.n-chk3 { animation: nus-chk 4s ease-out infinite 1.6s; }
+
+/* ══ ASSISTANT ═════════════════════════════════════════ */
+@keyframes nus-gls {
   0%, 100% { transform: translateY(0); }
-  50%      { transform: translateY(-2px); }
+  50%      { transform: translateY(-1px); }
 }
-@keyframes write-l1 {
-  0%, 10%  { stroke-dashoffset: 20; }
-  38%, 88% { stroke-dashoffset: 0;  }
-  98%, 100%{ stroke-dashoffset: 20; }
+@keyframes nus-pl {
+  0%, 12%  { opacity: 0; }
+  32%, 88% { opacity: 1; }
+  100%     { opacity: 0; }
 }
-@keyframes write-l2 {
-  0%, 28%  { stroke-dashoffset: 20; }
-  55%, 88% { stroke-dashoffset: 0;  }
-  98%, 100%{ stroke-dashoffset: 20; }
-}
-@keyframes write-l3 {
-  0%, 44%  { stroke-dashoffset: 13; }
-  66%, 88% { stroke-dashoffset: 0;  }
-  98%, 100%{ stroke-dashoffset: 13; }
-}
-@keyframes pencil-scratch {
-  0%        { transform: translate(0px, 0px) rotate(-20deg); }
-  35%       { transform: translate(20px, 0px) rotate(-20deg); }
-  36%       { transform: translate(0px, 5px) rotate(-20deg); }
-  68%       { transform: translate(20px, 5px) rotate(-20deg); }
-  69%       { transform: translate(0px, 10px) rotate(-20deg); }
-  86%       { transform: translate(13px, 10px) rotate(-20deg); }
-  92%, 100% { transform: translate(0px, 0px) rotate(-20deg); }
-}
+.n-gls { animation: nus-gls 2s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+.n-pl1 { animation: nus-pl 3.5s ease-in-out infinite 0s; }
+.n-pl2 { animation: nus-pl 3.5s ease-in-out infinite 0.3s; }
+.n-pl3 { animation: nus-pl 3.5s ease-in-out infinite 0.6s; }
+.n-pl4 { animation: nus-pl 3.5s ease-in-out infinite 0.9s; }
+.n-pl5 { animation: nus-pl 3.5s ease-in-out infinite 1.2s; }
+.n-pl6 { animation: nus-pl 3.5s ease-in-out infinite 1.5s; }
 
-.c-cat-bob { animation: cat-bob 1.8s ease-in-out infinite; transform-box: fill-box; }
-.c-ln1     { animation: write-l1 4.2s ease-in-out infinite; }
-.c-ln2     { animation: write-l2 4.2s ease-in-out infinite; }
-.c-ln3     { animation: write-l3 4.2s ease-in-out infinite; }
-.c-pencil  { animation: pencil-scratch 4.2s ease-in-out infinite; transform-box: fill-box; transform-origin: 0% 100%; }
-
-/* ══════════════════════════════════════════════════════
-   TRAVEL
-══════════════════════════════════════════════════════ */
-@keyframes fly-wave {
-  0%, 100% { transform: translateY(0) rotate(0deg); }
-  30%      { transform: translateY(-3px) rotate(1.5deg); }
-  70%      { transform: translateY(2px) rotate(-1deg); }
-}
-.c-fly-group { animation: fly-wave 2.6s ease-in-out infinite; transform-box: fill-box; }
-
-/* ══════════════════════════════════════════════════════
-   EBOOK
-══════════════════════════════════════════════════════ */
-@keyframes cat-peek {
+/* ══ TRAVEL ════════════════════════════════════════════ */
+@keyframes nus-walk {
   0%, 100% { transform: translateY(0); }
-  20%      { transform: translateY(-2.5px); }
-  55%      { transform: translateY(0); }
-  72%      { transform: translateY(-1.5px); }
-  85%      { transform: translateY(0); }
+  50%      { transform: translateY(-1.8px); }
 }
-.c-cat-peek { animation: cat-peek 3.4s ease-in-out infinite; transform-box: fill-box; }
+@keyframes nus-wheel {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes nus-cld {
+  0%   { transform: translateX(-25px); }
+  100% { transform: translateX(265px); }
+}
+.n-walk { animation: nus-walk 0.55s ease-in-out infinite; transform-origin: center bottom; transform-box: fill-box; }
+.n-wh   { animation: nus-wheel 0.5s linear infinite; transform-box: fill-box; transform-origin: center; }
+.n-cl1  { animation: nus-cld 6s linear infinite; }
 
-/* ══════════════════════════════════════════════════════
-   TODO
-══════════════════════════════════════════════════════ */
-@keyframes check-draw {
-  0%, 15%  { stroke-dashoffset: 16; stroke-dasharray: 16; opacity: 0.25; }
-  48%, 72% { stroke-dashoffset: 0;  stroke-dasharray: 16; opacity: 1; }
-  90%, 100%{ stroke-dashoffset: 16; stroke-dasharray: 16; opacity: 0.25; }
+/* ══ STATS ═════════════════════════════════════════════ */
+@keyframes nus-bar {
+  0%, 5%   { transform: scaleY(0); }
+  28%, 88% { transform: scaleY(1); }
+  100%     { transform: scaleY(0); }
 }
-@keyframes cat-happy-bounce {
-  0%, 20%, 100% { transform: translateY(0) rotate(0deg); }
-  42%           { transform: translateY(-4px) rotate(-6deg); }
-  60%           { transform: translateY(-2px) rotate(5deg); }
-  78%           { transform: translateY(0) rotate(0deg); }
+@keyframes nus-pt {
+  0%, 100% { transform: translate(0,0); }
+  50%      { transform: translate(-2px,-2px); }
 }
-.c-check     { animation: check-draw 2.8s ease-in-out infinite; }
-.c-cat-happy {
-  animation: cat-happy-bounce 2.8s ease-in-out infinite;
-  transform-box: fill-box;
-  transform-origin: 50% 95%;
-}
+.n-bar { transform-origin: center bottom; transform-box: fill-box; }
+.n-b1  { animation: nus-bar 3.5s ease-out infinite 0s; }
+.n-b2  { animation: nus-bar 3.5s ease-out infinite 0.15s; }
+.n-b3  { animation: nus-bar 3.5s ease-out infinite 0.3s; }
+.n-b4  { animation: nus-bar 3.5s ease-out infinite 0.45s; }
+.n-b5  { animation: nus-bar 3.5s ease-out infinite 0.6s; }
+.n-b6  { animation: nus-bar 3.5s ease-out infinite 0.75s; }
+.n-pt  { animation: nus-pt 1.1s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
 
-/* ══════════════════════════════════════════════════════
-   ASSISTANT
-══════════════════════════════════════════════════════ */
-@keyframes star-twinkle1 {
-  0%, 100% { transform: scale(1)   rotate(0deg);    opacity: 1; }
-  25%      { transform: scale(1.3) rotate(18deg);   opacity: 1; }
-  50%      { transform: scale(0.65) rotate(0deg);   opacity: 0.35; }
-  75%      { transform: scale(1.2) rotate(-12deg);  opacity: 1; }
-}
-@keyframes star-twinkle2 {
-  0%, 100% { transform: scale(1)   rotate(0deg);   opacity: 0.85; }
-  38%      { transform: scale(0.55) rotate(0deg);  opacity: 0.2; }
-  68%      { transform: scale(1.35) rotate(22deg); opacity: 0.85; }
-}
-@keyframes cat-think {
+/* ══ SETTINGS ══════════════════════════════════════════ */
+@keyframes nus-gear-cw  { from { transform: rotate(0deg);   } to { transform: rotate(360deg);  } }
+@keyframes nus-gear-ccw { from { transform: rotate(0deg);   } to { transform: rotate(-360deg); } }
+.n-gear-big { animation: nus-gear-cw  5s linear infinite;   transform-box: fill-box; transform-origin: center; }
+.n-gear-sm  { animation: nus-gear-ccw 3.3s linear infinite; transform-box: fill-box; transform-origin: center; }
+
+/* ══ TOOLS ═════════════════════════════════════════════ */
+@keyframes nus-wrench {
   0%, 100% { transform: rotate(0deg); }
-  30%      { transform: rotate(-5deg) translateY(-1px); }
-  70%      { transform: rotate(4deg)  translateY(-0.5px); }
+  35%      { transform: rotate(-28deg); }
+  65%      { transform: rotate(18deg); }
 }
-@keyframes bubble-pulse {
-  0%, 100% { opacity: 0.5; }
-  50%      { opacity: 0.9; }
+@keyframes nus-sparkle {
+  0%, 100% { transform: scale(1) rotate(0deg);    opacity: 0.75; }
+  25%      { transform: scale(1.25) rotate(18deg); opacity: 1; }
+  50%      { transform: scale(0.75) rotate(0deg);  opacity: 0.45; }
+  75%      { transform: scale(1.15) rotate(-15deg); opacity: 0.9; }
 }
-.c-star1 {
-  animation: star-twinkle1 2.2s ease-in-out infinite;
-  transform-box: fill-box;
-  transform-origin: 50% 50%;
-}
-.c-star2 {
-  animation: star-twinkle2 1.8s ease-in-out 0.45s infinite;
-  transform-box: fill-box;
-  transform-origin: 50% 50%;
-}
-.c-cat-think {
-  animation: cat-think 3s ease-in-out infinite;
-  transform-box: fill-box;
-  transform-origin: 50% 90%;
-}
-.c-bubble1 { animation: bubble-pulse 1.8s ease-in-out 0s   infinite; }
-.c-bubble2 { animation: bubble-pulse 1.8s ease-in-out 0.2s infinite; }
-.c-bubble3 { animation: bubble-pulse 1.8s ease-in-out 0.4s infinite; }
-
-/* ══════════════════════════════════════════════════════
-   STATS
-══════════════════════════════════════════════════════ */
-@keyframes bar1-anim {
-  0%, 100% { transform: scaleY(1);    }
-  35%      { transform: scaleY(1.18); }
-  68%      { transform: scaleY(0.85); }
-}
-@keyframes bar2-anim {
-  0%, 100% { transform: scaleY(1);    }
-  20%      { transform: scaleY(0.8);  }
-  58%      { transform: scaleY(1.12); }
-}
-@keyframes bar3-anim {
-  0%, 100% { transform: scaleY(1);    }
-  45%      { transform: scaleY(1.22); }
-  80%      { transform: scaleY(0.88); }
-}
-.c-bar1 { animation: bar1-anim 2s ease-in-out 0s    infinite; transform-box: fill-box; transform-origin: 50% 100%; }
-.c-bar2 { animation: bar2-anim 2s ease-in-out 0.35s infinite; transform-box: fill-box; transform-origin: 50% 100%; }
-.c-bar3 { animation: bar3-anim 2s ease-in-out 0.65s infinite; transform-box: fill-box; transform-origin: 50% 100%; }
+.n-wrench  { animation: nus-wrench 2.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center bottom; }
+.n-sparkle { animation: nus-sparkle 2.5s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
 </style>

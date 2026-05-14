@@ -494,9 +494,9 @@ function keepAllAttachments() {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: rgba(240, 240, 242, 0.45);
-  backdrop-filter: blur(60px) saturate(2);
-  -webkit-backdrop-filter: blur(60px) saturate(2);
+  background: rgba(235, 235, 235, 0.35);
+  backdrop-filter: blur(40px) saturate(1.8);
+  -webkit-backdrop-filter: blur(40px) saturate(1.8);
   border-radius: 24px;
   overflow: hidden;
   box-shadow: 0 2px 16px rgba(0, 0, 0, 0.10), 0 0 0 0.5px rgba(255, 255, 255, 0.6) inset;

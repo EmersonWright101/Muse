@@ -783,12 +783,13 @@ function daysUntilExpiry(deletedAt: string): number {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: rgba(228, 228, 232, 0.88);
+  background: rgba(235, 235, 235, 0.85);
   backdrop-filter: blur(40px) saturate(1.8);
   -webkit-backdrop-filter: blur(40px) saturate(1.8);
   border-radius: 24px;
   overflow: hidden;
-  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.10), 0 0 0 0.5px rgba(255, 255, 255, 0.6) inset;
+  clip-path: inset(0 round 24px);
+  box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.6) inset;
   position: relative;
 }
 
@@ -1079,6 +1080,8 @@ function daysUntilExpiry(deletedAt: string): number {
   flex: 1;
   overflow-y: auto;
   padding: 4px 6px 8px;
+  border-bottom-left-radius: 24px;
+  border-bottom-right-radius: 24px;
 }
 
 .list-scroll::-webkit-scrollbar { width: 3px; }
@@ -1250,6 +1253,9 @@ function daysUntilExpiry(deletedAt: string): number {
 .trash-section {
   flex-shrink: 0;
   border-top: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom-left-radius: 24px;
+  border-bottom-right-radius: 24px;
+  overflow: hidden;
 }
 
 .trash-toggle {

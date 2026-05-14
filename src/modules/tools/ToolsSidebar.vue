@@ -129,12 +129,13 @@ function hasActiveChild(group: typeof menuGroups.value[0]): boolean {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: rgba(228, 228, 232, 0.88);
+  background: rgba(235, 235, 235, 0.85);
   backdrop-filter: blur(40px) saturate(1.8);
   -webkit-backdrop-filter: blur(40px) saturate(1.8);
   border-radius: 24px;
   overflow: hidden;
-  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.10), 0 0 0 0.5px rgba(255, 255, 255, 0.6) inset;
+  clip-path: inset(0 round 24px);
+  box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.6) inset;
 }
 
 .panel-header {
@@ -157,6 +158,8 @@ function hasActiveChild(group: typeof menuGroups.value[0]): boolean {
   flex: 1;
   overflow-y: auto;
   padding: 10px 8px;
+  border-bottom-left-radius: 24px;
+  border-bottom-right-radius: 24px;
 }
 
 .list-scroll::-webkit-scrollbar { width: 4px; }

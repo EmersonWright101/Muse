@@ -1064,11 +1064,12 @@ onUnmounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: rgba(228, 228, 232, 0.88);
+  background: rgba(235, 235, 235, 0.85);
   backdrop-filter: blur(40px) saturate(1.8);
   -webkit-backdrop-filter: blur(40px) saturate(1.8);
   border-radius: 24px;
   overflow: hidden;
+  clip-path: inset(0 round 24px);
   position: relative;
 }
 

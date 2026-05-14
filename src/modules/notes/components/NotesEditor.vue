@@ -23,7 +23,7 @@ import plaintext from 'highlight.js/lib/languages/plaintext'
 import Image from '@tiptap/extension-image'
 import {
   Bold, Italic, Strikethrough, Code, List, ListOrdered, Quote, Minus, FileCode,
-  Sparkles, Loader2, Plus, Hash, Calendar, Folder, ChevronDown,
+  Sparkles, Loader2,
 } from 'lucide-vue-next'
 import { useNotesStore } from '../../../stores/notes'
 import { useNotesCopilotStore } from '../../../stores/notesCopilot'
@@ -62,7 +62,6 @@ let _copilotAbort: AbortController | null = null
 let _copilotTimer: ReturnType<typeof setTimeout> | null = null
 let _skipBodyWatch  = false
 let _acceptingChunk = false
-let _skipIdSync     = false
 
 const configuredProviders = computed(() =>
   aiStore.providers.filter(p => p.enabled && (p.apiKey || p.type === 'ollama'))
@@ -600,7 +599,6 @@ function syncEditorContent() {
 }
 
 watch(() => note.value?.id, () => {
-  if (_skipIdSync) return
   nextTick(syncEditorContent)
 })
 
@@ -632,84 +630,6 @@ md.renderer.rules.fence = (tokens, idx) => {
 md.renderer.rules.code_inline = (tokens, idx) =>
   `<code class="md-code-inline">${tokens[idx].content}</code>`
 
-function sanitizeFilename(name: string): string {
-  return name.replace(/[\\/:*?"<>|]/g, '').trim()
-}
-
-// ─── Title (direct input) ─────────────────────────────────────────────────────
-const titleInputRef = ref<HTMLInputElement>()
-const titleDraft = ref('')
-
-watch(() => note.value?.id, () => {
-  titleDraft.value = note.value?.title ?? ''
-}, { immediate: true })
-
-watch(() => note.value?.title, (v) => {
-  if (!v && document.activeElement !== titleInputRef.value) {
-    nextTick(() => titleInputRef.value?.focus())
-  }
-})
-
-function confirmTitle() {
-  const v = titleDraft.value.trim()
-  if (v) {
-    store.setTitle(v)
-    const sanitized = sanitizeFilename(v)
-    if (sanitized) {
-      _skipIdSync = true
-      note.value.id = sanitized
-      nextTick(() => { _skipIdSync = false })
-    }
-  }
-}
-
-// ─── Cover emoji ──────────────────────────────────────────────────────────────
-const isCoverEmoji = computed(() => {
-  const c = note.value?.cover ?? ''
-  return c && !c.includes('.') && !c.startsWith('http') && !c.startsWith('/')
-})
-
-function changeCoverEmoji() {
-  store.setCover(randomNoteEmoji())
-  triggerAutoSave()
-}
-
-// ─── Tags ─────────────────────────────────────────────────────────────────────
-const tagInputVisible = ref(false)
-const tagInputValue = ref('')
-const tagInputRef = ref<HTMLInputElement>()
-const tagSuggestionsVisible = ref(false)
-
-const tagSuggestions = computed(() => {
-  const q = tagInputValue.value.trim().toLowerCase()
-  const existing = new Set(note.value.tags)
-  return store.allTags
-    .filter(t => !existing.has(t) && (q === '' || t.toLowerCase().includes(q)))
-    .slice(0, 8)
-})
-
-function startAddTag() {
-  tagInputVisible.value = true
-  tagSuggestionsVisible.value = true
-  nextTick(() => tagInputRef.value?.focus())
-}
-
-function applyTag(tag: string) {
-  if (!note.value.tags.includes(tag)) { store.setTags([...note.value.tags, tag]); triggerAutoSave() }
-  tagInputValue.value = ''; tagInputVisible.value = false; tagSuggestionsVisible.value = false
-}
-
-function addTag() {
-  const v = tagInputValue.value.trim()
-  if (v) applyTag(v)
-  else { tagInputValue.value = ''; tagInputVisible.value = false; tagSuggestionsVisible.value = false }
-}
-
-function onTagInputBlur() {
-  setTimeout(() => { tagInputVisible.value = false; tagSuggestionsVisible.value = false; tagInputValue.value = '' }, 150)
-}
-
-function removeTag(tag: string) { store.setTags(note.value.tags.filter(t => t !== tag)); triggerAutoSave() }
 
 function onPreviewClick(e: MouseEvent) {
   const btn = (e.target as HTMLElement).closest('.md-code-copy') as HTMLElement | null
@@ -1020,60 +940,6 @@ initNotesImageAssetBase()
       </div>
     </div>
 
-    <!-- ── Document header (cover + title + meta) ───────────────────────────── -->
-    <div class="doc-header">
-      <div class="doc-inner">
-        <div class="title-row">
-          <button class="cover-btn" :title="t('notes.changeCover')" @click="changeCoverEmoji">
-            <span v-if="isCoverEmoji" class="cover-emoji">{{ note.cover }}</span>
-            <span v-else class="cover-emoji cover-emoji--default">📝</span>
-          </button>
-          <input
-            ref="titleInputRef"
-            v-model="titleDraft"
-            class="title-input"
-            :placeholder="t('notes.titlePlaceholder')"
-            @keydown.enter.prevent="confirmTitle(); ($event.target as HTMLInputElement).blur()"
-            @blur="confirmTitle"
-          />
-        </div>
-
-        <div class="doc-meta">
-          <div class="meta-item">
-            <Calendar :size="11" class="meta-icon" />
-            <input v-model="note.date" type="date" class="meta-date-input" @input="store.setDate(note.date)" />
-          </div>
-          <span class="meta-dot">·</span>
-          <div class="meta-item">
-            <Folder :size="11" class="meta-icon" />
-            <div class="meta-select-wrap">
-              <select :value="note.groupId" class="meta-group-select" @change="store.setGroupId(($event.target as HTMLSelectElement).value)">
-                <option value="">{{ t('notes.noGroup') }}</option>
-                <option v-for="g in store.groups" :key="g.id" :value="g.id">{{ g.name }}</option>
-              </select>
-              <ChevronDown :size="9" class="meta-select-chevron" />
-            </div>
-          </div>
-          <span class="meta-dot">·</span>
-          <div class="meta-tags">
-            <span v-for="tag in note.tags" :key="tag" class="tag-chip">
-              <Hash :size="9" class="tag-hash" />{{ tag }}
-              <button class="tag-remove-btn" @mousedown.prevent="removeTag(tag)">×</button>
-            </span>
-            <div v-if="tagInputVisible" class="tag-input-wrap">
-              <input ref="tagInputRef" v-model="tagInputValue" class="tag-input" :placeholder="t('notes.tagPlaceholder')" @keydown.enter.prevent="addTag" @keydown.escape="tagInputVisible = false; tagSuggestionsVisible = false; tagInputValue = ''" @blur="onTagInputBlur" />
-              <div v-if="tagSuggestionsVisible && tagSuggestions.length" class="tag-suggestions">
-                <button v-for="sug in tagSuggestions" :key="sug" class="tag-suggestion-item" @mousedown.prevent="applyTag(sug)">#{{ sug }}</button>
-              </div>
-            </div>
-            <button v-else class="tag-add-btn" :title="t('notes.tags')" @click="startAddTag">
-              <Plus :size="10" />
-              <span v-if="note.tags.length === 0" class="tag-add-label">{{ t('notes.tags') }}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
 
     <!-- ── Content area ──────────────────────────────────────────────────────── -->
     <div class="editor-content" :class="`layout-${layout}`">
@@ -1304,72 +1170,6 @@ initNotesImageAssetBase()
 .copilot-unit { font-size: 11px; color: #8e8e93; }
 .copilot-number--wide { width: 68px; }
 
-/* ── Document header ──────────────────────────────────────────────────────── */
-.doc-header {
-  flex-shrink: 0;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-  padding: 20px 0 16px;
-  background: #fff;
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-.doc-inner {
-  padding: 0 40px;
-}
-
-.title-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.cover-btn {
-  display: flex; align-items: center; justify-content: center;
-  border: none; background: transparent; padding: 0;
-  cursor: pointer; border-radius: 8px; flex-shrink: 0;
-  transition: transform 0.18s ease, opacity 0.15s;
-}
-.cover-btn:hover { transform: scale(1.12); opacity: 0.85; }
-.cover-emoji { font-size: 32px; line-height: 1; display: block; user-select: none; }
-.cover-emoji--default { opacity: 0.3; }
-
-.title-input {
-  flex: 1; min-width: 0;
-  border: none; outline: none; background: transparent;
-  font-size: 28px; font-weight: 700; color: #1c1c1e; line-height: 1.25; padding: 0;
-  letter-spacing: -0.3px; caret-color: #223F79; box-sizing: border-box;
-  user-select: text; -webkit-user-select: text;
-}
-.title-input::placeholder { color: #d1d1d6; font-weight: 600; }
-
-.doc-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.meta-dot { font-size: 11px; color: #c7c7cc; flex-shrink: 0; }
-.meta-item { display: flex; align-items: center; gap: 4px; }
-.meta-icon { color: #aeaeb2; flex-shrink: 0; }
-.meta-date-input { border: none; background: transparent; outline: none; font-size: 11.5px; color: #6e6e73; cursor: pointer; font-family: inherit; padding: 0; }
-.meta-date-input:hover { color: #3c3c43; }
-.meta-select-wrap { position: relative; display: flex; align-items: center; }
-.meta-group-select { border: none; background: transparent; outline: none; font-size: 11.5px; color: #6e6e73; cursor: pointer; font-family: inherit; appearance: none; -webkit-appearance: none; padding-right: 14px; }
-.meta-group-select:hover { color: #3c3c43; }
-.meta-select-chevron { position: absolute; right: 0; color: #aeaeb2; pointer-events: none; }
-
-/* Tags */
-.meta-tags { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.tag-chip { display: inline-flex; align-items: center; gap: 2px; padding: 2px 6px 2px 5px; background: rgba(34,63,121,0.07); color: #223F79; border-radius: 5px; font-size: 11px; font-weight: 500; white-space: nowrap; }
-.tag-hash { opacity: 0.5; flex-shrink: 0; }
-.tag-remove-btn { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border: none; background: transparent; color: #223F79; opacity: 0.45; cursor: pointer; padding: 0; border-radius: 3px; font-size: 13px; line-height: 1; flex-shrink: 0; transition: opacity 0.12s; }
-.tag-remove-btn:hover { opacity: 0.9; }
-.tag-add-btn { display: inline-flex; align-items: center; gap: 3px; border: none; background: transparent; color: #aeaeb2; border-radius: 5px; padding: 2px 5px; font-size: 11px; cursor: pointer; transition: background 0.12s, color 0.12s; }
-.tag-add-btn:hover { background: rgba(0,0,0,0.05); color: #6e6e73; }
-.tag-add-label { font-size: 11px; }
-.tag-input-wrap { position: relative; }
-.tag-input { width: 80px; height: 22px; border: 1px solid rgba(34,63,121,0.28); border-radius: 5px; padding: 0 7px; font-size: 11px; background: rgba(34,63,121,0.04); color: #1c1c1e; outline: none; font-family: inherit; }
-.tag-input:focus { border-color: rgba(34,63,121,0.5); }
-.tag-suggestions { position: absolute; top: calc(100% + 4px); left: 0; min-width: 130px; background: rgba(252,252,254,0.98); border: 1px solid rgba(0,0,0,0.09); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.12); padding: 4px; z-index: 60; display: flex; flex-direction: column; gap: 1px; }
-.tag-suggestion-item { display: block; width: 100%; text-align: left; padding: 5px 9px; border-radius: 6px; border: none; background: none; font-size: 11.5px; color: #223F79; cursor: pointer; transition: background 0.10s; font-family: inherit; }
-.tag-suggestion-item:hover { background: rgba(34,63,121,0.08); }
 
 /* ── Content area ─────────────────────────────────────────────────────────── */
 .editor-content {

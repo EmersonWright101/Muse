@@ -65,18 +65,18 @@ onUnmounted(() => {
   window.removeEventListener('online', onOnline)
 })
 
-const panelFloats = computed(() =>
-  (route.path === '/travel' && travel.viewMode !== 'editor') ||
-  (route.path.startsWith('/ebook') && !!ebookStore.activeBookId)
-)
+// Panel always floats (position:absolute) for any route that has a sidebar
+const panelFloats = computed(() => routeHasSidebar.value)
 
 // Routes without a sidebar component — hide the panel column entirely for these
 const routeHasSidebar = computed(() => route.path !== '/home')
 
-// When floating ebook sidebar is visible, push the epub content right so text isn't hidden
-const ebookPanelActive = computed(() =>
-  route.path.startsWith('/ebook') && !!ebookStore.activeBookId && showPanel.value && routeHasSidebar.value
-)
+// When the floating panel is visible, push the main content right so it isn't hidden.
+// Travel and ebook routes let the sidebar float over the content (map/reader fills full width).
+const panelActive = computed(() => {
+  if (route.path.startsWith('/travel') || route.path.startsWith('/ebook')) return false
+  return showPanel.value && routeHasSidebar.value
+})
 
 // Give the panel-column the same background as the ebook paper when reading
 const panelBgClass = computed(() => {
@@ -100,10 +100,12 @@ const isChatWindow = computed(() => route.path === '/chat-window')
       <div class="app-right">
         <TitleBar :panel-visible="showPanel" @toggle="showPanel = !showPanel" />
 
-        <div class="content-area" :class="{ 'panel-floats': panelFloats, 'ebook-panel-active': ebookPanelActive }">
-          <div v-show="showPanel && routeHasSidebar" class="panel-column" :class="panelBgClass">
-            <router-view name="sidebar" />
-          </div>
+        <div class="content-area" :class="{ 'panel-floats': panelFloats, 'panel-active': panelActive }">
+          <Transition name="panel-slide">
+            <div v-show="showPanel && routeHasSidebar" class="panel-column" :class="panelBgClass">
+              <router-view name="sidebar" />
+            </div>
+          </Transition>
           <div class="main-column">
             <router-view name="main" />
           </div>
@@ -212,9 +214,8 @@ body {
   transition: padding-left 0.2s ease;
 }
 
-/* When ebook floating sidebar is open: push content right so text isn't hidden,
-   but the background still extends behind the sidebar */
-.content-area.ebook-panel-active .main-column {
+/* When floating sidebar is visible, push main content right so it isn't hidden */
+.content-area.panel-active .main-column {
   padding-left: 252px;
 }
 
@@ -223,16 +224,21 @@ body {
 .panel-dark  { background: #1c1c1e; }
 
 /* Panel slide transition */
-.panel-slide-enter-active,
-.panel-slide-leave-active {
-  transition: width 0.2s ease, opacity 0.15s ease;
+.panel-slide-enter-active {
+  transition: width 0.28s cubic-bezier(0.0, 0.0, 0.2, 1),
+              opacity 0.22s ease;
   overflow: hidden;
 }
-
+.panel-slide-leave-active {
+  transition: width 0.22s cubic-bezier(0.4, 0.0, 1, 1),
+              opacity 0.16s ease;
+  overflow: hidden;
+}
 .panel-slide-enter-from,
 .panel-slide-leave-to {
   width: 0 !important;
   opacity: 0;
-  padding: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
 }
 </style>

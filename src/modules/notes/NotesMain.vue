@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, nextTick } from 'vue'
+import { computed, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { FileText, LayoutGrid, PenLine, Folder, Hash, Plus, ChevronDown } from 'lucide-vue-next'
+import { FileText, LayoutGrid, PenLine, Folder, Hash, Plus, ChevronDown, Calendar } from 'lucide-vue-next'
 import { useNotesStore } from '../../stores/notes'
 import NotesEditor from './components/NotesEditor.vue'
+import { randomNoteEmoji } from '../../utils/notesStorage'
 
 const { t } = useI18n()
 const store = useNotesStore()
@@ -11,6 +12,36 @@ const store = useNotesStore()
 const hasActive = computed(() => !!store.activeNoteId)
 const showMeta = computed(() => hasActive.value && store.viewMode === 'editor')
 const note = computed(() => store.activeNote)
+
+// ─── Title + cover editing in top bar ────────────────────────────────────────
+const titleInputRef = ref<HTMLInputElement>()
+const titleDraft = ref('')
+
+watch(() => note.value?.id, () => {
+  titleDraft.value = note.value?.title ?? ''
+}, { immediate: true })
+
+const isCoverEmoji = computed(() => {
+  const c = note.value?.cover ?? ''
+  return !!(c && !c.includes('.') && !c.startsWith('http') && !c.startsWith('/'))
+})
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[\\/:*?"<>|]/g, '').trim()
+}
+
+function confirmTitle() {
+  const v = titleDraft.value.trim()
+  if (v && note.value) {
+    store.setTitle(v)
+    const sanitized = sanitizeFilename(v)
+    if (sanitized) note.value.id = sanitized
+  }
+}
+
+function changeCoverEmoji() {
+  store.setCover(randomNoteEmoji())
+}
 
 // ─── Tag input in top bar ─────────────────────────────────────────────────────
 const tagInput = ref('')
@@ -102,10 +133,33 @@ function formatCardDate(updatedAt?: string): string {
   <div class="notes-main">
     <!-- Top bar -->
     <div class="top-bar">
-      <div class="top-bar-title">{{ t('notes.title') }}</div>
-
-      <!-- Active note meta: group + tags -->
+      <!-- Active note meta: cover + title + date + group + tags -->
       <div v-if="showMeta && note" class="note-meta-bar">
+        <!-- Cover emoji -->
+        <button class="meta-cover-btn" @click="changeCoverEmoji">
+          <span class="meta-cover-emoji">{{ isCoverEmoji ? note.cover : '📝' }}</span>
+        </button>
+
+        <!-- Title -->
+        <input
+          ref="titleInputRef"
+          v-model="titleDraft"
+          class="meta-title-input"
+          :placeholder="t('notes.titlePlaceholder')"
+          @keydown.enter.prevent="confirmTitle(); ($event.target as HTMLInputElement).blur()"
+          @blur="confirmTitle"
+        />
+
+        <span class="meta-sep">·</span>
+
+        <!-- Date -->
+        <div class="meta-date-wrap">
+          <Calendar :size="11" class="meta-icon" />
+          <input v-model="note.date" type="date" class="meta-date-input" @input="store.setDate(note.date)" />
+        </div>
+
+        <span class="meta-sep">·</span>
+
         <!-- Group -->
         <div class="meta-group-wrap">
           <Folder :size="11" class="meta-icon" />
@@ -241,13 +295,6 @@ function formatCardDate(updatedAt?: string): string {
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
 
-.top-bar-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #1c1c1e;
-  flex-shrink: 0;
-}
-
 /* ─── Note meta bar (group + tags) ───────────────────────────────────────── */
 
 .note-meta-bar {
@@ -262,6 +309,32 @@ function formatCardDate(updatedAt?: string): string {
 
 .meta-icon { color: #aeaeb2; flex-shrink: 0; }
 .meta-sep  { font-size: 11px; color: #d1d1d6; flex-shrink: 0; }
+
+.meta-cover-btn {
+  display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; padding: 0;
+  cursor: pointer; border-radius: 4px; flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.meta-cover-btn:hover { transform: scale(1.15); }
+.meta-cover-emoji { font-size: 15px; line-height: 1; user-select: none; }
+
+.meta-title-input {
+  border: none; outline: none; background: transparent;
+  font-size: 13px; font-weight: 600; color: #1c1c1e;
+  min-width: 50px; max-width: 200px;
+  padding: 0; font-family: inherit; caret-color: #223F79;
+  user-select: text; -webkit-user-select: text;
+}
+.meta-title-input::placeholder { color: #d1d1d6; }
+
+.meta-date-wrap { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.meta-date-input {
+  border: none; background: transparent; outline: none;
+  font-size: 11.5px; color: #6e6e73; cursor: pointer;
+  font-family: inherit; padding: 0;
+}
+.meta-date-input:hover { color: #3c3c43; }
 
 /* Group select */
 .meta-group-wrap {

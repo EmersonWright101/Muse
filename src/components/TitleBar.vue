@@ -8,6 +8,7 @@ import cloudGreen from '../assets/icons/cloud-green.svg'
 import cloudRed from '../assets/icons/cloud-red.svg'
 import { syncStatus } from '../stores/syncStatus'
 import { tryNewSync } from '../services/syncManager2'
+import TitleBarPet from './TitleBarPet.vue'
 import { computed, ref, watch } from 'vue'
 
 defineProps<{ panelVisible: boolean }>()
@@ -95,6 +96,9 @@ watch(() => syncStatus.state, (state) => {
       <img :src="sidebarIcon" class="sidebar-toggle-icon" :class="{ active: panelVisible }" alt="" />
     </button>
 
+    <!-- Pet animation -->
+    <TitleBarPet />
+
     <!-- Sync status -->
     <button
       class="titlebar-sync-btn"
@@ -142,7 +146,24 @@ watch(() => syncStatus.state, (state) => {
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
 
-.drag-spacer { flex: 1; }
+.drag-spacer {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  pointer-events: none;
+}
+
+.titlebar-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #3c3c43;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 400px;
+}
 
 .panel-toggle-btn {
   width: 26px;

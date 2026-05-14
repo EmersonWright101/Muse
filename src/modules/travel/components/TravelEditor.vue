@@ -71,7 +71,7 @@ const configuredProviders = computed(() =>
   aiStore.providers.filter(p => p.enabled && (p.apiKey || p.type === 'ollama'))
 )
 const copilotProviderModels = computed(() =>
-  (aiStore.providers.find(p => p.id === copilot.providerId)?.models ?? []).filter(m => !m.reasoning)
+  aiStore.providers.find(p => p.id === copilot.providerId)?.models ?? []
 )
 
 function getCleanText(): string {
@@ -927,7 +927,24 @@ initImageAssetBase()
 
     <!-- ── Toolbar ──────────────────────────────────────────────────────────── -->
     <div class="editor-toolbar">
-      <div class="fmt-group" :class="{ hidden: layout !== 'wysiwyg' }">
+      <!-- Icon + title: always left -->
+      <div class="toolbar-title-area">
+        <button class="toolbar-cover-btn" :title="t('travel.changeCover')" @click="changeCoverEmoji">
+          <span v-if="isCoverEmoji" class="toolbar-cover-emoji">{{ note.cover }}</span>
+          <span v-else class="toolbar-cover-emoji toolbar-cover-emoji--default">✈️</span>
+        </button>
+        <input
+          ref="titleInputRef"
+          v-model="titleDraft"
+          class="toolbar-title-input"
+          :placeholder="t('travel.titlePlaceholder')"
+          @keydown.enter.prevent="confirmTitle(); ($event.target as HTMLInputElement).blur()"
+          @blur="confirmTitle"
+        />
+      </div>
+
+      <!-- Format buttons: always visible -->
+      <div class="fmt-group">
         <button class="fmt-btn" :class="{ active: isActive('bold') }" title="Bold" @mousedown.prevent="fmtBold"><Bold :size="13" /></button>
         <button class="fmt-btn" :class="{ active: isActive('italic') }" title="Italic" @mousedown.prevent="fmtItalic"><Italic :size="13" /></button>
         <button class="fmt-btn" :class="{ active: isActive('strike') }" title="Strikethrough" @mousedown.prevent="fmtStrike"><Strikethrough :size="13" /></button>
@@ -944,9 +961,7 @@ initImageAssetBase()
         <button class="fmt-btn" title="Horizontal Rule" @mousedown.prevent="fmtHr"><Minus :size="13" /></button>
       </div>
 
-      <div v-if="layout !== 'wysiwyg'" class="fmt-mode-label">
-        {{ layout === 'edit' ? t('travel.editMode') : layout === 'preview' ? t('travel.previewMode') : t('travel.splitMode') }}
-      </div>
+      <div class="toolbar-spacer" />
 
       <div class="toolbar-right">
         <span v-if="hasGhostSuggestion" class="copilot-hint">
@@ -1062,21 +1077,6 @@ initImageAssetBase()
     <!-- ── Document header (cover + title + meta) ───────────────────────────── -->
     <div class="doc-header">
       <div class="doc-inner">
-        <div class="title-row">
-          <button class="cover-btn" :title="t('travel.changeCover')" @click="changeCoverEmoji">
-            <span v-if="isCoverEmoji" class="cover-emoji">{{ note.cover }}</span>
-            <span v-else class="cover-emoji cover-emoji--default">✈️</span>
-          </button>
-          <input
-            ref="titleInputRef"
-            v-model="titleDraft"
-            class="title-input"
-            :placeholder="t('travel.titlePlaceholder')"
-            @keydown.enter.prevent="confirmTitle(); ($event.target as HTMLInputElement).blur()"
-            @blur="confirmTitle"
-          />
-        </div>
-
         <div class="doc-meta">
 
           <!-- Category (pencil-click edit) -->
@@ -1332,29 +1332,67 @@ initImageAssetBase()
   gap: 8px;
   user-select: none;
   -webkit-user-select: none;
+  position: relative;
+  z-index: 10;
 }
 
 .fmt-group {
   display: flex;
   align-items: center;
   gap: 1px;
+  flex-shrink: 0;
+}
+
+.toolbar-title-area {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 260px;
+  flex-shrink: 1;
+  overflow: hidden;
+  margin-right: 8px;
+}
+
+.toolbar-cover-btn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  padding: 0 2px;
+  cursor: pointer;
+  line-height: 1;
+  border-radius: 4px;
+  transition: transform 0.12s;
+}
+.toolbar-cover-btn:hover { transform: scale(1.15); }
+
+.toolbar-cover-emoji {
+  font-size: 20px;
+  line-height: 1;
+  display: block;
+  user-select: none;
+}
+.toolbar-cover-emoji--default { opacity: 0.3; }
+
+.toolbar-title-input {
   flex: 1;
   min-width: 0;
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1c1c1e;
+  outline: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background 0.12s;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
-
-.fmt-group.hidden {
-  visibility: hidden;
-  pointer-events: none;
-}
-
-.fmt-mode-label {
-  flex: 1;
-  font-size: 11.5px;
-  font-weight: 500;
-  color: #8e8e93;
-  padding-left: 4px;
-}
+.toolbar-title-input:hover  { background: rgba(0,0,0,0.04); }
+.toolbar-title-input:focus  { background: rgba(0,0,0,0.05); }
+.toolbar-title-input::placeholder { color: #d1d1d6; font-weight: 600; }
 
 .fmt-btn {
   display: flex;
@@ -1388,6 +1426,8 @@ initImageAssetBase()
   margin: 0 3px;
   flex-shrink: 0;
 }
+
+.toolbar-spacer { flex: 1; }
 
 /* Mode switch */
 .mode-switch {

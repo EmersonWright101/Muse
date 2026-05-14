@@ -395,11 +395,29 @@ export function useEbookTtsGenerator() {
 
   /** Return all pre-generated part URLs for a chapter (caller must revoke each). */
   async function getChapterAudioUrls(bookId: string, chapterIdx: number): Promise<string[]> {
-    const urls: string[] = []
+    // Collect known parts from local FS (sequential scan, stops at first gap)
+    const knownParts = new Set<number>()
     for (let partIdx = 0; ; partIdx++) {
+      try {
+        if (!(await exists(fsPath(bookId, chapterIdx, partIdx), { baseDir: BaseDirectory.AppData }))) break
+        knownParts.add(partIdx)
+      } catch { break }
+    }
+    // Merge with server manifest to include parts only available remotely
+    if (isBackendConfigured()) {
+      try {
+        const manifest = await apiGet<{ items: Array<{ chapterIdx: number; partIdx: number }> }>(
+          `/api/ebook/tts/${encodeURIComponent(bookId)}/manifest`,
+        )
+        for (const item of manifest?.items ?? []) {
+          if (item.chapterIdx === chapterIdx) knownParts.add(item.partIdx)
+        }
+      } catch { /* non-critical */ }
+    }
+    const urls: string[] = []
+    for (const partIdx of Array.from(knownParts).sort((a, b) => a - b)) {
       const url = await getChunkUrl(bookId, chapterIdx, partIdx)
-      if (!url) break
-      urls.push(url)
+      if (url) urls.push(url)
     }
     return urls
   }

@@ -68,7 +68,7 @@ const configuredProviders = computed(() =>
   aiStore.providers.filter(p => p.enabled && (p.apiKey || p.type === 'ollama'))
 )
 const copilotProviderModels = computed(() =>
-  (aiStore.providers.find(p => p.id === copilot.providerId)?.models ?? []).filter(m => !m.reasoning)
+  aiStore.providers.find(p => p.id === copilot.providerId)?.models ?? []
 )
 
 function getCleanText(): string {

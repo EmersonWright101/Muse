@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watchEffect, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { MapPin, Zap } from 'lucide-vue-next'
 import { useTravelStore } from '../../stores/travel'
+import { setPageTitle, clearPageTitle } from '../../stores/pageTitle'
 import TravelMap from './components/TravelMap.vue'
 import TravelPowerMap from './components/TravelPowerMap.vue'
 import TravelEditor from './components/TravelEditor.vue'
@@ -11,6 +12,9 @@ const { t } = useI18n()
 const store = useTravelStore()
 
 const hasActive = computed(() => !!store.activeNoteId)
+
+watchEffect(() => { setPageTitle(store.activeNote?.title ?? '') })
+onUnmounted(() => clearPageTitle())
 
 function onPowerMapSelect(id: string) {
   store.openNote(id)

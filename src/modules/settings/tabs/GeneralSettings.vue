@@ -282,8 +282,8 @@ async function confirmDeleteOld() {
 
     <!-- ── AI Model Path (read-only) ────────────────────────────── -->
     <div class="section-card">
-      <h2 class="section-title">AI 模型权重路径</h2>
-      <p class="section-desc">AI 功能（如背景消除）的模型文件默认存放在数据目录下的 <code>models/</code> 子目录中。</p>
+      <h2 class="section-title">本地 AI 工具模型路径</h2>
+      <p class="section-desc">本地 AI 工具（如背景消除）所需的模型权重文件存放在数据目录下的 <code>models/</code> 子目录中。此路径不影响在线 AI 服务商的配置。</p>
       <div class="path-row">
         <div class="path-info">
           <span class="path-label">默认路径</span>

@@ -28,6 +28,8 @@ export const useAssistantSettingsStore = defineStore('assistantSettings', () => 
   const titleGenModelId    = ref(saved.titleGenModelId    ?? '')
   const titleGenPrompt     = ref(saved.titleGenPrompt     ?? DEFAULT_TITLE_PROMPT)
 
+  let _pushTimer: ReturnType<typeof setTimeout> | null = null
+
   function persist() {
     const data: Persisted = {
       providerId:         providerId.value,
@@ -37,11 +39,22 @@ export const useAssistantSettingsStore = defineStore('assistantSettings', () => 
       titleGenPrompt:     titleGenPrompt.value,
     }
     localStorage.setItem(LS_KEY, JSON.stringify(data))
-    apiPut('/api/settings/privateAssistant', { value: data }).catch(() => {})
+    if (_pushTimer) clearTimeout(_pushTimer)
+    _pushTimer = setTimeout(() => {
+      apiPut('/api/settings/privateAssistant', { value: data }).catch(() => {})
+    }, 800)
   }
 
   async function pushToServer() {
-    persist()
+    if (_pushTimer) { clearTimeout(_pushTimer); _pushTimer = null }
+    const data: Persisted = {
+      providerId:         providerId.value,
+      modelId:            modelId.value,
+      titleGenProviderId: titleGenProviderId.value,
+      titleGenModelId:    titleGenModelId.value,
+      titleGenPrompt:     titleGenPrompt.value,
+    }
+    await apiPut('/api/settings/privateAssistant', { value: data }).catch(() => {})
   }
 
   async function syncFromServer(allSettings: Record<string, unknown>) {

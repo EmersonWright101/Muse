@@ -106,7 +106,14 @@ async function saveSettings() {
   saving.value = true
   error.value = null
   try {
-    await saveSummaryPushSettings(config.value)
+    const provider = ai.providers.find(p => p.id === config.value.provider_id)
+    const resolved = {
+      ...config.value,
+      api_key: provider?.apiKey ?? '',
+      base_url: provider?.baseUrl ?? '',
+      provider_name: provider?.name ?? '',
+    }
+    await saveSummaryPushSettings(resolved)
   } catch (e) {
     showError('保存设置失败')
   } finally {

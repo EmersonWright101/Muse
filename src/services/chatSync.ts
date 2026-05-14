@@ -259,6 +259,7 @@ function remoteValue<T>(obj: Record<string, unknown>, camel: string, snake: stri
 
 function remoteMetaToConversation(remote: RemoteConv): Conversation {
   const r = remote as unknown as Record<string, unknown>
+  const trashedAt = remoteValue<string | null>(r, 'trashedAt', 'trashed_at', null)
   return {
     id:                  remoteValue<string>(r, 'id', 'id', ''),
     title:               remoteValue<string>(r, 'title', 'title', ''),
@@ -274,6 +275,7 @@ function remoteMetaToConversation(remote: RemoteConv): Conversation {
     titleGenerated:      remoteValue<boolean | undefined>(r, 'titleGenerated', 'title_generated', undefined),
     defaultProviderId:   remoteValue<string | null>(r, 'defaultProviderId', 'default_provider_id', null) ?? undefined,
     defaultModelId:      remoteValue<string | null>(r, 'defaultModelId', 'default_model_id', null) ?? undefined,
+    trashedAt:           trashedAt ?? undefined,
   }
 }
 

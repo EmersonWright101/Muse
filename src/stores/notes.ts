@@ -199,8 +199,9 @@ export const useNotesStore = defineStore('notes', () => {
     const note = activeNote.value
 
     const slug = slugify(note.title)
-    if (slug && slug !== note.id) {
-      note.id = await ensureUniqueId(slug, note.id)
+    const fileId = oldId ?? note.id
+    if (slug && slug !== fileId) {
+      note.id = await ensureUniqueId(slug, fileId)
     }
 
     const body = note.content.replace(/^---[\s\S]*?---\s*\n?/, '').trimStart()
@@ -261,11 +262,13 @@ export const useNotesStore = defineStore('notes', () => {
   // ─── Group management ──────────────────────────────────────────────────────
 
   async function createGroup(name: string) {
+    const now = new Date().toISOString()
     const group: NoteGroup = {
       id: crypto.randomUUID(),
       name,
       sortOrder: groups.value.length,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
     }
     groups.value.push(group)
     await saveGroups(groups.value)

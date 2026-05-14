@@ -25,7 +25,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  overflow: hidden;
+  overflow-y: auto;
   background: #ffffff;
 }
 </style>

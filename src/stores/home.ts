@@ -624,6 +624,9 @@ export const useHomeStore = defineStore('home', () => {
       lastGeneratedDate.value = today
       localStorage.setItem('muse-home-last-generated', today)
       localStorage.setItem(LS_MODIFIED_AT_KEY, new Date().toISOString())
+      apiPut('/api/settings/home', {
+        value: { ...settings.value, animals: animals.value, posterStats: posterStats.value, lastGeneratedDate: today },
+      }).catch(() => {})
 
       const stat = posterStats.value[today] ?? { costUsd: 0, requests: 0 }
       stat.costUsd  += costUsd

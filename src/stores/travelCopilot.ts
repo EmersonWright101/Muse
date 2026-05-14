@@ -15,7 +15,7 @@ export interface CopilotDailyStat {
 }
 
 async function getCopilotStatsPath(): Promise<string> {
-  return `${await resolveDataRoot()}/copilot-stats.json`
+  return `${await resolveDataRoot()}/travel-copilot-stats.json`
 }
 
 async function loadCopilotStats(): Promise<Record<string, CopilotDailyStat>> {

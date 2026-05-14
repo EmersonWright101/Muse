@@ -1,3 +1,25 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Suppress macOS WebKit "copy" (+) badge on all drag operations app-wide */
+* { -webkit-user-drag: none; }
+[draggable="true"] { -webkit-user-drag: element; cursor: grab; }
+[draggable="true"]:active { cursor: grabbing; }
+
+/* Disable text selection on all interactive/chrome elements */
+button, a, label, nav,
+[class*="-sidebar"], [class*="-toolbar"], [class*="-header"],
+[class*="-panel"], [class*="-meta"], [class*="-actions"],
+[class*="-nav"], [class*="-menu"], [class*="-tab"] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Always allow selection in actual editable/content areas */
+input, textarea, [contenteditable="true"],
+.markdown-body, .wysiwyg-editor .ProseMirror,
+.md-editor {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}

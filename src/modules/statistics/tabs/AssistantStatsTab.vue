@@ -8,7 +8,6 @@ import {
 } from 'lucide-vue-next'
 import { apiGet } from '../../../services/api'
 import EmptyState from '../components/EmptyState.vue'
-import SummaryPushTab from './SummaryPushTab.vue'
 
 const { t } = useI18n()
 
@@ -76,14 +75,13 @@ interface AssistantStats {
 
 const data = ref<AssistantStats | null>(null)
 const loading = ref(false)
-const activeSubTab = ref<'papers' | 'chat' | 'summary'>('papers')
+const activeSubTab = ref<'papers' | 'chat'>('papers')
 const hoveredDay = ref<string | null>(null)
 const hoveredSlice = ref<string | null>(null)
 
 const subTabs = [
   { id: 'papers' as const, label: t('statistics.assistantStats.papersTab') },
   { id: 'chat' as const, label: t('statistics.assistantStats.chatTab') },
-  { id: 'summary' as const, label: '总结推送' },
 ]
 
 async function load() {
@@ -202,7 +200,10 @@ const ratingBars = computed(() => {
   ].map(item => ({ ...item, pct: ((item.count / total) * 100).toFixed(1) }))
 })
 
-const dailyStats = computed(() => data.value?.papers?.daily_stats ?? [])
+const dailyStats = computed(() => {
+  const list = data.value?.papers?.daily_stats ?? []
+  return [...list].sort((a, b) => a.date.localeCompare(b.date))
+})
 
 const maxDailyTotal = computed(() => {
   const vals = dailyStats.value.map(d => d.total)
@@ -602,11 +603,6 @@ function fmtDate(iso: string): string {
             </div>
           </div>
         </div>
-      </template>
-
-      <!-- ═════════════════ Summary Push ════════════════════════ -->
-      <template v-if="activeSubTab === 'summary'">
-        <SummaryPushTab />
       </template>
 
       <!-- ═════════════════ Smart Answer ════════════════════════ -->

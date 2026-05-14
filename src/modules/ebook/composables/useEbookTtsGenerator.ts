@@ -23,7 +23,7 @@ import { BaseDirectory } from '@tauri-apps/plugin-fs'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { useEbookStore } from '../../../stores/ebook'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
-import { apiPutBinary, apiGetBinary, isBackendConfigured } from '../../../services/api'
+import { apiGet, apiPutBinary, apiGetBinary, isBackendConfigured } from '../../../services/api'
 import { beginSyncOp, endSyncOp } from '../../../stores/syncStatus'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -255,8 +255,20 @@ export function useEbookTtsGenerator() {
 
       if (ctrl.shouldStop) { _finish(bookId, 'paused'); return }
 
-      // ── Phase 3: scan FS for already-done chunks (one readDir call) ────────
+      // ── Phase 3: scan FS + server for already-done chunks ────────────────
       const doneFiles = await listDoneFiles(bookId)
+      // Also include chunks already on the server (e.g. generated on another device).
+      // They won't be re-generated here; getChunkUrl() will lazy-download during playback.
+      if (isBackendConfigured()) {
+        try {
+          const manifest = await apiGet<{ items: Array<{ chapterIdx: number; partIdx: number }> }>(
+            `/api/ebook/tts/${encodeURIComponent(bookId)}/manifest`,
+          )
+          for (const item of manifest?.items ?? []) {
+            doneFiles.add(`${item.chapterIdx}_${item.partIdx}.wav`)
+          }
+        } catch { /* non-critical */ }
+      }
       let done = allChunks.filter(c => doneFiles.has(`${c.chapterIdx}_${c.partIdx}.wav`)).length
       ebookStore.updateTtsJob(bookId, { phase: 'generating', doneChunks: done })
 
@@ -309,10 +321,20 @@ export function useEbookTtsGenerator() {
     else { ebookStore.updateTtsJob(bookId, { status: 'paused', phase: 'idle' }) }
   }
 
-  /** Re-scan the FS to recount done chunks (e.g. after a partial run). */
+  /** Re-scan the FS (and server) to recount done chunks (e.g. after a partial run). */
   async function rescanProgress(bookId: string): Promise<void> {
     const chapters  = await extractChapters(bookId)
     const doneFiles = await listDoneFiles(bookId)
+    if (isBackendConfigured()) {
+      try {
+        const manifest = await apiGet<{ items: Array<{ chapterIdx: number; partIdx: number }> }>(
+          `/api/ebook/tts/${encodeURIComponent(bookId)}/manifest`,
+        )
+        for (const item of manifest?.items ?? []) {
+          doneFiles.add(`${item.chapterIdx}_${item.partIdx}.wav`)
+        }
+      } catch { /* non-critical */ }
+    }
     let total = 0
     let done  = 0
     for (const ch of chapters) {

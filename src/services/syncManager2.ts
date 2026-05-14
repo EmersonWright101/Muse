@@ -9,8 +9,6 @@
 import {
   registerSyncModule,
   syncModule as _syncModule,
-  computeObjectChangeset,
-  getLastSyncedState,
   clearSyncState,
 } from './syncEngine'
 import { drainOfflineQueue } from './offlineQueue'
@@ -45,6 +43,11 @@ import { useTravelStore } from '../stores/travel'
 import { useNotesStore } from '../stores/notes'
 
 // ─── Settings module ─────────────────────────────────────────────────────────
+//
+// Each settings category is an independent SyncItem: { id, value, updatedAt, _version }
+// This enables per-category LWW conflict resolution and avoids sending the full settings
+// blob on every sync. Sensitive fields (API keys) are encrypted in serialize() which runs
+// BEFORE the changeset is computed, closing the plaintext-key-in-transit security hole.
 
 interface SettingsState {
   ai?: any
@@ -62,7 +65,25 @@ interface SettingsState {
   ebookTts?: any
 }
 
-async function getSettingsState(): Promise<SettingsState> {
+// Map category IDs to existing modified-at localStorage keys where available
+const _SETTINGS_TS_KEYS: Record<string, string> = {
+  chat: 'muse-chat-settings-modified-at',
+  webSearch: 'muse-web-search-settings-modified-at',
+  travelCopilot: 'muse-travel-copilot-modified-at',
+  notesCopilot: 'muse-notes-copilot-modified-at',
+}
+
+function _getSettingsCategoryTs(id: string): string {
+  const key = _SETTINGS_TS_KEYS[id] ?? `muse-sync-settings-ts-${id}`
+  return localStorage.getItem(key) ?? new Date(0).toISOString()
+}
+
+function _setSettingsCategoryTs(id: string, ts: string): void {
+  const key = _SETTINGS_TS_KEYS[id] ?? `muse-sync-settings-ts-${id}`
+  localStorage.setItem(key, ts)
+}
+
+async function _collectRawSettingsState(): Promise<SettingsState> {
   const [
     { useAiSettingsStore },
     { useChatSettingsStore },
@@ -98,7 +119,6 @@ async function getSettingsState(): Promise<SettingsState> {
   const statisticsStore = useStatisticsStore()
   const ebookStore = useEbookStore()
 
-  // WebSearch: collect plaintext API keys via store helpers
   const { listWebSearchProviders } = await import('../services/webSearch')
   const providerApiKeys: Record<string, string> = {}
   const providerNumResults: Record<string, number> = {}
@@ -190,21 +210,142 @@ async function getSettingsState(): Promise<SettingsState> {
   }
 }
 
+/** Convert raw SettingsState into an array of per-category SyncItems. */
+async function getSettingsItemsState(): Promise<any[]> {
+  const state = await _collectRawSettingsState()
+  return (Object.entries(state) as [string, any][])
+    .filter(([, v]) => v !== undefined && v !== null)
+    .map(([id, value]) => ({
+      id,
+      value,
+      updatedAt: _getSettingsCategoryTs(id),
+      _version: 0,
+    }))
+}
+
+async function getSettingsItemsManifest(): Promise<{ id: string; updatedAt?: string; _version?: number }[]> {
+  const items = await getSettingsItemsState()
+  return items.map(i => ({ id: i.id, updatedAt: i.updatedAt, _version: i._version }))
+}
+
+/** Apply a single settings category item to the appropriate store(s). */
+async function _applySettingsItem(item: { id: string; value: any; updatedAt?: string }): Promise<void> {
+  const { id, value } = item
+  if (!value) return
+  await applySettingsState({ [id]: value } as SettingsState)
+  if (item.updatedAt) _setSettingsCategoryTs(id, item.updatedAt)
+}
+
+async function applyIncrementalSettingsItemsState(mergedItems: any[], _deletedIds: string[]): Promise<void> {
+  for (const item of mergedItems) {
+    await _applySettingsItem(item)
+  }
+}
+
+/** Encrypt sensitive fields in each category item before computing changeset / sending to server. */
+async function serializeSettingsItems(items: any[]): Promise<any[]> {
+  const srvKey = getServerApiKey()
+  if (!srvKey) return items
+  const { encryptForServer } = await import('../utils/crypto')
+
+  return Promise.all(items.map(async (item: any) => {
+    if (item.id === 'ai' && item.value?.providers) {
+      return {
+        ...item,
+        value: {
+          ...item.value,
+          providers: await Promise.all(
+            item.value.providers.map(async (p: any) => ({
+              ...p,
+              apiKeyEnc: p.apiKey ? await encryptForServer(p.apiKey, srvKey).catch(() => '') : '',
+              apiKey: undefined,
+            })),
+          ),
+        },
+      }
+    }
+    if (item.id === 'webSearch' && item.value?.providerApiKeys) {
+      const { listWebSearchProviders } = await import('../services/webSearch')
+      const providers: Record<string, any> = {}
+      for (const { id } of listWebSearchProviders()) {
+        const plainKey = item.value.providerApiKeys[id] ?? ''
+        providers[id] = {
+          apiKeyEnc: plainKey ? await encryptForServer(plainKey, srvKey).catch(() => '') : '',
+          numResults: item.value.providerNumResults?.[id] ?? 5,
+          ...(id === 'exa' ? { exaSearchType: item.value.exaSearchType ?? 'auto' } : {}),
+        }
+      }
+      return {
+        ...item,
+        value: {
+          enabled: item.value.enabled,
+          activeProviderId: item.value.activeProviderId,
+          providers,
+        },
+      }
+    }
+    return item
+  }))
+}
+
+/** Decrypt sensitive fields when receiving items from server. */
+async function deserializeSettingsItems(raw: any): Promise<any[]> {
+  const items: any[] = Array.isArray(raw) ? raw : (raw?.items ?? [])
+  if (items.length === 0) return []
+
+  const srvKey = getServerApiKey()
+  if (!srvKey) return items
+  const { decryptFromServer } = await import('../utils/crypto')
+
+  return Promise.all(items.map(async (item: any) => {
+    if (item.id === 'ai' && item.value?.providers) {
+      return {
+        ...item,
+        value: {
+          ...item.value,
+          providers: await Promise.all(
+            item.value.providers.map(async (p: any) => {
+              let apiKey = p.apiKey || ''
+              if (p.apiKeyEnc) {
+                try { apiKey = await decryptFromServer(p.apiKeyEnc, srvKey) } catch { /* ignore */ }
+              }
+              return { ...p, apiKey, apiKeyEnc: undefined }
+            }),
+          ),
+        },
+      }
+    }
+    if (item.id === 'webSearch' && item.value?.providers) {
+      const providerApiKeys: Record<string, string> = {}
+      const providerNumResults: Record<string, number> = {}
+      let exaSearchType = 'auto'
+      for (const [pid, pv] of Object.entries(item.value.providers as Record<string, any>)) {
+        if (pv.apiKeyEnc && srvKey) {
+          try { providerApiKeys[pid] = await decryptFromServer(pv.apiKeyEnc, srvKey) } catch { providerApiKeys[pid] = '' }
+        }
+        providerNumResults[pid] = pv.numResults ?? 5
+        if (pid === 'exa' && pv.exaSearchType) exaSearchType = pv.exaSearchType
+      }
+      return {
+        ...item,
+        value: {
+          enabled: item.value.enabled,
+          activeProviderId: item.value.activeProviderId,
+          providerApiKeys,
+          providerNumResults,
+          exaSearchType,
+        },
+      }
+    }
+    return item
+  }))
+}
+
 async function applySettingsState(state: SettingsState): Promise<void> {
   if (state.ai) {
     const { useAiSettingsStore } = await import('../stores/aiSettings')
     const store = useAiSettingsStore()
-    if (state.ai.activeProviderId !== undefined) store.activeProviderId = state.ai.activeProviderId
-    if (state.ai.providers) store.providers = state.ai.providers
-    if (state.ai.defaultProviderId !== undefined) store.defaultProviderId = state.ai.defaultProviderId
-    if (state.ai.defaultModelId !== undefined) store.defaultModelId = state.ai.defaultModelId
-    if (state.ai.ebookDefaultProviderId !== undefined) store.ebookDefaultProviderId = state.ai.ebookDefaultProviderId
-    if (state.ai.ebookDefaultModelId !== undefined) store.ebookDefaultModelId = state.ai.ebookDefaultModelId
-    if (state.ai.paperDefaultProviderId !== undefined) store.paperDefaultProviderId = state.ai.paperDefaultProviderId
-    if (state.ai.paperDefaultModelId !== undefined) store.paperDefaultModelId = state.ai.paperDefaultModelId
-    if (state.ai.titleGenProviderId !== undefined) store.titleGenProviderId = state.ai.titleGenProviderId
-    if (state.ai.titleGenModelId !== undefined) store.titleGenModelId = state.ai.titleGenModelId
-    await store.flush()
+    await store.syncFromServer(state as any)
   }
 
   if (state.chat) {
@@ -222,7 +363,6 @@ async function applySettingsState(state: SettingsState): Promise<void> {
       temperature: store.temperature,
       maxTokens: store.maxTokens,
     }))
-    localStorage.setItem('muse-chat-settings-modified-at', new Date().toISOString())
   }
 
   if (state.webSearch) {
@@ -249,7 +389,6 @@ async function applySettingsState(state: SettingsState): Promise<void> {
         activeProviderId: store.activeProviderId,
         providers,
       }))
-      localStorage.setItem('muse-web-search-settings-modified-at', new Date().toISOString())
       store.reload()
     }
   }
@@ -307,7 +446,6 @@ async function applySettingsState(state: SettingsState): Promise<void> {
       contextChars: state.travelCopilot.contextChars ?? store.contextChars,
     }
     localStorage.setItem('muse-travel-copilot', JSON.stringify(payload))
-    localStorage.setItem('muse-travel-copilot-modified-at', new Date().toISOString())
     store.reload()
   }
 
@@ -323,7 +461,6 @@ async function applySettingsState(state: SettingsState): Promise<void> {
       contextChars: state.notesCopilot.contextChars ?? store.contextChars,
     }
     localStorage.setItem('muse-notes-copilot', JSON.stringify(payload))
-    localStorage.setItem('muse-notes-copilot-modified-at', new Date().toISOString())
     store.reload()
   }
 
@@ -354,101 +491,13 @@ async function applySettingsState(state: SettingsState): Promise<void> {
   }
 }
 
-async function serializeSettingsState(state: SettingsState): Promise<any> {
-  const srvKey = getServerApiKey()
-  if (!srvKey) return state
-
-  const { encryptForServer } = await import('../utils/crypto')
-  const serialized: any = { ...state }
-
-  if (state.ai?.providers) {
-    serialized.ai = {
-      ...state.ai,
-      providers: await Promise.all(
-        state.ai.providers.map(async (p: any) => ({
-          ...p,
-          apiKeyEnc: p.apiKey ? await encryptForServer(p.apiKey, srvKey).catch(() => '') : '',
-          apiKey: undefined,
-        })),
-      ),
-    }
-  }
-
-  if (state.webSearch?.providerApiKeys) {
-    const { listWebSearchProviders } = await import('../services/webSearch')
-    const providers: Record<string, any> = {}
-    for (const { id } of listWebSearchProviders()) {
-      const plainKey = state.webSearch.providerApiKeys[id] ?? ''
-      providers[id] = {
-        apiKeyEnc: plainKey ? await encryptForServer(plainKey, srvKey).catch(() => '') : '',
-        numResults: state.webSearch.providerNumResults?.[id] ?? 5,
-        ...(id === 'exa' ? { exaSearchType: state.webSearch.exaSearchType ?? 'auto' } : {}),
-      }
-    }
-    serialized.webSearch = {
-      enabled: state.webSearch.enabled,
-      activeProviderId: state.webSearch.activeProviderId,
-      providers,
-    }
-  }
-
-  return serialized
-}
-
-async function deserializeSettingsState(raw: any): Promise<SettingsState> {
-  if (Array.isArray(raw)) raw = raw[0]
-  const srvKey = getServerApiKey()
-  if (!srvKey) return raw
-
-  const { decryptFromServer } = await import('../utils/crypto')
-  const deserialized: any = { ...raw }
-
-  if (raw.ai?.providers) {
-    deserialized.ai = {
-      ...raw.ai,
-      providers: await Promise.all(
-        raw.ai.providers.map(async (p: any) => {
-          let apiKey = ''
-          if (p.apiKeyEnc) {
-            try { apiKey = await decryptFromServer(p.apiKeyEnc, srvKey) } catch { /* ignore */ }
-          }
-          return { ...p, apiKey, apiKeyEnc: undefined }
-        }),
-      ),
-    }
-  }
-
-  if (raw.webSearch?.providers) {
-    const providerApiKeys: Record<string, string> = {}
-    const providerNumResults: Record<string, number> = {}
-    let exaSearchType = 'auto'
-    for (const [id, pv] of Object.entries(raw.webSearch.providers)) {
-      if ((pv as any).apiKeyEnc && srvKey) {
-        try { providerApiKeys[id] = await decryptFromServer((pv as any).apiKeyEnc, srvKey) } catch { providerApiKeys[id] = '' }
-      }
-      providerNumResults[id] = (pv as any).numResults ?? 5
-      if (id === 'exa' && (pv as any).exaSearchType) exaSearchType = (pv as any).exaSearchType
-    }
-    deserialized.webSearch = {
-      enabled: raw.webSearch.enabled,
-      activeProviderId: raw.webSearch.activeProviderId,
-      providerApiKeys,
-      providerNumResults,
-      exaSearchType,
-    }
-  }
-
-  return deserialized
-}
-
-const settingsModule: SyncModule<SettingsState> = {
+const settingsModule: SyncModule<any[]> = {
   name: 'settings',
-  getState: getSettingsState,
-  getLastSyncedState: () => getLastSyncedState('settings') as SettingsState | null,
-  applyState: applySettingsState,
-  serialize: serializeSettingsState,
-  deserialize: deserializeSettingsState,
-  computeChangeset: computeObjectChangeset,
+  getState: getSettingsItemsState,
+  getManifest: getSettingsItemsManifest,
+  applyIncrementalState: applyIncrementalSettingsItemsState,
+  serialize: serializeSettingsItems,
+  deserialize: deserializeSettingsItems,
 }
 
 // ─── Chat module ─────────────────────────────────────────────────────────────
@@ -466,28 +515,19 @@ async function getChatManifest(): Promise<{ id: string; updatedAt?: string; _ver
   return metas.map(m => ({ id: m.id, updatedAt: m.updatedAt }))
 }
 
-async function applyChatState(state: Conversation[]): Promise<void> {
-  const { saveConversationLocalOnly } = await import('../utils/storage')
-  const { useChatStore } = await import('../stores/chat')
-
-  for (const conv of state) {
-    await saveConversationLocalOnly(conv)
-  }
-
-  useChatStore().loadList()
-}
-
 async function applyIncrementalChatState(mergedItems: Conversation[], deletedIds: string[]): Promise<void> {
-  const { saveConversationLocalOnly, deleteConversationLocalOnly } = await import('../utils/storage')
+  const { saveConversationLocalOnly, deleteConversationLocalOnly, saveConversationToTrashLocalOnly } = await import('../utils/storage')
   const { useChatStore } = await import('../stores/chat')
 
   for (const conv of mergedItems) {
     if (!conv.id) continue
-    // Skip junk: no title and no messages
     if (!conv.title && (!conv.messages || conv.messages.length === 0)) continue
-    // Normalize null/empty title
     if (!conv.title) conv.title = '新对话'
-    await saveConversationLocalOnly(conv)
+    if (conv.trashedAt) {
+      await saveConversationToTrashLocalOnly(conv, conv.trashedAt)
+    } else {
+      await saveConversationLocalOnly(conv)
+    }
   }
 
   for (const id of deletedIds) {
@@ -536,8 +576,6 @@ const chatModule: SyncModule<Conversation[]> = {
   name: 'chat',
   getState: getChatState,
   getManifest: getChatManifest,
-  getLastSyncedState: () => getLastSyncedState('chat') as Conversation[] | null,
-  applyState: applyChatState,
   applyIncrementalState: applyIncrementalChatState,
   serialize: serializeChatState,
   deserialize: deserializeChatState,
@@ -559,20 +597,6 @@ async function getTodoManifest(): Promise<{ id: string; updatedAt?: string }[]> 
     ...data.projects.map(p => ({ id: `project:${p.id}`, updatedAt: p.updatedAt })),
     ...data.tasks.map(t => ({ id: `task:${t.id}`, updatedAt: t.updatedAt })),
   ]
-}
-
-async function applyTodoState(state: any[]): Promise<void> {
-  const projects = state
-    .filter((item: any) => item.id?.startsWith('project:'))
-    .map((item: any) => ({ ...item, id: item.id.replace('project:', '') }))
-  const tasks = state
-    .filter((item: any) => item.id?.startsWith('task:'))
-    .map((item: any) => ({ ...item, id: item.id.replace('task:', '') }))
-  const data: TodoData = { version: 1, projects, tasks }
-  await saveTodos(data)
-  const store = useTodoStore()
-  store.projects = projects
-  store.tasks = tasks
 }
 
 async function applyIncrementalTodoState(mergedItems: any[], deletedIds: string[]): Promise<void> {
@@ -613,14 +637,9 @@ const todoModule: SyncModule<any[]> = {
   name: 'todo',
   getState: getTodoState,
   getManifest: getTodoManifest,
-  getLastSyncedState: () => getLastSyncedState('todo') as any[] | null,
-  applyState: applyTodoState,
   applyIncrementalState: applyIncrementalTodoState,
   serialize: (state) => state,
-  deserialize: (raw) => {
-    const items = Array.isArray(raw) ? raw : raw?.items ?? []
-    return items
-  },
+  deserialize: (raw) => Array.isArray(raw) ? raw : [],
 }
 
 // ─── Ebook module ────────────────────────────────────────────────────────────
@@ -670,38 +689,6 @@ async function getEbookManifest(): Promise<{ id: string; updatedAt?: string }[]>
     }
   } catch { /* ignore */ }
   return manifest
-}
-
-async function applyEbookState(state: any[]): Promise<void> {
-  const { useEbookStore } = await import('../stores/ebook')
-  const store = useEbookStore()
-
-  const books = state.filter((i: any) => i.id?.startsWith('book:')).map((i: any) => ({ ...i, id: i.id.replace('book:', '') }))
-  const progressEntries = state.filter((i: any) => i.id?.startsWith('progress:')).map((i: any) => [i.bookId, { ...i, id: i.id.replace('progress:', '') }])
-  const annotations = state.filter((i: any) => i.id?.startsWith('annotation:')).map((i: any) => ({ ...i, id: i.id.replace('annotation:', '') }))
-  const sessions = state.filter((i: any) => i.id?.startsWith('session:')).map((i: any) => ({ ...i, id: i.id.replace('session:', '') }))
-  const collections = state.filter((i: any) => i.id?.startsWith('collection:')).map((i: any) => ({ ...i, id: i.id.replace('collection:', '') }))
-
-  store.books = books
-  store.progress = Object.fromEntries(progressEntries)
-  store.annotations = annotations
-  store.sessions = sessions
-  store.collections = collections
-
-  localStorage.setItem('muse-ebook-books', JSON.stringify(books))
-  localStorage.setItem('muse-ebook-progress', JSON.stringify(Object.fromEntries(progressEntries)))
-  localStorage.setItem('muse-ebook-annotations', JSON.stringify(annotations))
-  localStorage.setItem('muse-ebook-sessions', JSON.stringify(sessions))
-  localStorage.setItem('muse-ebook-collections', JSON.stringify(collections))
-
-  // Apply meta items
-  for (const item of state.filter((i: any) => i.id?.startsWith('meta:'))) {
-    const key = item.key
-    if (key === 'copilotSessions') store.copilotSessions = item.value || []
-    else if (key === 'ttsPlaybackPos') store.ttsPlaybackPos = item.value || {}
-    else if (key === 'ttsSettings') store.ttsSettings = item.value || {}
-    else if (key === 'settings') store.settings = item.value || {}
-  }
 }
 
 async function applyIncrementalEbookState(mergedItems: any[], deletedIds: string[]): Promise<void> {
@@ -795,14 +782,9 @@ const ebookModule: SyncModule<any[]> = {
   name: 'ebook',
   getState: getEbookState,
   getManifest: getEbookManifest,
-  getLastSyncedState: () => getLastSyncedState('ebook') as any[] | null,
-  applyState: applyEbookState,
   applyIncrementalState: applyIncrementalEbookState,
   serialize: (state) => state,
-  deserialize: (raw) => {
-    const items = Array.isArray(raw) ? raw : raw?.items ?? []
-    return items
-  },
+  deserialize: (raw) => Array.isArray(raw) ? raw : [],
 }
 
 // ─── Travel module ───────────────────────────────────────────────────────────
@@ -816,13 +798,6 @@ async function getTravelState(): Promise<TravelNote[]> {
 async function getTravelManifest(): Promise<{ id: string; updatedAt?: string }[]> {
   const metas = await listTravelNotes()
   return metas.map(m => ({ id: m.id, updatedAt: m.updatedAt }))
-}
-
-async function applyTravelState(state: TravelNote[]): Promise<void> {
-  for (const note of state) {
-    await saveTravelNote(note, { sync: false })
-  }
-  useTravelStore().loadList()
 }
 
 async function applyIncrementalTravelState(mergedItems: TravelNote[], deletedIds: string[]): Promise<void> {
@@ -840,14 +815,9 @@ const travelModule: SyncModule<TravelNote[]> = {
   name: 'travel',
   getState: getTravelState,
   getManifest: getTravelManifest,
-  getLastSyncedState: () => getLastSyncedState('travel') as TravelNote[] | null,
-  applyState: applyTravelState,
   applyIncrementalState: applyIncrementalTravelState,
   serialize: (state) => state,
-  deserialize: (raw) => {
-    const items = Array.isArray(raw) ? raw : raw?.items ?? []
-    return items as TravelNote[]
-  },
+  deserialize: (raw) => (Array.isArray(raw) ? raw : []) as TravelNote[],
 }
 
 // ─── Notes module ────────────────────────────────────────────────────────────
@@ -894,22 +864,6 @@ async function getNotesManifest(): Promise<{ id: string; updatedAt?: string; _ve
   ]
 }
 
-async function applyNotesState(state: any[]): Promise<void> {
-  const { saveGroups } = await import('../utils/notesStorage')
-  const groups = state
-    .filter((i: any) => i.id?.startsWith('group:'))
-    .map((i: any) => ({ ...i, id: i.id.replace('group:', '') }))
-  const notes = state
-    .filter((i: any) => i.id?.startsWith('note:'))
-    .map((i: any) => ({ ...i, id: i.id.replace('note:', '') }))
-
-  await saveGroups(groups)
-  for (const note of notes) {
-    await saveNote(note, { sync: false })
-  }
-  useNotesStore().loadList()
-}
-
 async function applyIncrementalNotesState(mergedItems: any[], deletedIds: string[]): Promise<void> {
   const { deleteNoteLocalOnly, loadGroups, saveGroups } = await import('../utils/notesStorage')
   const currentGroups = await loadGroups()
@@ -942,14 +896,9 @@ const notesModule: SyncModule<any[]> = {
   name: 'notes',
   getState: getNotesState,
   getManifest: getNotesManifest,
-  getLastSyncedState: () => getLastSyncedState('notes') as any[] | null,
-  applyState: applyNotesState,
   applyIncrementalState: applyIncrementalNotesState,
   serialize: (state) => state,
-  deserialize: (raw) => {
-    const items = Array.isArray(raw) ? raw : raw?.items ?? []
-    return items
-  },
+  deserialize: (raw) => Array.isArray(raw) ? raw : [],
 }
 
 // ─── Assistants module ───────────────────────────────────────────────────────
@@ -963,15 +912,6 @@ async function getAssistantsManifest(): Promise<{ id: string; updatedAt?: string
   const { listAssistants } = await import('../utils/storage')
   const list = await listAssistants()
   return list.map(a => ({ id: a.id, updatedAt: a.updatedAt }))
-}
-
-async function applyAssistantsState(state: Assistant[]): Promise<void> {
-  const { saveAssistant } = await import('../utils/storage')
-  const { useAssistantsStore } = await import('../stores/assistants')
-  for (const a of state) {
-    await saveAssistant(a)
-  }
-  useAssistantsStore().assistants = state
 }
 
 async function applyIncrementalAssistantsState(mergedItems: Assistant[], deletedIds: string[]): Promise<void> {
@@ -990,14 +930,9 @@ const assistantsModule: SyncModule<Assistant[]> = {
   name: 'assistants',
   getState: getAssistantsState,
   getManifest: getAssistantsManifest,
-  getLastSyncedState: () => getLastSyncedState('assistants') as Assistant[] | null,
-  applyState: applyAssistantsState,
   applyIncrementalState: applyIncrementalAssistantsState,
   serialize: (state) => state,
-  deserialize: (raw) => {
-    const items = Array.isArray(raw) ? raw : raw?.items ?? []
-    return items as Assistant[]
-  },
+  deserialize: (raw) => (Array.isArray(raw) ? raw : []) as Assistant[],
 }
 
 // ─── Registration ────────────────────────────────────────────────────────────

@@ -8,58 +8,11 @@ import { readDir, remove, stat } from '@tauri-apps/plugin-fs'
 import { getDataRoot, setDataRoot, resolveDataRoot, migrateData } from '../../../utils/path'
 import { getTrashRetentionDays, setTrashRetentionDays } from '../../../utils/travelStorage'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
-import { useHomeStore, DEFAULT_PROMPT, FREQUENCY_OPTIONS } from '../../../stores/home'
-import { useAiSettingsStore } from '../../../stores/aiSettings'
 import { useStatisticsStore } from '../../../stores/statistics'
 import { pushGeneralSettings, tryNewSync } from '../../../services/syncManager2'
 
 const { locale, t } = useI18n()
 const statsStore = useStatisticsStore()
-
-// ── Poster wall settings ────────────────────────────────────────────────────
-
-const homeStore = useHomeStore()
-const aiStore   = useAiSettingsStore()
-
-const posterEnabled       = ref(homeStore.settings.enabled)
-const posterProviderId    = ref(homeStore.settings.providerId)
-const posterModelId       = ref(homeStore.settings.modelId)
-const posterFrequency     = ref(homeStore.settings.frequency)
-const posterPrompt        = ref(homeStore.settings.promptTemplate || DEFAULT_PROMPT)
-const posterMaxPosters    = ref(homeStore.settings.maxPosters)
-
-const imageProviders = computed(() =>
-  aiStore.providers.filter(p => p.enabled && p.apiKey && p.models.some(m => m.imageOutput))
-)
-
-const imageModels = computed(() => {
-  const provider = aiStore.providers.find(p => p.id === posterProviderId.value)
-  return provider?.models.filter(m => m.imageOutput) ?? []
-})
-
-function savePosterSettings() {
-  homeStore.updateSettings({
-    enabled:        posterEnabled.value,
-    providerId:     posterProviderId.value,
-    modelId:        posterModelId.value,
-    frequency:      posterFrequency.value,
-    promptTemplate: posterPrompt.value,
-    maxPosters:     posterMaxPosters.value,
-  })
-}
-
-function onPosterProviderChange() {
-  const models = imageModels.value
-  if (models.length > 0 && !models.find(m => m.id === posterModelId.value)) {
-    posterModelId.value = models[0].id
-  }
-  savePosterSettings()
-}
-
-function resetPrompt() {
-  posterPrompt.value = DEFAULT_PROMPT
-  savePosterSettings()
-}
 
 // Trash retention
 const trashRetentionDays = ref<number>(getTrashRetentionDays())
@@ -146,21 +99,6 @@ const oldDirEntries = ref<Array<{ name: string; isDirectory: boolean }>>([])
 const dirSizeBytes  = shallowRef<number | null>(null)
 const dirSizeLoading = ref(false)
 
-// ── AI Model Path (for tools like RemoveBg) ─────────────────────────────────
-const modelPath = ref(localStorage.getItem('muse-tools-model-path') ?? '')
-
-async function chooseModelFolder() {
-  const selected = await open({ directory: true })
-  if (typeof selected === 'string') {
-    modelPath.value = selected
-    localStorage.setItem('muse-tools-model-path', selected)
-  }
-}
-
-function clearModelPath() {
-  modelPath.value = ''
-  localStorage.removeItem('muse-tools-model-path')
-}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024)              return `${bytes} B`
@@ -326,112 +264,6 @@ async function confirmDeleteOld() {
       </div>
     </div>
 
-    <!-- ── Animal Poster Wall ─────────────────────────────────────── -->
-    <div class="section-card">
-      <h2 class="section-title">{{ t('settings.poster.title') }}</h2>
-      <p class="section-desc">{{ t('settings.poster.description') }}</p>
-
-      <!-- Enable toggle -->
-      <div class="toggle-row">
-        <span class="toggle-label">{{ t('settings.poster.enabled') }}</span>
-        <button
-          class="toggle-btn"
-          :class="{ active: posterEnabled }"
-          @click="posterEnabled = !posterEnabled; savePosterSettings()"
-        >
-          <div class="toggle-thumb" />
-        </button>
-      </div>
-
-      <!-- Provider selector -->
-      <div class="form-row">
-        <span class="form-label">{{ t('settings.poster.provider') }}</span>
-        <div class="form-control">
-          <select
-            v-if="imageProviders.length > 0"
-            v-model="posterProviderId"
-            class="select-input"
-            @change="onPosterProviderChange"
-          >
-            <option value="">{{ t('settings.poster.selectProvider') }}</option>
-            <option
-              v-for="p in imageProviders"
-              :key="p.id"
-              :value="p.id"
-            >{{ p.name }}</option>
-          </select>
-          <span v-else class="no-models-hint">{{ t('settings.poster.noImageModels') }}</span>
-        </div>
-      </div>
-
-      <!-- Model selector -->
-      <div v-if="imageModels.length > 0" class="form-row">
-        <span class="form-label">{{ t('settings.poster.model') }}</span>
-        <div class="form-control">
-          <select
-            v-model="posterModelId"
-            class="select-input"
-            @change="savePosterSettings"
-          >
-            <option value="">{{ t('settings.poster.selectModel') }}</option>
-            <option
-              v-for="m in imageModels"
-              :key="m.id"
-              :value="m.id"
-            >{{ m.name }}</option>
-          </select>
-        </div>
-      </div>
-
-      <!-- Frequency -->
-      <div class="form-row">
-        <span class="form-label">{{ t('settings.poster.frequency') }}</span>
-        <div class="freq-options">
-          <button
-            v-for="opt in FREQUENCY_OPTIONS"
-            :key="opt.value"
-            class="freq-btn"
-            :class="{ active: posterFrequency === opt.value }"
-            @click="posterFrequency = opt.value; savePosterSettings()"
-          >
-            {{ locale === 'zh-CN' ? opt.labelZh : opt.labelEn }}
-          </button>
-        </div>
-      </div>
-
-      <!-- Max posters -->
-      <div class="form-row">
-        <span class="form-label">{{ t('settings.poster.maxPosters') }}</span>
-        <div class="form-control number-row">
-          <input
-            v-model.number="posterMaxPosters"
-            type="number"
-            min="5"
-            max="100"
-            class="number-input"
-            @change="savePosterSettings"
-          />
-          <span class="number-unit">{{ t('settings.poster.maxPostersUnit') }}</span>
-        </div>
-      </div>
-
-      <!-- Prompt template -->
-      <div class="prompt-section">
-        <div class="prompt-header">
-          <span class="form-label">{{ t('settings.poster.promptTitle') }}</span>
-          <button class="reset-btn" @click="resetPrompt">重置</button>
-        </div>
-        <p class="section-desc" style="margin-bottom: 6px">{{ t('settings.poster.promptHint') }}</p>
-        <textarea
-          v-model="posterPrompt"
-          class="prompt-textarea"
-          rows="4"
-          @blur="savePosterSettings"
-        />
-      </div>
-
-    </div>
-
     <div class="section-card">
       <h2 class="section-title">{{ t('settings.trash.title') }}</h2>
       <p class="section-desc">{{ t('settings.trash.description') }}</p>
@@ -448,24 +280,14 @@ async function confirmDeleteOld() {
       </div>
     </div>
 
-    <!-- ── AI Model Path ─────────────────────────────────────────── -->
+    <!-- ── AI Model Path (read-only) ────────────────────────────── -->
     <div class="section-card">
       <h2 class="section-title">AI 模型权重路径</h2>
-      <p class="section-desc">所有 AI 功能（如背景消除）的模型文件存放根目录。</p>
-
+      <p class="section-desc">AI 功能（如背景消除）的模型文件默认存放在数据目录下的 <code>models/</code> 子目录中。</p>
       <div class="path-row">
         <div class="path-info">
-          <span class="path-label">当前路径</span>
-          <span class="path-value" :class="{ custom: !!modelPath }">{{ modelPath || '未配置（将使用默认内置模型）' }}</span>
-        </div>
-        <div class="path-actions">
-          <button class="path-btn" @click="chooseModelFolder">
-            <FolderOpen :size="14" />
-            {{ modelPath ? '更改文件夹' : '选择文件夹' }}
-          </button>
-          <button v-if="modelPath" class="path-btn secondary" @click="clearModelPath">
-            重置
-          </button>
+          <span class="path-label">默认路径</span>
+          <span class="path-value">{{ currentPath }}/models</span>
         </div>
       </div>
     </div>
@@ -915,191 +737,6 @@ async function confirmDeleteOld() {
   border-color: rgba(34, 63, 121, 0.25);
   color: #223F79;
 }
-
-/* Poster settings */
-.toggle-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 0;
-}
-
-.toggle-label {
-  font-size: 13px;
-  color: #1c1c1e;
-}
-
-.toggle-btn {
-  width: 44px;
-  height: 26px;
-  border-radius: 13px;
-  border: none;
-  background: rgba(0,0,0,0.12);
-  cursor: pointer;
-  transition: background 0.2s;
-  padding: 3px;
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-.toggle-btn.active {
-  background: #223F79;
-  justify-content: flex-end;
-}
-
-.toggle-thumb {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: white;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-  transition: none;
-}
-
-.form-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.form-label {
-  font-size: 13px;
-  color: #3c3c43;
-  width: 100px;
-  flex-shrink: 0;
-}
-
-.form-control {
-  flex: 1;
-}
-
-.select-input {
-  width: 100%;
-  padding: 7px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(0,0,0,0.12);
-  background: white;
-  font-size: 13px;
-  color: #1c1c1e;
-  cursor: pointer;
-  outline: none;
-}
-
-.select-input:focus {
-  border-color: rgba(34, 63, 121, 0.35);
-}
-
-.no-models-hint {
-  font-size: 12px;
-  color: #ff9500;
-  line-height: 1.4;
-}
-
-.freq-options {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.freq-btn {
-  padding: 5px 12px;
-  border-radius: 8px;
-  border: 1.5px solid transparent;
-  background: rgba(0,0,0,0.04);
-  color: #3c3c43;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.12s;
-}
-
-.freq-btn:hover {
-  background: rgba(0,0,0,0.08);
-}
-
-.freq-btn.active {
-  background: rgba(34, 63, 121, 0.08);
-  border-color: rgba(34, 63, 121, 0.25);
-  color: #223F79;
-}
-
-.number-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.number-input {
-  width: 70px;
-  padding: 6px 8px;
-  border-radius: 8px;
-  border: 1px solid rgba(0,0,0,0.12);
-  background: white;
-  font-size: 13px;
-  color: #1c1c1e;
-  text-align: center;
-  outline: none;
-}
-
-.number-input:focus {
-  border-color: rgba(34, 63, 121, 0.35);
-}
-
-.number-unit {
-  font-size: 13px;
-  color: #8e8e93;
-}
-
-.prompt-section {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.prompt-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.reset-btn {
-  font-size: 12px;
-  color: #8e8e93;
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 5px;
-  transition: color 0.12s, background 0.12s;
-}
-
-.reset-btn:hover {
-  color: #3c3c43;
-  background: rgba(0,0,0,0.05);
-}
-
-.prompt-textarea {
-  width: 100%;
-  padding: 9px 11px;
-  border-radius: 8px;
-  border: 1px solid rgba(0,0,0,0.12);
-  background: white;
-  font-size: 12px;
-  color: #1c1c1e;
-  font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
-  line-height: 1.5;
-  resize: vertical;
-  outline: none;
-  box-sizing: border-box;
-}
-
-.prompt-textarea:focus {
-  border-color: rgba(34, 63, 121, 0.35);
-}
-
-/* ── Animal list ─────────────────────────────────────────────────────────── */
 
 /* ── ArXiv backend ──────────────────────────────────────────────────────────── */
 

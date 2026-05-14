@@ -547,7 +547,13 @@ export const useTodoStore = defineStore('todo', () => {
 
     const c = cfg()
     if (c) {
-      apiCreateTask(c, task).catch(e => {
+      apiCreateTask(c, task).then(created => {
+        if (created.id !== task.id) {
+          const idx = tasks.value.findIndex(t => t.id === task.id)
+          if (idx !== -1) tasks.value[idx] = { ...tasks.value[idx], id: created.id }
+          if (activeTaskId.value === task.id) activeTaskId.value = created.id
+        }
+      }).catch(e => {
         _onApiError(e, `createTask ${task.id}`)
         _enqueuePending({ type: 'createTask', d: { ...task } })
       })
@@ -630,7 +636,13 @@ export const useTodoStore = defineStore('todo', () => {
 
     const c = cfg()
     if (c) {
-      apiCreateProject(c, project).catch(e => {
+      apiCreateProject(c, project).then(created => {
+        if (created.id !== project.id) {
+          const idx = projects.value.findIndex(p => p.id === project.id)
+          if (idx !== -1) projects.value[idx] = { ...projects.value[idx], id: created.id }
+          if (activeFilter.value === project.id) activeFilter.value = created.id
+        }
+      }).catch(e => {
         _onApiError(e, `createProject ${project.id}`)
         _enqueuePending({ type: 'createProject', d: { ...project } })
       })

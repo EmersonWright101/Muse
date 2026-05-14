@@ -3,7 +3,7 @@ import { computed, ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   Search, Plus, Trash2, FileText, ChevronRight,
-  Folder, FolderOpen, GripVertical, RotateCcw, X, Check,
+  Folder, FolderOpen, GripVertical, RotateCcw, X, Check, SlidersHorizontal,
 } from 'lucide-vue-next'
 import { useNotesStore } from '../../stores/notes'
 import { initImageAssetBase, resolveImageUrl } from '../../utils/imageAsset'
@@ -12,29 +12,6 @@ const { t } = useI18n()
 const store = useNotesStore()
 
 initImageAssetBase()
-
-// ─── Pastel tag colors ───────────────────────────────────────────────────────
-
-const PASTELS = [
-  { bg: 'rgba(255,179,186,0.35)', color: '#a93226' },
-  { bg: 'rgba(255,218,185,0.45)', color: '#ba5a00' },
-  { bg: 'rgba(255,240,168,0.50)', color: '#9a7000' },
-  { bg: 'rgba(176,230,198,0.45)', color: '#1a7a45' },
-  { bg: 'rgba(174,214,241,0.45)', color: '#1a5276' },
-  { bg: 'rgba(212,172,242,0.38)', color: '#7048a0' },
-  { bg: 'rgba(248,196,196,0.40)', color: '#b03030' },
-  { bg: 'rgba(163,228,215,0.45)', color: '#0e6655' },
-  { bg: 'rgba(251,210,166,0.45)', color: '#c05a00' },
-  { bg: 'rgba(196,215,248,0.45)', color: '#1f618d' },
-  { bg: 'rgba(220,210,255,0.40)', color: '#6040a0' },
-  { bg: 'rgba(170,235,180,0.45)', color: '#1e7a30' },
-]
-function pastelStyle(str: string) {
-  let h = 0
-  for (const c of str) h = (h * 31 + c.charCodeAt(0)) & 0xFFFF
-  const p = PASTELS[h % PASTELS.length]
-  return { backgroundColor: p.bg, color: p.color }
-}
 
 // ─── Group expansion state ───────────────────────────────────────────────────
 
@@ -52,6 +29,34 @@ function toggleGroup(groupId: string) {
   }
   expandedGroups.value = new Set(expandedGroups.value)
 }
+
+// ─── Filter panel ────────────────────────────────────────────────────────────
+
+const filterOpen = ref(false)
+const filterBtnRef = ref<HTMLButtonElement>()
+
+const hasActiveFilter = computed(() => !!store.selectedTag)
+
+function toggleFilter() {
+  filterOpen.value = !filterOpen.value
+}
+
+function selectTag(tag: string) {
+  store.selectedTag = store.selectedTag === tag ? '' : tag
+}
+
+function clearFilter() {
+  store.selectedTag = ''
+}
+
+function onFilterOutside(e: MouseEvent) {
+  if (!filterOpen.value) return
+  const target = e.target as HTMLElement
+  if (!target.closest('.filter-wrap')) filterOpen.value = false
+}
+
+onMounted(() => document.addEventListener('mousedown', onFilterOutside))
+onUnmounted(() => document.removeEventListener('mousedown', onFilterOutside))
 
 // ─── New group ───────────────────────────────────────────────────────────────
 
@@ -74,6 +79,73 @@ function submitNewGroup() {
 function cancelNewGroup() {
   newGroupName.value = ''
   addingGroup.value = false
+}
+
+// ─── Group context menu (right-click) ────────────────────────────────────────
+
+interface CtxMenu { groupId: string; x: number; y: number }
+const ctxMenu = ref<CtxMenu | null>(null)
+
+function openGroupCtx(e: MouseEvent, groupId: string) {
+  e.preventDefault()
+  e.stopPropagation()
+  ctxMenu.value = { groupId, x: e.clientX, y: e.clientY }
+}
+
+function closeCtxMenu() { ctxMenu.value = null }
+
+function onCtxOutside(e: MouseEvent) {
+  if (ctxMenu.value && !(e.target as HTMLElement).closest('.group-ctx-menu')) closeCtxMenu()
+}
+
+onMounted(() => document.addEventListener('mousedown', onCtxOutside))
+onUnmounted(() => document.removeEventListener('mousedown', onCtxOutside))
+
+// ─── Ungrouped custom display name (persisted in localStorage) ───────────────
+
+const LS_UNGROUPED_NAME = 'muse-notes-ungrouped-name'
+const ungroupedDisplayName = ref(localStorage.getItem(LS_UNGROUPED_NAME) || '')
+
+function getGroupDisplayName(groupId: string, fallback: string): string {
+  if (groupId === '__ungrouped__') return ungroupedDisplayName.value || t('notes.ungrouped')
+  return fallback
+}
+
+// ─── Group rename (inline input) ─────────────────────────────────────────────
+
+const renamingGroupId = ref<string | null>(null)
+const renameValue = ref('')
+const renameInputRef = ref<HTMLInputElement>()
+
+function startRenameGroup(groupId: string, currentName: string) {
+  closeCtxMenu()
+  renamingGroupId.value = groupId
+  renameValue.value = currentName
+  nextTick(() => { renameInputRef.value?.focus(); renameInputRef.value?.select() })
+}
+
+async function submitRenameGroup() {
+  const name = renameValue.value.trim()
+  if (name && renamingGroupId.value) {
+    if (renamingGroupId.value === '__ungrouped__') {
+      ungroupedDisplayName.value = name
+      localStorage.setItem(LS_UNGROUPED_NAME, name)
+    } else {
+      await store.renameGroup(renamingGroupId.value, name)
+    }
+  }
+  renamingGroupId.value = null
+  renameValue.value = ''
+}
+
+function cancelRenameGroup() {
+  renamingGroupId.value = null
+  renameValue.value = ''
+}
+
+async function deleteGroupFromCtx(groupId: string) {
+  closeCtxMenu()
+  await store.deleteGroup(groupId)
 }
 
 // ─── Grouped notes ───────────────────────────────────────────────────────────
@@ -101,8 +173,7 @@ function onNewNote() {
   store.newNote()
 }
 
-function onDeleteNote(e: MouseEvent, id: string) {
-  e.stopPropagation()
+function onDeleteNote(id: string) {
   store.deleteOne(id)
 }
 
@@ -124,52 +195,113 @@ async function onClearAllTrash() {
   }
 }
 
-// ─── Drag and drop ───────────────────────────────────────────────────────────
+// ─── Mouse-based drag (avoids macOS native drag API and the "+" copy badge) ───
 
-const dragOverGroupId = ref<string>('__none__')
+interface DragState {
+  noteId: string
+  startX: number
+  startY: number
+  active: boolean
+  ghostX: number
+  ghostY: number
+  overGroupId: string
+}
 
-function onDragStart(e: DragEvent, noteId: string) {
-  if (e.dataTransfer) {
-    e.dataTransfer.setData('text/plain', noteId)
-    e.dataTransfer.effectAllowed = 'move'
+const drag = ref<DragState | null>(null)
+const dragOverGroupId = computed(() => drag.value?.active ? drag.value.overGroupId : '__none__')
+
+function startDrag(e: MouseEvent, noteId: string) {
+  e.preventDefault() // prevent text selection; does not block click event
+  document.body.style.userSelect = 'none'
+  drag.value = { noteId, startX: e.clientX, startY: e.clientY, active: false, ghostX: e.clientX, ghostY: e.clientY, overGroupId: '' }
+  document.addEventListener('mousemove', onDragMove)
+  document.addEventListener('mouseup', onDragEnd)
+}
+
+function noteIcon(note: { cover?: string }): string {
+  const c = note.cover ?? ''
+  return (c && !c.startsWith('http') && !c.includes('.')) ? c : '📝'
+}
+
+function onDragMove(e: MouseEvent) {
+  if (!drag.value) return
+  const dx = e.clientX - drag.value.startX
+  const dy = e.clientY - drag.value.startY
+  if (!drag.value.active && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) {
+    drag.value.active = true
+    document.body.style.cursor = 'grabbing'
+  }
+  if (drag.value.active) {
+    drag.value.ghostX = e.clientX
+    drag.value.ghostY = e.clientY
+    const el = document.elementFromPoint(e.clientX, e.clientY)
+    const section = el?.closest('[data-group-id]') as HTMLElement | null
+    drag.value.overGroupId = section?.dataset.groupId ?? ''
   }
 }
 
-function onDragOver(e: DragEvent, groupId: string) {
-  e.preventDefault()
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-  dragOverGroupId.value = groupId || '__ungrouped__'
+function onDragEnd() {
+  document.removeEventListener('mousemove', onDragMove)
+  document.removeEventListener('mouseup', onDragEnd)
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+  const d = drag.value
+  drag.value = null
+  if (!d) return
+  if (d.active && d.overGroupId !== '') {
+    // Completed a drag-to-group
+    const rawId = d.overGroupId === '__ungrouped__' ? '' : d.overGroupId
+    store.moveNoteToGroup(d.noteId, rawId)
+  } else if (!d.active) {
+    // No movement — treat as a click to open the note
+    onNoteClick(d.noteId)
+  }
 }
 
-
-function onDragLeave() {
-  dragOverGroupId.value = '__none__'
-}
-
-function onDrop(e: DragEvent, groupId: string) {
-  e.preventDefault()
-  dragOverGroupId.value = '__none__'
-  const noteId = e.dataTransfer?.getData('text/plain')
-  if (!noteId) return
-  store.moveNoteToGroup(noteId, groupId)
-}
-
-// ─── Click outside for any pickers ───────────────────────────────────────────
-
-function handlePickerOutside(_e: MouseEvent) {
-  // no-op placeholder for future pickers
-}
-
-onMounted(() => document.addEventListener('mousedown', handlePickerOutside))
-onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside))
 </script>
 
 <template>
-  <div class="notes-sidebar">
+  <div class="notes-sidebar" @contextmenu.prevent>
     <!-- Header -->
     <div class="panel-header">
       <div class="header-title">{{ t('notes.title') }}</div>
       <div class="header-actions">
+        <!-- Filter button -->
+        <div class="filter-wrap">
+          <button
+            ref="filterBtnRef"
+            class="icon-btn filter-btn"
+            :class="{ active: hasActiveFilter }"
+            :title="t('notes.tagFilter')"
+            @click="toggleFilter"
+          >
+            <SlidersHorizontal :size="13" />
+            <span v-if="hasActiveFilter" class="filter-dot" />
+          </button>
+          <div v-if="filterOpen" class="filter-panel">
+            <div class="filter-panel-header">
+              <span class="filter-panel-title">{{ t('notes.tagFilter') }}</span>
+              <button v-if="hasActiveFilter" class="filter-clear-btn" @click="clearFilter">
+                <X :size="10" /> {{ t('common.cancel') || 'Clear' }}
+              </button>
+            </div>
+            <div v-if="store.allTags.length === 0" class="filter-empty">
+              {{ t('notes.noNotes') || 'No tags yet' }}
+            </div>
+            <div v-else class="filter-tags">
+              <button
+                v-for="tag in store.allTags"
+                :key="tag"
+                class="filter-tag-chip"
+                :class="{ selected: store.selectedTag === tag }"
+                @click="selectTag(tag)"
+              >
+                #{{ tag }}
+              </button>
+            </div>
+          </div>
+        </div>
+
         <button class="icon-btn" :title="t('notes.newGroup')" @click="startAddGroup">
           <Folder :size="14" />
         </button>
@@ -229,11 +361,19 @@ onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside)
         <div
           class="group-section"
           :class="{ 'drag-over': dragOverGroupId === '__ungrouped__' }"
-          @dragover="onDragOver($event, '')"
-          @dragleave="onDragLeave"
-          @drop="onDrop($event, '')"
+          data-group-id="__ungrouped__"
         >
-          <button class="group-header" @click="toggleGroup('__ungrouped__')">
+          <div v-if="renamingGroupId === '__ungrouped__'" class="group-rename-wrap">
+            <input
+              ref="renameInputRef"
+              v-model="renameValue"
+              class="group-rename-input"
+              @keydown.enter.prevent="submitRenameGroup"
+              @keydown.esc="cancelRenameGroup"
+              @blur="submitRenameGroup"
+            />
+          </div>
+          <button v-else class="group-header" @click="toggleGroup('__ungrouped__')" @contextmenu.prevent="openGroupCtx($event, '__ungrouped__')">
             <ChevronRight
               :size="11"
               class="group-chevron"
@@ -241,7 +381,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside)
             />
             <FolderOpen v-if="isGroupExpanded('__ungrouped__')" :size="13" class="group-icon" />
             <Folder v-else :size="13" class="group-icon" />
-            <span class="group-name">{{ t('notes.ungrouped') }}</span>
+            <span class="group-name">{{ getGroupDisplayName('__ungrouped__', '') }}</span>
             <span class="group-count">{{ ungroupedNotes.length }}</span>
           </button>
           <div v-if="isGroupExpanded('__ungrouped__')" class="group-notes">
@@ -250,35 +390,14 @@ onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside)
               :key="note.id"
               class="list-item"
               :class="{ active: store.activeNoteId === note.id }"
-              draggable="true"
-              @click="onNoteClick(note.id)"
-              @dragstart="onDragStart($event, note.id)"
+              @mousedown="startDrag($event, note.id)"
+              @contextmenu.prevent
             >
-              <GripVertical :size="12" class="drag-handle" />
-              <div class="item-content">
-                <div class="item-title-row">
-                  <div class="item-title">{{ note.title }}</div>
-                  <button
-                    class="delete-btn"
-                    :title="t('common.delete')"
-                    @click="onDeleteNote($event, note.id)"
-                  >
-                    <Trash2 :size="12" />
-                  </button>
-                </div>
-                <div class="item-preview-text">{{ note.preview || '' }}</div>
-                <div class="item-meta-row">
-                  <div class="item-tags-left">
-                    <span
-                      v-for="tag in (note.tags ?? []).slice(0, 2)"
-                      :key="tag"
-                      class="item-tag"
-                      :style="pastelStyle(tag)"
-                    >#{{ tag }}</span>
-                  </div>
-                  <span class="item-date">{{ note.date }}</span>
-                </div>
-              </div>
+              <span class="note-icon">{{ noteIcon(note) }}</span>
+              <span class="item-title">{{ note.title || t('notes.titlePlaceholder') }}</span>
+              <button class="delete-btn" :title="t('common.delete')" @mousedown.stop @click.stop="onDeleteNote(note.id)">
+                <Trash2 :size="11" />
+              </button>
             </div>
           </div>
         </div>
@@ -289,11 +408,20 @@ onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside)
           :key="group.id"
           class="group-section"
           :class="{ 'drag-over': dragOverGroupId === group.id }"
-          @dragover="onDragOver($event, group.id)"
-          @dragleave="onDragLeave"
-          @drop="onDrop($event, group.id)"
+          :data-group-id="group.id"
         >
-          <button class="group-header" @click="toggleGroup(group.id)">
+          <!-- Rename input (shown when renaming) -->
+          <div v-if="renamingGroupId === group.id" class="group-rename-wrap">
+            <input
+              ref="renameInputRef"
+              v-model="renameValue"
+              class="group-rename-input"
+              @keydown.enter.prevent="submitRenameGroup"
+              @keydown.esc="cancelRenameGroup"
+              @blur="submitRenameGroup"
+            />
+          </div>
+          <button v-else class="group-header" @click="toggleGroup(group.id)" @contextmenu.prevent="openGroupCtx($event, group.id)">
             <ChevronRight
               :size="11"
               class="group-chevron"
@@ -310,35 +438,14 @@ onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside)
               :key="note.id"
               class="list-item"
               :class="{ active: store.activeNoteId === note.id }"
-              draggable="true"
-              @click="onNoteClick(note.id)"
-              @dragstart="onDragStart($event, note.id)"
+              @mousedown="startDrag($event, note.id)"
+              @contextmenu.prevent
             >
-              <GripVertical :size="12" class="drag-handle" />
-              <div class="item-content">
-                <div class="item-title-row">
-                  <div class="item-title">{{ note.title }}</div>
-                  <button
-                    class="delete-btn"
-                    :title="t('common.delete')"
-                    @click="onDeleteNote($event, note.id)"
-                  >
-                    <Trash2 :size="12" />
-                  </button>
-                </div>
-                <div class="item-preview-text">{{ note.preview || '' }}</div>
-                <div class="item-meta-row">
-                  <div class="item-tags-left">
-                    <span
-                      v-for="tag in (note.tags ?? []).slice(0, 2)"
-                      :key="tag"
-                      class="item-tag"
-                      :style="pastelStyle(tag)"
-                    >#{{ tag }}</span>
-                  </div>
-                  <span class="item-date">{{ note.date }}</span>
-                </div>
-              </div>
+              <span class="note-icon">{{ noteIcon(note) }}</span>
+              <span class="item-title">{{ note.title || t('notes.titlePlaceholder') }}</span>
+              <button class="delete-btn" :title="t('common.delete')" @mousedown.stop @click.stop="onDeleteNote(note.id)">
+                <Trash2 :size="11" />
+              </button>
             </div>
           </div>
         </div>
@@ -377,7 +484,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside)
           <div class="trash-item-info">
             <div class="trash-item-title">{{ item.title }}</div>
             <div class="trash-item-meta">
-              <span>{{ t('notes.recentlyDeleted.deletedOn') }} {{ item.updatedAt.slice(0, 10) }}</span>
+              <span>{{ t('notes.recentlyDeleted.deletedOn') }} {{ item.deletedAt.slice(0, 10) }}</span>
             </div>
           </div>
           <div class="trash-item-actions">
@@ -400,6 +507,37 @@ onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside)
       </div>
     </div>
   </div>
+
+  <!-- Drag ghost (mouse-based drag) -->
+  <Teleport to="body">
+    <div
+      v-if="drag?.active"
+      class="notes-drag-ghost"
+      :style="{ transform: `translate(${drag.ghostX + 14}px, ${drag.ghostY - 14}px)` }"
+    >
+      <GripVertical :size="11" />
+      <span>移动笔记</span>
+    </div>
+  </Teleport>
+
+  <!-- Group context menu -->
+  <Teleport to="body">
+    <div
+      v-if="ctxMenu"
+      class="group-ctx-menu"
+      :style="{ left: `${ctxMenu.x}px`, top: `${ctxMenu.y}px` }"
+    >
+      <button class="ctx-item" @click="startRenameGroup(ctxMenu!.groupId, ctxMenu!.groupId === '__ungrouped__' ? getGroupDisplayName('__ungrouped__', '') : (store.groups.find(g => g.id === ctxMenu!.groupId)?.name ?? ''))">
+        重命名
+      </button>
+      <template v-if="ctxMenu!.groupId !== '__ungrouped__'">
+        <div class="ctx-sep" />
+        <button class="ctx-item ctx-item--danger" @click="deleteGroupFromCtx(ctxMenu!.groupId)">
+          删除分组
+        </button>
+      </template>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -415,6 +553,8 @@ onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside)
   border-radius: 24px;
   overflow: hidden;
   box-shadow: 0 2px 16px rgba(0, 0, 0, 0.10), 0 0 0 0.5px rgba(255, 255, 255, 0.6) inset;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .panel-header {
@@ -608,13 +748,15 @@ onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside)
 /* ─── Note items ──────────────────────────────────────────────────────────── */
 
 .list-item {
-  padding: 8px 10px;
+  padding: 6px 10px;
   border-radius: 8px;
   cursor: pointer;
   display: flex;
   gap: 6px;
-  align-items: flex-start;
+  align-items: center;
   transition: background 0.12s;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .list-item:hover {
@@ -625,28 +767,12 @@ onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside)
   background: rgba(34, 63, 121, 0.10);
 }
 
-.drag-handle {
-  color: #c7c7cc;
+.note-icon {
   flex-shrink: 0;
-  margin-top: 2px;
-  cursor: grab;
-}
-
-.drag-handle:active {
-  cursor: grabbing;
-}
-
-.item-content {
-  min-width: 0;
-  flex: 1;
-}
-
-.item-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  margin-bottom: 3px;
+  font-size: 14px;
+  line-height: 1;
+  width: 18px;
+  text-align: center;
 }
 
 .item-title {
@@ -689,42 +815,6 @@ onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside)
   color: #ff3b30;
 }
 
-.item-preview-text {
-  font-size: 11px;
-  color: #8e8e93;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-bottom: 4px;
-  display: block;
-}
-
-.item-meta-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  justify-content: space-between;
-}
-
-.item-tags-left {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  flex-shrink: 0;
-}
-
-.item-tag {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 4px;
-}
-
-.item-date {
-  font-size: 10px;
-  color: #aeaeb2;
-  flex-shrink: 0;
-}
 
 /* Empty state */
 .empty-state {
@@ -953,5 +1043,218 @@ onUnmounted(() => document.removeEventListener('mousedown', handlePickerOutside)
 .perm-delete-btn:hover {
   background: rgba(255, 59, 48, 0.10);
   color: #ff3b30;
+}
+
+/* ─── Filter ──────────────────────────────────────────────────────────────── */
+
+.filter-wrap {
+  position: relative;
+}
+
+.filter-btn {
+  position: relative;
+}
+
+.filter-btn.active {
+  color: #223F79;
+  background: rgba(34, 63, 121, 0.09);
+}
+
+.filter-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #223F79;
+  pointer-events: none;
+}
+
+.filter-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 100;
+  min-width: 160px;
+  max-width: 220px;
+  background: rgba(252, 252, 254, 0.98);
+  border: 1px solid rgba(0, 0, 0, 0.09);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.13), 0 2px 8px rgba(0, 0, 0, 0.06);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 4px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.filter-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #3c3c43;
+  letter-spacing: 0.02em;
+}
+
+.filter-clear-btn {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  color: #ff3b30;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 4px;
+  transition: background 0.1s;
+}
+
+.filter-clear-btn:hover {
+  background: rgba(255, 59, 48, 0.08);
+}
+
+.filter-empty {
+  font-size: 11px;
+  color: #aeaeb2;
+  text-align: center;
+  padding: 8px 4px;
+}
+
+.filter-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 2px 0;
+}
+
+.filter-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.03);
+  color: #3c3c43;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+
+.filter-tag-chip:hover {
+  background: rgba(34, 63, 121, 0.07);
+  border-color: rgba(34, 63, 121, 0.18);
+  color: #223F79;
+}
+
+.filter-tag-chip.selected {
+  background: rgba(34, 63, 121, 0.10);
+  border-color: rgba(34, 63, 121, 0.28);
+  color: #223F79;
+  font-weight: 600;
+}
+
+/* ─── Group rename ────────────────────────────────────────────────────────── */
+
+.group-rename-wrap {
+  padding: 4px 8px;
+}
+
+.group-rename-input {
+  width: 100%;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(34, 63, 121, 0.35);
+  background: white;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1c1c1e;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.group-rename-input:focus {
+  border-color: rgba(34, 63, 121, 0.55);
+  box-shadow: 0 0 0 2px rgba(34, 63, 121, 0.10);
+}
+</style>
+
+<style>
+/* Drag ghost — outside scoped so Teleport can reach it */
+.notes-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  background: rgba(34, 63, 121, 0.90);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 500;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+  white-space: nowrap;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Group context menu */
+.group-ctx-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 140px;
+  background: rgba(252, 252, 254, 0.98);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.15), 0 2px 8px rgba(0, 0, 0, 0.08);
+  padding: 4px;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.ctx-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 12px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: #1c1c1e;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.10s;
+  font-family: inherit;
+}
+
+.ctx-item:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.ctx-item--danger {
+  color: #ff3b30;
+}
+
+.ctx-item--danger:hover {
+  background: rgba(255, 59, 48, 0.08);
+}
+
+.ctx-sep {
+  height: 1px;
+  background: rgba(0, 0, 0, 0.07);
+  margin: 3px 4px;
 }
 </style>

@@ -131,7 +131,17 @@ function stringifyFrontmatter(note: NoteItem): string {
 
 function buildPreview(body: string): string {
   const firstLine = body.split('\n').find(l => l.trim()) ?? ''
-  return firstLine.slice(0, 80).trim()
+  return firstLine
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+    .replace(/~~(.+?)~~/g, '$1')
+    .replace(/^>\s+/, '')
+    .replace(/^[-*+]\s+/, '')
+    .replace(/^\d+\.\s+/, '')
+    .slice(0, 100)
+    .trim()
 }
 
 const LS_DELETED_NOTES_KEY = 'muse-deleted-notes'
@@ -441,18 +451,20 @@ async function trashDir(): Promise<string> {
 
 async function ensureTrashDir(): Promise<void> {
   const d = await trashDir()
-  // Migrate from old hidden .trash directory (Tauri scope doesn't allow hidden dirs)
-  const legacy = `${(await notesDir())}/.trash`
-  if (await exists(legacy)) {
-    await mkdir(d, { recursive: true })
-    const entries = await readDir(legacy)
-    for (const e of entries) {
-      if (e.name) {
-        try { await rename(`${legacy}/${e.name}`, `${d}/${e.name}`) } catch { /* skip */ }
+  // Migrate from old hidden .trash directory (Tauri scope doesn't allow hidden dirs on some systems)
+  try {
+    const legacy = `${(await notesDir())}/.trash`
+    if (await exists(legacy)) {
+      await mkdir(d, { recursive: true })
+      const entries = await readDir(legacy)
+      for (const e of entries) {
+        if (e.name) {
+          try { await rename(`${legacy}/${e.name}`, `${d}/${e.name}`) } catch { /* skip */ }
+        }
       }
+      try { await remove(legacy) } catch { /* skip */ }
     }
-    try { await remove(legacy) } catch { /* skip */ }
-  }
+  } catch { /* hidden path not allowed in Tauri scope — skip migration */ }
   if (!(await exists(d))) await mkdir(d, { recursive: true })
 }
 
@@ -513,7 +525,7 @@ export async function listTrashItems(): Promise<NoteTrashMeta[]> {
     } catch { /* skip malformed */ }
   }
 
-  return items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  return items.sort((a, b) => b.deletedAt.localeCompare(a.deletedAt))
 }
 
 /** Restore a note from trash back to the notes folder. Removes its tombstone. */

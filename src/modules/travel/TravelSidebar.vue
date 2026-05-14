@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Search, Plus, Star, FileText, ChevronDown, MapPin, Trash2, LayoutList, Paperclip, Tag, ChevronRight, RotateCcw } from 'lucide-vue-next'
+import { Search, Plus, Star, FileText, ChevronDown, MapPin, Trash2, NotebookPen, Paperclip, Tag, ChevronRight, RotateCcw } from 'lucide-vue-next'
 import { useTravelStore } from '../../stores/travel'
 import { initImageAssetBase, resolveImageUrl } from '../../utils/imageAsset'
 import { getTrashRetentionDays } from '../../utils/travelStorage'
@@ -212,7 +212,7 @@ function keepAllAttachments() {
           @click="store.viewMode = store.viewMode === 'editor' ? 'map' : 'editor'"
         >
           <MapPin v-if="store.viewMode === 'editor'" :size="15" />
-          <LayoutList v-else :size="15" />
+          <NotebookPen v-else :size="15" />
         </button>
         <button class="icon-btn" :title="t('travel.newEntry')" @click="onNewEntry">
           <Plus :size="15" />

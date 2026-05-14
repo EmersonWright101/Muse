@@ -17,7 +17,7 @@ export interface CopilotDailyStat {
 }
 
 async function getCopilotStatsPath(): Promise<string> {
-  return `${await resolveDataRoot()}/copilot-stats.json`
+  return `${await resolveDataRoot()}/notes-copilot-stats.json`
 }
 
 async function loadCopilotStats(): Promise<Record<string, CopilotDailyStat>> {
@@ -55,7 +55,7 @@ export const useNotesCopilotStore = defineStore('notesCopilot', () => {
         providerId.value      = s.providerId       ?? ''
         modelId.value         = s.modelId          ?? ''
         completionWords.value = s.completionWords  ?? 10
-        triggerDelay.value    = s.triggerDelay     ?? 1000
+        triggerDelay.value    = s.triggerDelay     ?? 600
         contextChars.value    = s.contextChars     ?? 2000
       }
     } catch { /* ignore */ }

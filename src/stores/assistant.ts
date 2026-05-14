@@ -90,10 +90,13 @@ export const useAssistantStore = defineStore('assistant', () => {
   const previewTrashedConv = ref<AssistantConversation | null>(null)
 
   // Papers view mode (shared between sidebar & main)
-  const papersViewMode = ref<'papers' | 'chat'>('papers')
+  const papersViewMode = ref<'papers' | 'chat' | 'summary'>('papers')
 
   // Active paper for sidebar → main scroll sync
   const activePaperId = ref<string | null>(null)
+
+  // Active summary report
+  const activeReportId = ref<string | null>(null)
 
   const conversations = computed(() =>
     [..._conversations.value].sort((a, b) => {
@@ -462,6 +465,7 @@ export const useAssistantStore = defineStore('assistant', () => {
     previewTrashedConv,
     papersViewMode,
     activePaperId,
+    activeReportId,
     newConversation,
     openConversation,
     renameConversation,

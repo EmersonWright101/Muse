@@ -113,6 +113,7 @@ export interface Conversation {
   titleGenerated?:     boolean;
   defaultProviderId?:  string;
   defaultModelId?:     string;
+  trashedAt?:          string;
 }
 
 export interface ConversationMeta {
@@ -452,6 +453,44 @@ export async function trashConversation(
   if (opts.sync !== false) {
     trashConvOnServer(id, deletedAt, expiryAt).catch((err) => { console.error('[Storage] Failed to trash conversation on server:', err); });
   }
+}
+
+export async function saveConversationToTrashLocalOnly(conv: Conversation, deletedAt: string): Promise<void> {
+  await ensureTrashDir();
+  const trashPath = `${await trashDir()}/${conv.id}.json`;
+  const convPath  = `${await convDir()}/${conv.id}.json`;
+
+  await atomicWriteTextFile(trashPath, JSON.stringify(conv, null, 2));
+
+  if (await exists(convPath)) {
+    try { await remove(convPath); } catch { /* ignore */ }
+    await indexMutex.run(async () => {
+      const index = await readIndex();
+      await writeIndex(index.filter(m => m.id !== conv.id));
+    });
+  }
+
+  await trashIndexMutex.run(async () => {
+    const trashIndex = await readTrashIndex();
+    if (trashIndex.some(m => m.id === conv.id)) return;
+    const lastMsg = conv.messages.filter(m => m.role !== 'system').at(-1);
+    const meta: TrashedConversationMeta = {
+      id:          conv.id,
+      title:       conv.title,
+      createdAt:   conv.createdAt,
+      updatedAt:   conv.updatedAt,
+      preview:     lastMsg ? lastMsg.content.slice(0, 80).replace(/\n/g, ' ') : '',
+      model:       conv.model,
+      providerId:  conv.providerId,
+      pinned:      conv.pinned,
+      assistantId: conv.assistantId,
+      deletedAt,
+    };
+    trashIndex.unshift(meta);
+    await writeTrashIndex(trashIndex);
+  });
+
+  localStorage.setItem('muse-ts-conversations', new Date().toISOString());
 }
 
 export async function listTrashedConversations(): Promise<TrashedConversationMeta[]> {

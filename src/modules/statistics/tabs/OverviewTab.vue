@@ -218,67 +218,60 @@ const maxRankValue = computed(() => {
 })
 
 /* ─── Heatmap ───────────────────────────────────────────────── */
-const weeks = computed(() => {
+const HM_MONTHS = 6
+
+interface HmCell {
+  date: string
+  tokens: number
+  level: number
+}
+
+interface HmMonth {
+  label: string
+  days: (HmCell | null)[]
+}
+
+const hmMonths = computed<HmMonth[]>(() => {
   const all = stats.dailyStatsAll
   if (!all.length) return []
   const map = new Map<string, number>()
   for (const d of all) map.set(d.date, d.totalTokens)
-  const now = new Date()
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const firstDate = new Date(all[0].date + 'T00:00:00')
-  const startSunday = new Date(firstDate)
-  startSunday.setDate(startSunday.getDate() - startSunday.getDay())
 
-  const weeksArr: { days: { date: string; tokens: number; level: number }[] }[] = []
-  let currentWeek: { date: string; tokens: number; level: number }[] = []
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const rows: HmMonth[] = []
 
-  for (let d = new Date(startSunday); d < firstDate; d.setDate(d.getDate() + 1)) {
-    currentWeek.push({ date: d.toISOString().slice(0, 10), tokens: 0, level: 0 })
-  }
+  for (let m = 0; m < HM_MONTHS; m++) {
+    const monthDate = new Date(today.getFullYear(), today.getMonth() - (HM_MONTHS - 1 - m), 1)
+    const year = monthDate.getFullYear()
+    const month = monthDate.getMonth()
+    const label = monthDate.toLocaleDateString('zh-CN', { month: 'short' })
 
-  for (let d = new Date(firstDate); d <= today; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().slice(0, 10)
-    const tokens = map.get(dateStr) || 0
-    const level = tokens === 0 ? 0 : tokens < 1000 ? 1 : tokens < 10000 ? 2 : tokens < 100000 ? 3 : 4
-    currentWeek.push({ date: dateStr, tokens, level })
-    if (d.getDay() === 6) {
-      weeksArr.push({ days: currentWeek })
-      currentWeek = []
+    const daysInMonth = new Date(year, month + 1, 0).getDate()
+    const firstDay = new Date(year, month, 1).getDay() // 0=Sun
+
+    const days: (HmCell | null)[] = []
+    // Pad leading empty cells (Monday-first)
+    const mondayFirst = firstDay === 0 ? 6 : firstDay - 1
+    for (let i = 0; i < mondayFirst; i++) days.push(null)
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = new Date(year, month, d)
+      const key = date.toISOString().slice(0, 10)
+      const tokens = map.get(key) || 0
+      const level = tokens === 0 ? 0 : tokens < 1000 ? 1 : tokens < 10000 ? 2 : tokens < 100000 ? 3 : 4
+      days.push({ date: key, tokens, level })
     }
-  }
 
-  if (currentWeek.length > 0) {
-    const lastDay = currentWeek[currentWeek.length - 1]
-    const d = new Date(lastDay.date + 'T00:00:00')
-    while (d.getDay() !== 6) {
-      d.setDate(d.getDate() + 1)
-      currentWeek.push({ date: d.toISOString().slice(0, 10), tokens: 0, level: 0 })
-    }
-    weeksArr.push({ days: currentWeek })
+    // Pad trailing to fill complete weeks
+    while (days.length % 7 !== 0) days.push(null)
+
+    rows.push({ label, days })
   }
-  return weeksArr
+  return rows
 })
 
-const dayLabels = ['日', '一', '二', '三', '四', '五', '六']
-
-/* Month label per week-column: show month name at the first week a new month appears */
-const monthColLabels = computed(() => {
-  const seen = new Set<string>()
-  return weeks.value.map((w) => {
-    const firstOfMonth = w.days.find(d => d.date.slice(8) === '01')
-    if (firstOfMonth) {
-      const key = firstOfMonth.date.slice(0, 7)
-      if (!seen.has(key)) { seen.add(key); return `${+firstOfMonth.date.slice(5, 7)}月` }
-    }
-    // Fallback: show month of the first real day in the week if it's a new month
-    const firstReal = w.days.find(d => d.tokens >= 0 && d.date)
-    if (firstReal) {
-      const key = firstReal.date.slice(0, 7)
-      if (!seen.has(key)) { seen.add(key); return `${+firstReal.date.slice(5, 7)}月` }
-    }
-    return ''
-  })
-})
+const hmDayLabels = ['一', '二', '三', '四', '五', '六', '日']
 </script>
 
 <template>
@@ -392,37 +385,31 @@ const monthColLabels = computed(() => {
             </div>
           </div>
 
-          <!-- Activity heatmap (GitHub style: weeks = columns, days = rows) -->
+          <!-- Activity heatmap (calendar style: month rows, horizontal day grid) -->
           <div class="dash-section heatmap-section">
             <div class="dash-section-title" style="margin-bottom: 12px;">活动热力图</div>
             <div class="heatmap-wrap">
-              <!-- Month labels row (one per week-column) -->
-              <div class="heatmap-months-row">
-                <div class="heatmap-day-spacer"></div>
-                <div class="heatmap-month-labels">
-                  <span
-                    v-for="(label, wi) in monthColLabels"
-                    :key="wi"
-                    class="heatmap-month-col"
-                  >{{ label }}</span>
-                </div>
-              </div>
-              <!-- Grid: 7 day-rows × n-week columns -->
-              <div class="heatmap-main">
-                <div class="heatmap-day-labels">
-                  <span v-for="dl in dayLabels" :key="dl" class="heatmap-day-label">{{ dl }}</span>
-                </div>
-                <div class="heatmap-grid-github">
-                  <div v-for="di in 7" :key="di" class="heatmap-row-github">
+              <div class="calendar-rows">
+                <div v-for="(row, ri) in hmMonths" :key="ri" class="cal-month">
+                  <div class="cal-label">{{ row.label }}</div>
+                  <div class="cal-day-header">
+                    <span v-for="d in hmDayLabels" :key="d" class="cal-day-name">{{ d }}</span>
+                  </div>
+                  <div class="cal-grid">
                     <div
-                      v-for="(w, wi) in weeks"
-                      :key="wi"
-                      class="heatmap-cell"
-                      :class="`level-${w.days[di - 1]?.level ?? 0}`"
-                      :title="`${w.days[di - 1]?.date ?? ''}: ${(w.days[di - 1]?.tokens ?? 0).toLocaleString()} tokens`"
+                      v-for="(cell, ci) in row.days"
+                      :key="ci"
+                      class="cal-cell"
+                      :class="cell ? `level-${cell.level}` : 'cal-empty'"
+                      :title="cell ? `${cell.date}: ${cell.tokens.toLocaleString()} tokens` : ''"
                     />
                   </div>
                 </div>
+              </div>
+              <div class="heatmap-legend">
+                <span class="legend-label">少</span>
+                <div v-for="l in [0,1,2,3,4]" :key="l" class="hm-cell" :class="`level-${l}`" />
+                <span class="legend-label">多</span>
               </div>
             </div>
           </div>
@@ -937,7 +924,7 @@ const monthColLabels = computed(() => {
   color: #8e8e93;
 }
 
-/* ─── Heatmap (GitHub style: weeks = columns, days = rows) ─── */
+/* ─── Heatmap (calendar style: month rows, horizontal day grid) ─── */
 .heatmap-section {
   min-height: 200px;
   display: flex;
@@ -947,92 +934,94 @@ const monthColLabels = computed(() => {
 .heatmap-wrap {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  overflow-x: auto;
-  padding-bottom: 4px;
+  gap: 14px;
   flex: 1;
+  justify-content: center;
 }
 
-.heatmap-months-row {
+.calendar-rows {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  width: 100%;
+}
+
+.cal-month {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 
-.heatmap-day-spacer {
-  width: 20px;
-  flex-shrink: 0;
-}
-
-.heatmap-month-labels {
-  display: flex;
-  gap: 3px;
-}
-
-.heatmap-month-col {
-  width: 14px;
-  font-size: 10px;
+.cal-label {
+  font-size: 13px;
   color: #8e8e93;
   text-align: center;
-  white-space: nowrap;
-  overflow: visible;
-  flex-shrink: 0;
+  height: 20px;
+  line-height: 20px;
+  font-weight: 500;
 }
 
-.heatmap-main {
-  display: flex;
-  gap: 6px;
-  align-items: flex-start;
+.cal-day-header {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
+  margin-bottom: 2px;
 }
 
-.heatmap-day-labels {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  width: 20px;
-  flex-shrink: 0;
-  padding-top: 1px;
-}
-
-.heatmap-day-label {
-  height: 14px;
-  font-size: 10px;
+.cal-day-name {
+  font-size: 11px;
   color: #aeaeb2;
-  line-height: 14px;
-  text-align: right;
+  text-align: center;
+  line-height: 16px;
 }
 
-.heatmap-grid-github {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
 }
 
-.heatmap-row-github {
-  display: flex;
-  gap: 3px;
-}
-
-.heatmap-cell {
-  width: 14px;
-  height: 14px;
-  border-radius: 3px;
-  background: #ebedf0;
-  transition: transform 0.1s;
+.cal-cell {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 5px;
   cursor: pointer;
-  flex-shrink: 0;
+  transition: opacity 0.10s;
 }
 
-.heatmap-cell:hover {
-  transform: scale(1.25);
-  outline: 1px solid rgba(0, 0, 0, 0.2);
-  z-index: 1;
+.cal-cell:hover {
+  opacity: 0.75;
 }
 
-.level-1 { background: #a8d5ba; }
-.level-2 { background: #5cb85c; }
-.level-3 { background: #2e7d32; }
-.level-4 { background: #1b5e20; }
+.cal-empty {
+  background: transparent;
+  pointer-events: none;
+}
+
+.level-0 { background: #ebedf0; }
+.level-1 { background: #c6e48b; }
+.level-2 { background: #7bc96f; }
+.level-3 { background: #239a3b; }
+.level-4 { background: #196127; }
+
+.heatmap-legend {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.legend-label {
+  font-size: 12px;
+  color: #8e8e93;
+}
+
+.hm-cell {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+}
 
 /* ─── Trend chart ──────────────────────────────────────────── */
 .trend-section {

@@ -9,6 +9,10 @@ export interface SummaryPushConfig {
   provider_id: string
   model_id: string
   timezone: string
+  /** Resolved at save time — backend uses these to call the AI directly. */
+  api_key?: string
+  base_url?: string
+  provider_name?: string
 }
 
 export interface SummaryReport {

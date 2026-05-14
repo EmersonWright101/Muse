@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Search, SquarePen, Trash2, ListChecks, X, Pin, Pencil, ChevronDown, ChevronLeft, ChevronRight, ThumbsUp, ThumbsDown, RotateCcw, BookOpen, MessageSquare, ArrowUpDown, Filter, Star } from 'lucide-vue-next'
+import { Search, SquarePen, Trash2, ListChecks, X, Pin, Pencil, ChevronDown, ChevronLeft, ChevronRight, ThumbsUp, ThumbsDown, RotateCcw, BookOpen, MessageSquare, ArrowUpDown, Filter, Star, Newspaper, RefreshCw } from 'lucide-vue-next'
 
 // silence TS6133 for icons used only in template
 void ArrowUpDown
 void Filter
 import { useAssistantStore } from '../../stores/assistant'
 import { usePapersStore } from '../../stores/papers'
+import { getSummaryReports, type SummaryReport } from '../../services/summaryPush'
 
 const { t } = useI18n()
 const assistant = useAssistantStore()
@@ -293,9 +294,12 @@ function closeModeMenu(e: MouseEvent) {
   if (!target.closest('.mode-dropdown-wrap')) modeMenuOpen.value = false
 }
 
-function switchMode(mode: 'papers' | 'chat') {
+function switchMode(mode: 'papers' | 'chat' | 'summary') {
   assistant.papersViewMode = mode
   modeMenuOpen.value = false
+  if (mode === 'summary' && summaryReports.value.length === 0) {
+    loadSummaryReports()
+  }
 }
 
 function closeSortMenu(e: MouseEvent) {
@@ -352,6 +356,35 @@ function paperMenuDelete() {
   closePaperMenu()
 }
 
+// ─── Summary reports sidebar ───────────────────────────────────────────────────
+
+const summaryReports = ref<SummaryReport[]>([])
+const summaryLoading = ref(false)
+const summaryTab = ref<'daily' | 'weekly'>('daily')
+
+const filteredSummaryReports = computed(() =>
+  summaryReports.value.filter(r => r.type === summaryTab.value)
+)
+
+async function loadSummaryReports() {
+  summaryLoading.value = true
+  try {
+    const data = await getSummaryReports(undefined, 50)
+    if (data) summaryReports.value = data.items
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+function formatReportDate(iso: string): string {
+  const d = new Date(iso + 'T00:00:00')
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const diff = Math.floor((today.getTime() - d.getTime()) / 86400000)
+  if (diff === 0) return '今天'
+  if (diff === 1) return '昨天'
+  return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+}
+
 onMounted(()  => {
   document.addEventListener('click', closeConvMenu)
   document.addEventListener('click', closeModeMenu)
@@ -380,8 +413,9 @@ onUnmounted(() => {
           @click.stop="modeMenuOpen = !modeMenuOpen; modeMenuStyle = menuPos(modeBtnEl)"
         >
           <BookOpen v-if="assistant.papersViewMode === 'papers'" :size="13" />
+          <Newspaper v-else-if="assistant.papersViewMode === 'summary'" :size="13" />
           <MessageSquare v-else :size="13" />
-          <span>{{ assistant.papersViewMode === 'papers' ? '论文推送' : '智能回答' }}</span>
+          <span>{{ assistant.papersViewMode === 'papers' ? '论文推送' : assistant.papersViewMode === 'summary' ? '总结推送' : '智能回答' }}</span>
           <ChevronDown :size="11" />
         </button>
         <Teleport to="body">
@@ -396,6 +430,14 @@ onUnmounted(() => {
             </button>
             <button
               class="mode-menu-item"
+              :class="{ active: assistant.papersViewMode === 'summary' }"
+              @click.stop="switchMode('summary')"
+            >
+              <Newspaper :size="13" />
+              总结推送
+            </button>
+            <button
+              class="mode-menu-item"
               :class="{ active: assistant.papersViewMode === 'chat' }"
               @click.stop="switchMode('chat')"
             >
@@ -405,7 +447,19 @@ onUnmounted(() => {
           </div>
         </Teleport>
       </div>
-      <template v-if="assistant.papersViewMode === 'papers'">
+      <template v-if="assistant.papersViewMode === 'summary'">
+        <div class="header-tools">
+          <button
+            class="icon-btn"
+            :disabled="summaryLoading"
+            title="刷新"
+            @click="loadSummaryReports()"
+          >
+            <RefreshCw :size="14" :class="{ spin: summaryLoading }" />
+          </button>
+        </div>
+      </template>
+      <template v-else-if="assistant.papersViewMode === 'papers'">
         <div class="header-tools">
           <div class="sort-menu-wrap">
             <button
@@ -619,7 +673,7 @@ onUnmounted(() => {
           </button>
         </div>
       </template>
-      <template v-else>
+      <template v-else-if="assistant.papersViewMode === 'chat'">
         <div class="header-actions">
           <button
             v-if="assistant.batchMode"
@@ -761,6 +815,44 @@ onUnmounted(() => {
                 <RotateCcw :size="10" />
               </button>
             </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- Summary sidebar -->
+    <template v-else-if="assistant.papersViewMode === 'summary'">
+      <!-- Type tabs -->
+      <div class="summary-type-tabs">
+        <button
+          class="summary-type-tab"
+          :class="{ active: summaryTab === 'daily' }"
+          @click="summaryTab = 'daily'"
+        >日报</button>
+        <button
+          class="summary-type-tab"
+          :class="{ active: summaryTab === 'weekly' }"
+          @click="summaryTab = 'weekly'"
+        >周报</button>
+      </div>
+
+      <div class="list-scroll">
+        <div v-if="summaryLoading && filteredSummaryReports.length === 0" class="empty-state">
+          加载中…
+        </div>
+        <div v-else-if="filteredSummaryReports.length === 0" class="empty-state">
+          暂无{{ summaryTab === 'daily' ? '日报' : '周报' }}
+        </div>
+        <div
+          v-for="report in filteredSummaryReports"
+          :key="report.id"
+          class="list-item summary-item"
+          :class="{ active: assistant.activeReportId === report.id }"
+          @click="assistant.activeReportId = report.id"
+        >
+          <div class="summary-item-content">
+            <div class="summary-item-date">{{ formatReportDate(report.date) }}</div>
+            <div class="summary-item-preview">{{ report.content.slice(0, 60).replace(/\n/g, ' ') }}…</div>
           </div>
         </div>
       </div>
@@ -2132,6 +2224,70 @@ onUnmounted(() => {
 .trash-preview-fade-enter-from, .trash-preview-fade-leave-to {
   opacity: 0;
 }
+
+/* ─── Summary type tabs ───────────────────────────────────────────────────── */
+
+.summary-type-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px 4px;
+  flex-shrink: 0;
+}
+
+.summary-type-tab {
+  flex: 1;
+  height: 24px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #8e8e93;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.summary-type-tab:hover { background: rgba(0, 0, 0, 0.05); color: #3c3c43; }
+.summary-type-tab.active { background: rgba(221, 133, 60, 0.12); color: #DD853C; font-weight: 600; }
+
+/* ─── Summary list item ───────────────────────────────────────────────────── */
+
+.list-item.summary-item {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 8px 10px;
+}
+
+.summary-item-content {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.summary-item-date {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #3c3c43;
+}
+
+.list-item.summary-item.active .summary-item-date { color: #DD853C; }
+
+.summary-item-preview {
+  font-size: 11.5px;
+  color: #8e8e93;
+  line-height: 1.45;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-all;
+}
+
+.spin { animation: papers-rotate 0.8s linear infinite; }
+@keyframes papers-rotate { to { transform: rotate(360deg); } }
 </style>
 
 <style>

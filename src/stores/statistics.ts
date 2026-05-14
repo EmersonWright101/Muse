@@ -11,9 +11,17 @@ import { loadPaperCopilotStatsFromServer } from './paperCopilot'
 import { loadPosterStatsFile } from './home'
 import { apiPut } from '../services/api'
 
-async function loadCopilotStatsFile(): Promise<Record<string, CopilotDailyStat>> {
+async function loadNotesCopilotStatsFile(): Promise<Record<string, CopilotDailyStat>> {
   try {
-    const path = `${await resolveDataRoot()}/copilot-stats.json`
+    const path = `${await resolveDataRoot()}/notes-copilot-stats.json`
+    if (!(await exists(path))) return {}
+    return JSON.parse(await readTextFile(path)) as Record<string, CopilotDailyStat>
+  } catch { return {} }
+}
+
+async function loadTravelCopilotStatsFile(): Promise<Record<string, CopilotDailyStat>> {
+  try {
+    const path = `${await resolveDataRoot()}/travel-copilot-stats.json`
     if (!(await exists(path))) return {}
     return JSON.parse(await readTextFile(path)) as Record<string, CopilotDailyStat>
   } catch { return {} }
@@ -624,45 +632,54 @@ export const useStatisticsStore = defineStore('statistics', () => {
         }
       }
 
-      // Merge copilot stats as a virtual "copilot" model entry
-      const copilotDailyStats = await loadCopilotStatsFile()
-      const COPILOT_MODEL_ID = '__copilot__'
-      let copilotTotal: ModelStat | undefined
-      for (const [date, cs] of Object.entries(copilotDailyStats)) {
-        if (!cs.requests) continue
-        if (!copilotTotal) {
-          copilotTotal = { modelId: COPILOT_MODEL_ID, modelName: 'Copilot (写作助手)', provider: 'Travel Notes', inputTokens: 0, outputTokens: 0, totalTokens: 0, uploadsMB: 0, downloadsMB: 0, cost: 0, requests: 0 }
-        }
-        copilotTotal.inputTokens  += cs.inputTokens
-        copilotTotal.outputTokens += cs.outputTokens
-        copilotTotal.totalTokens  += cs.inputTokens + cs.outputTokens
-        copilotTotal.cost         += cs.costUsd
-        copilotTotal.requests     += cs.requests
+      // Helper: inject a virtual copilot model into merged stats
+      function _injectCopilotStats(
+        dailyStats: Record<string, CopilotDailyStat>,
+        modelId: string,
+        modelName: string,
+        provider: string,
+      ) {
+        let total: ModelStat | undefined
+        for (const [date, cs] of Object.entries(dailyStats)) {
+          if (!cs.requests) continue
+          if (!total) {
+            total = { modelId, modelName, provider, inputTokens: 0, outputTokens: 0, totalTokens: 0, uploadsMB: 0, downloadsMB: 0, cost: 0, requests: 0 }
+          }
+          total.inputTokens  += cs.inputTokens
+          total.outputTokens += cs.outputTokens
+          total.totalTokens  += cs.inputTokens + cs.outputTokens
+          total.cost         += cs.costUsd
+          total.requests     += cs.requests
 
-        // Inject into daily stats
-        let ds = merged.dailyStatsAll.find(d => d.date === date)
-        if (!ds) {
-          ds = { date, inputTokens: 0, outputTokens: 0, totalTokens: 0, uploadsMB: 0, downloadsMB: 0, cost: 0, requests: 0, models: [] }
-          merged.dailyStatsAll.push(ds)
-          merged.dailyStatsAll.sort((a, b) => a.date.localeCompare(b.date))
+          let ds = merged.dailyStatsAll.find(d => d.date === date)
+          if (!ds) {
+            ds = { date, inputTokens: 0, outputTokens: 0, totalTokens: 0, uploadsMB: 0, downloadsMB: 0, cost: 0, requests: 0, models: [] }
+            merged.dailyStatsAll.push(ds)
+            merged.dailyStatsAll.sort((a, b) => a.date.localeCompare(b.date))
+          }
+          ds.inputTokens  += cs.inputTokens
+          ds.outputTokens += cs.outputTokens
+          ds.totalTokens  += cs.inputTokens + cs.outputTokens
+          ds.cost         += cs.costUsd
+          ds.requests     += cs.requests
+          const existing = ds.models.find(m => m.modelId === modelId)
+          if (existing) {
+            existing.inputTokens  += cs.inputTokens
+            existing.outputTokens += cs.outputTokens
+            existing.totalTokens  += cs.inputTokens + cs.outputTokens
+            existing.cost         += cs.costUsd
+            existing.requests     += cs.requests
+          } else {
+            ds.models.push({ modelId, modelName, inputTokens: cs.inputTokens, outputTokens: cs.outputTokens, totalTokens: cs.inputTokens + cs.outputTokens, uploadsMB: 0, downloadsMB: 0, cost: cs.costUsd, requests: cs.requests })
+          }
         }
-        ds.inputTokens  += cs.inputTokens
-        ds.outputTokens += cs.outputTokens
-        ds.totalTokens  += cs.inputTokens + cs.outputTokens
-        ds.cost         += cs.costUsd
-        ds.requests     += cs.requests
-        const existing = ds.models.find(m => m.modelId === COPILOT_MODEL_ID)
-        if (existing) {
-          existing.inputTokens  += cs.inputTokens
-          existing.outputTokens += cs.outputTokens
-          existing.totalTokens  += cs.inputTokens + cs.outputTokens
-          existing.cost         += cs.costUsd
-          existing.requests     += cs.requests
-        } else {
-          ds.models.push({ modelId: COPILOT_MODEL_ID, modelName: 'Copilot (写作助手)', inputTokens: cs.inputTokens, outputTokens: cs.outputTokens, totalTokens: cs.inputTokens + cs.outputTokens, uploadsMB: 0, downloadsMB: 0, cost: cs.costUsd, requests: cs.requests })
-        }
+        if (total) merged.modelStats.push(total)
       }
-      if (copilotTotal) merged.modelStats.push(copilotTotal)
+
+      // Merge notes copilot stats
+      _injectCopilotStats(await loadNotesCopilotStatsFile(), '__notes_copilot__', '笔记：Copilot', 'Notes')
+      // Merge travel copilot stats
+      _injectCopilotStats(await loadTravelCopilotStatsFile(), '__travel_copilot__', '游记：Copilot', 'Travel')
 
       // Merge ebook copilot stats as a virtual model entry
       const ebookCopilotDailyStats = await loadEbookCopilotStatsFile()

@@ -171,6 +171,8 @@ interface PersistedProvider {
   name:            string;
   builtIn?:        boolean;
   apiKeyEnc:       string;
+  /** Plaintext key received from server when encryption was skipped (graceful fallback). */
+  apiKey?:         string;
   baseUrl:         string;
   enabled:         boolean;
   selectedModelId: string;
@@ -512,11 +514,15 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
   }
 
   watch(providers, () => { persist(); scheduleServerPush() }, { deep: true })
-  watch(activeProviderId, () => { persist(); scheduleServerPush() })
-  watch(defaultProviderId, () => { persist(); scheduleServerPush() })
-  watch(defaultModelId,    () => { persist(); scheduleServerPush() })
-  watch(titleGenProviderId, () => { persist(); scheduleServerPush() })
-  watch(titleGenModelId,    () => { persist(); scheduleServerPush() })
+  watch(activeProviderId,       () => { persist(); scheduleServerPush() })
+  watch(defaultProviderId,      () => { persist(); scheduleServerPush() })
+  watch(defaultModelId,         () => { persist(); scheduleServerPush() })
+  watch(ebookDefaultProviderId, () => { persist(); scheduleServerPush() })
+  watch(ebookDefaultModelId,    () => { persist(); scheduleServerPush() })
+  watch(paperDefaultProviderId, () => { persist(); scheduleServerPush() })
+  watch(paperDefaultModelId,    () => { persist(); scheduleServerPush() })
+  watch(titleGenProviderId,     () => { persist(); scheduleServerPush() })
+  watch(titleGenModelId,        () => { persist(); scheduleServerPush() })
 
   // ─── Server sync ────────────────────────────────────────────────────────────
 
@@ -544,13 +550,17 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     }
     await apiPut('/api/settings/ai', {
       value: {
-        activeProviderId:  activeProviderId.value,
-        providers:         persisted,
-        defaultProviderId: defaultProviderId.value,
-        defaultModelId:    defaultModelId.value,
-        titleGenProviderId: titleGenProviderId.value,
-        titleGenModelId:    titleGenModelId.value,
-        deletedProviders:  getDeletedProviders(),
+        activeProviderId:       activeProviderId.value,
+        providers:              persisted,
+        defaultProviderId:      defaultProviderId.value,
+        defaultModelId:         defaultModelId.value,
+        ebookDefaultProviderId: ebookDefaultProviderId.value,
+        ebookDefaultModelId:    ebookDefaultModelId.value,
+        paperDefaultProviderId: paperDefaultProviderId.value,
+        paperDefaultModelId:    paperDefaultModelId.value,
+        titleGenProviderId:     titleGenProviderId.value,
+        titleGenModelId:        titleGenModelId.value,
+        deletedProviders:       getDeletedProviders(),
       },
     })
   }
@@ -592,7 +602,7 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
     const remoteProviders: AIProvider[] = []
     for (const sp of (s.providers ?? [])) {
       if (!sp.name || deletedMap[sp.id]) continue
-      let apiKey = ''
+      let apiKey = sp.apiKey || ''
       if (sp.apiKeyEnc && srvKey) {
         try { apiKey = await decryptFromServer(sp.apiKeyEnc, srvKey) } catch { /* skip */ }
       }

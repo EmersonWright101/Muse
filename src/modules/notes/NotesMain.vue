@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { FileText, LayoutGrid, PenLine } from 'lucide-vue-next'
+import { FileText, LayoutGrid, PenLine, Folder, Hash, Plus, ChevronDown } from 'lucide-vue-next'
 import { useNotesStore } from '../../stores/notes'
 import NotesEditor from './components/NotesEditor.vue'
 
@@ -9,6 +9,49 @@ const { t } = useI18n()
 const store = useNotesStore()
 
 const hasActive = computed(() => !!store.activeNoteId)
+const showMeta = computed(() => hasActive.value && store.viewMode === 'editor')
+const note = computed(() => store.activeNote)
+
+// ─── Tag input in top bar ─────────────────────────────────────────────────────
+const tagInput = ref('')
+const tagInputVisible = ref(false)
+const tagInputEl = ref<HTMLInputElement>()
+const tagSuggestionsVisible = ref(false)
+
+const tagSuggestions = computed(() => {
+  const q = tagInput.value.trim().toLowerCase()
+  const existing = new Set(note.value?.tags ?? [])
+  return store.allTags
+    .filter(t => !existing.has(t) && (q === '' || t.toLowerCase().includes(q)))
+    .slice(0, 6)
+})
+
+function startAddTag() {
+  tagInputVisible.value = true
+  tagSuggestionsVisible.value = true
+  nextTick(() => tagInputEl.value?.focus())
+}
+
+function applyTag(tag: string) {
+  if (!note.value || note.value.tags.includes(tag)) return
+  store.setTags([...note.value.tags, tag])
+  tagInput.value = ''; tagInputVisible.value = false; tagSuggestionsVisible.value = false
+}
+
+function addTag() {
+  const v = tagInput.value.trim()
+  if (v) applyTag(v)
+  else { tagInput.value = ''; tagInputVisible.value = false; tagSuggestionsVisible.value = false }
+}
+
+function removeTag(tag: string) {
+  if (!note.value) return
+  store.setTags(note.value.tags.filter(t => t !== tag))
+}
+
+function onTagBlur() {
+  setTimeout(() => { tagInputVisible.value = false; tagSuggestionsVisible.value = false; tagInput.value = '' }, 150)
+}
 
 // ─── Time-buckets for flashcard home page ────────────────────────────────────
 
@@ -60,6 +103,48 @@ function formatCardDate(updatedAt?: string): string {
     <!-- Top bar -->
     <div class="top-bar">
       <div class="top-bar-title">{{ t('notes.title') }}</div>
+
+      <!-- Active note meta: group + tags -->
+      <div v-if="showMeta && note" class="note-meta-bar">
+        <!-- Group -->
+        <div class="meta-group-wrap">
+          <Folder :size="11" class="meta-icon" />
+          <select :value="note.groupId ?? ''" class="meta-group-select" @change="store.setGroupId(($event.target as HTMLSelectElement).value)">
+            <option value="">{{ t('notes.noGroup') }}</option>
+            <option v-for="g in store.groups" :key="g.id" :value="g.id">{{ g.name }}</option>
+          </select>
+          <ChevronDown :size="9" class="meta-chevron" />
+        </div>
+
+        <span class="meta-sep">·</span>
+
+        <!-- Tags -->
+        <div class="meta-tags-wrap">
+          <Hash :size="11" class="meta-icon" />
+          <span v-for="tag in (note.tags ?? [])" :key="tag" class="meta-tag-chip">
+            {{ tag }}<button class="meta-tag-remove" @mousedown.prevent="removeTag(tag)">×</button>
+          </span>
+          <div v-if="tagInputVisible" class="meta-tag-input-wrap">
+            <input
+              ref="tagInputEl"
+              v-model="tagInput"
+              class="meta-tag-input"
+              :placeholder="t('notes.tagPlaceholder')"
+              @keydown.enter.prevent="addTag"
+              @keydown.escape="tagInputVisible = false; tagInput = ''"
+              @blur="onTagBlur"
+            />
+            <div v-if="tagSuggestionsVisible && tagSuggestions.length" class="meta-tag-suggestions">
+              <button v-for="s in tagSuggestions" :key="s" class="meta-tag-sugg" @mousedown.prevent="applyTag(s)">#{{ s }}</button>
+            </div>
+          </div>
+          <button v-else class="meta-tag-add" @click="startAddTag">
+            <Plus :size="10" />
+            <span v-if="!(note.tags?.length)">{{ t('notes.tags') }}</span>
+          </button>
+        </div>
+      </div>
+
       <div class="view-toggle">
         <button
           class="toggle-btn"
@@ -129,16 +214,6 @@ function formatCardDate(updatedAt?: string): string {
         <p class="placeholder-text">{{ t('notes.placeholder') }}</p>
       </div>
       <NotesEditor v-else />
-
-      <!-- Floating back button -->
-      <button
-        v-if="store.viewMode === 'editor'"
-        class="floating-home-btn"
-        @click="store.viewMode = 'home'"
-      >
-        <LayoutGrid :size="14" />
-        {{ t('notes.backToHome') }}
-      </button>
     </div>
   </div>
 </template>
@@ -170,7 +245,130 @@ function formatCardDate(updatedAt?: string): string {
   font-size: 15px;
   font-weight: 600;
   color: #1c1c1e;
+  flex-shrink: 0;
 }
+
+/* ─── Note meta bar (group + tags) ───────────────────────────────────────── */
+
+.note-meta-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 0 16px;
+  overflow: hidden;
+}
+
+.meta-icon { color: #aeaeb2; flex-shrink: 0; }
+.meta-sep  { font-size: 11px; color: #d1d1d6; flex-shrink: 0; }
+
+/* Group select */
+.meta-group-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.meta-group-select {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 11.5px;
+  color: #6e6e73;
+  cursor: pointer;
+  font-family: inherit;
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 14px;
+  max-width: 110px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.meta-group-select:hover { color: #3c3c43; }
+
+.meta-chevron { position: absolute; right: 0; color: #aeaeb2; pointer-events: none; }
+
+/* Tags */
+.meta-tags-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.meta-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 5px 2px 6px;
+  background: rgba(34, 63, 121, 0.07);
+  color: #223F79;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.meta-tag-remove {
+  border: none;
+  background: transparent;
+  color: #223F79;
+  opacity: 0.45;
+  cursor: pointer;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  transition: opacity 0.12s;
+}
+.meta-tag-remove:hover { opacity: 0.9; }
+
+.meta-tag-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: none;
+  background: transparent;
+  color: #aeaeb2;
+  border-radius: 5px;
+  padding: 2px 5px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
+}
+.meta-tag-add:hover { background: rgba(0, 0, 0, 0.05); color: #6e6e73; }
+
+.meta-tag-input-wrap { position: relative; flex-shrink: 0; }
+.meta-tag-input {
+  width: 80px; height: 22px;
+  border: 1px solid rgba(34, 63, 121, 0.28);
+  border-radius: 5px; padding: 0 7px;
+  font-size: 11px; background: rgba(34, 63, 121, 0.04);
+  color: #1c1c1e; outline: none; font-family: inherit;
+}
+.meta-tag-input:focus { border-color: rgba(34, 63, 121, 0.5); }
+
+.meta-tag-suggestions {
+  position: absolute; top: calc(100% + 4px); left: 0; min-width: 130px;
+  background: rgba(252, 252, 254, 0.98); border: 1px solid rgba(0, 0, 0, 0.09);
+  border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 4px; z-index: 60; display: flex; flex-direction: column; gap: 1px;
+}
+.meta-tag-sugg {
+  display: block; width: 100%; text-align: left;
+  padding: 5px 9px; border-radius: 6px; border: none; background: none;
+  font-size: 11.5px; color: #223F79; cursor: pointer; font-family: inherit;
+  transition: background 0.10s;
+}
+.meta-tag-sugg:hover { background: rgba(34, 63, 121, 0.08); }
 
 .view-toggle {
   display: flex;
@@ -373,30 +571,4 @@ function formatCardDate(updatedAt?: string): string {
   margin: 0;
 }
 
-.floating-home-btn {
-  position: absolute;
-  top: 12px;
-  right: 16px;
-  z-index: 50;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 14px;
-  border-radius: 8px;
-  border: none;
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(12px) saturate(1.6);
-  -webkit-backdrop-filter: blur(12px) saturate(1.6);
-  color: #3c3c43;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08), 0 0 0 0.5px rgba(0, 0, 0, 0.06) inset;
-  transition: all 0.12s;
-}
-
-.floating-home-btn:hover {
-  background: white;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
-}
 </style>

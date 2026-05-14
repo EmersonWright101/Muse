@@ -3,7 +3,8 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useEditor, EditorContent, VueNodeViewRenderer, NodeViewWrapper, NodeViewContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
-import CodeBlock from '@tiptap/extension-code-block'
+import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight'
+import { common, createLowlight } from 'lowlight'
 import { Markdown as TiptapMarkdown } from 'tiptap-markdown'
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
@@ -20,7 +21,11 @@ import yaml from 'highlight.js/lib/languages/yaml'
 import plaintext from 'highlight.js/lib/languages/plaintext'
 import L from 'leaflet'
 import Image from '@tiptap/extension-image'
-import { Star, Crosshair, Check, X, Pencil, Sparkles, Loader2, Plus, Hash, Search } from 'lucide-vue-next'
+import {
+  Bold, Italic, Strikethrough, Code, List, ListOrdered, Quote, Minus, FileCode,
+  Star, Crosshair, Check, X, Pencil, Sparkles, Loader2, Plus, Hash, Search,
+  Calendar, MapPin, Folder,
+} from 'lucide-vue-next'
 import { useTravelStore } from '../../../stores/travel'
 import { useTravelCopilotStore } from '../../../stores/travelCopilot'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
@@ -28,7 +33,7 @@ import { streamCopilotCompletion } from '../../../composables/useCopilotStream'
 import { writeFile, mkdir, exists } from '@tauri-apps/plugin-fs'
 import { travelNotesDir } from '../../../utils/path'
 import { initImageAssetBase, resolveImageUrl } from '../../../utils/imageAsset'
-import { uploadTravelImage } from '../../../utils/travelStorage'
+import { uploadTravelImage, randomTravelEmoji } from '../../../utils/travelStorage'
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('typescript', typescript)
@@ -58,9 +63,9 @@ const hasGhostSuggestion  = ref(false)
 let _ghostSpan:    HTMLSpanElement | null = null
 let _copilotAbort: AbortController | null = null
 let _copilotTimer: ReturnType<typeof setTimeout> | null = null
-let _skipBodyWatch  = false   // prevents body-watch from overwriting DOM while user is typing
-let _acceptingChunk = false   // prevents onCopilotBodyChange from dismissing ghost during chunk accept
-let _skipIdSync     = false   // prevents title-rename from resetting cursor via the id-watch
+let _skipBodyWatch  = false
+let _acceptingChunk = false
+let _skipIdSync     = false
 
 const configuredProviders = computed(() =>
   aiStore.providers.filter(p => p.enabled && (p.apiKey || p.type === 'ollama'))
@@ -69,7 +74,6 @@ const copilotProviderModels = computed(() =>
   (aiStore.providers.find(p => p.id === copilot.providerId)?.models ?? []).filter(m => !m.reasoning)
 )
 
-// Read the contenteditable text, stripping the ghost span
 function getCleanText(): string {
   const el = editableRef.value
   if (!el) return ''
@@ -79,14 +83,12 @@ function getCleanText(): string {
   return clone.innerText.replace(/\n$/, '')
 }
 
-// Restores cursor to a character offset inside the contenteditable div.
-// Accounts for <br> elements (each counts as 1 char, matching innerText behaviour).
 function setBodyCursorOffset(targetOffset: number) {
   const el = editableRef.value
   if (!el) return
   const sel = window.getSelection()
   if (!sel) return
-  const s = sel  // narrowed non-null for use inside nested function
+  const s = sel
 
   let remaining = targetOffset
   let placed = false
@@ -136,9 +138,6 @@ function setBodyCursorOffset(targetOffset: number) {
   }
 }
 
-// Returns char-offset of cursor in the clean body text (ghost span excluded).
-// Attaches a temporary styled div to the document so innerText correctly handles
-// <br> elements and white-space:pre-wrap, matching what getCleanText() returns.
 function getBodyCursorOffset(): number {
   const el = editableRef.value
   if (!el) return body.value.length
@@ -157,7 +156,6 @@ function getBodyCursorOffset(): number {
   return text.length
 }
 
-// Insert an empty ghost span at the current cursor; returns false if no selection
 function insertGhostAtCursor(): boolean {
   removeGhostSpan(false)
   const sel = window.getSelection()
@@ -169,7 +167,6 @@ function insertGhostAtCursor(): boolean {
   _ghostSpan.setAttribute('contenteditable', 'false')
   _ghostSpan.textContent = ''
   range.insertNode(_ghostSpan)
-  // Keep caret just before the ghost span
   const newRange = document.createRange()
   newRange.setStartBefore(_ghostSpan)
   newRange.setEndBefore(_ghostSpan)
@@ -183,7 +180,6 @@ function removeGhostSpan(accept: boolean) {
   if (!_ghostSpan) return
   hasGhostSuggestion.value = false
   if (accept) {
-    // Move caret to after the ghost text, then unwrap
     const sel = window.getSelection()
     const textNode = document.createTextNode(_ghostSpan.textContent ?? '')
     _ghostSpan.parentNode?.replaceChild(textNode, _ghostSpan)
@@ -225,12 +221,10 @@ function acceptNextChunk() {
   const remaining = full.slice(chunk.length)
   if (!remaining) { acceptSuggestion(); return }
 
-  // Replace ghost content with accepted chunk (as text) and keep rest in ghost span
   const chunkNode = document.createTextNode(chunk)
   _ghostSpan.parentNode?.insertBefore(chunkNode, _ghostSpan)
   _ghostSpan.textContent = remaining
 
-  // Move caret between chunk and ghost span
   const sel = window.getSelection()
   if (sel) {
     const r = document.createRange()
@@ -258,7 +252,6 @@ async function requestCompletion() {
   const modelId = copilot.modelId || provider.selectedModelId
   if (!modelId) return
 
-  // Capture cursor context before inserting ghost span
   const cursorOffset = getBodyCursorOffset()
   const contextText  = body.value.slice(Math.max(0, cursorOffset - copilot.contextChars), cursorOffset)
 
@@ -280,7 +273,6 @@ async function requestCompletion() {
     if (!ac.signal.aborted) removeGhostSpan(false)
   }
 
-  // Strip any leading repetition the model may have echoed from the context
   if (!ac.signal.aborted && _ghostSpan) {
     const raw  = _ghostSpan.textContent ?? ''
     const tail = contextText.slice(-Math.min(60, contextText.length))
@@ -303,7 +295,6 @@ function onCopilotBodyChange() {
   _copilotTimer = setTimeout(() => { _copilotTimer = null; requestCompletion() }, copilot.triggerDelay)
 }
 
-// Called on every input event from the contenteditable
 function onEditableInput() {
   if (_ghostSpan) removeGhostSpan(false)
   const text = getCleanText()
@@ -318,9 +309,6 @@ function onEditableBeforeInput(e: InputEvent) {
   }
 }
 
-// Dismiss ghost span the moment IME composition starts — the caret sits right
-// before a contenteditable=false span which confuses the IME and causes pinyin
-// to be output raw instead of converted.
 function onEditableCompositionStart() {
   if (_ghostSpan) dismissSuggestion()
 }
@@ -348,14 +336,13 @@ function onCopilotSettingsClickOutside(e: MouseEvent) {
 onMounted(()   => document.addEventListener('click', onCopilotSettingsClickOutside))
 onUnmounted(() => document.removeEventListener('click', onCopilotSettingsClickOutside))
 
-// Editor layout: 'split' | 'edit' | 'preview' | 'wysiwyg'
+// ─── Layout ──────────────────────────────────────────────────────────────────
 const layout = ref<'split' | 'edit' | 'preview' | 'wysiwyg'>('split')
 
-// ─── WYSIWYG editor (Tiptap) ──────────────────────────────────────────────────
+// ─── WYSIWYG (Tiptap) ────────────────────────────────────────────────────────
 let _wysiwygSyncing = false
 
-// Code block NodeView — adds a copy button to every code block in the WYSIWYG editor
-const _copySvg = `<svg viewBox="0 0 14 14" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" style="display:inline-block;vertical-align:middle"><rect x="4" y="4" width="8" height="8" rx="1.2"/><path d="M2 10V2.8A.8.8 0 0 1 2.8 2H10"/></svg>`
+const _copySvg  = `<svg viewBox="0 0 14 14" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" style="display:inline-block;vertical-align:middle"><rect x="4" y="4" width="8" height="8" rx="1.2"/><path d="M2 10V2.8A.8.8 0 0 1 2.8 2H10"/></svg>`
 const _checkSvg = `<svg viewBox="0 0 14 14" width="11" height="11" fill="none" stroke="#34c759" stroke-width="2.2" style="display:inline-block;vertical-align:middle"><path d="M1.5 7l3.5 3.5L12.5 3"/></svg>`
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -388,11 +375,11 @@ const CodeBlockView = {
   },
 }
 
-const CustomCodeBlock = CodeBlock.extend({
+const lowlight = createLowlight(common)
+const CustomCodeBlock = CodeBlockLowlight.configure({ lowlight }).extend({
   addNodeView() { return VueNodeViewRenderer(CodeBlockView as any) },
 })
 
-// Image NodeView: resolves relative paths to Tauri asset URLs at render time
 const TravelImage = Image.extend({
   addNodeView() {
     return ({ node }) => {
@@ -413,6 +400,8 @@ const TravelImage = Image.extend({
   },
 })
 
+const editorState = ref(0)
+
 const wysiwygEditor = useEditor({
   extensions: [
     StarterKit.configure({ codeBlock: false }),
@@ -421,6 +410,32 @@ const wysiwygEditor = useEditor({
     TravelImage.configure({ inline: true }),
   ],
   content: '',
+  editorProps: {
+    handlePaste(_view: unknown, event: ClipboardEvent) {
+      const items = event.clipboardData?.items
+      if (!items) return false
+      for (const item of Array.from(items)) {
+        if (!item.type.startsWith('image/')) continue
+        const file = item.getAsFile()
+        if (!file) continue
+        const mimeType = item.type
+        ;(async () => {
+          const buffer = await file.arrayBuffer()
+          const bytes = new Uint8Array(buffer)
+          const ext = mimeType === 'image/jpeg' ? 'jpg' : mimeType.replace('image/', '')
+          const filename = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`
+          const baseDir = await travelNotesDir()
+          const imgDir = `${baseDir}/images`
+          if (!(await exists(imgDir))) await mkdir(imgDir, { recursive: true })
+          await writeFile(`${imgDir}/${filename}`, bytes)
+          uploadTravelImage(filename, note.value.id, bytes, mimeType).catch(() => {})
+          wysiwygEditor.value?.chain().focus().setImage({ src: `images/${filename}` }).run()
+        })()
+        return true
+      }
+      return false
+    },
+  },
   onUpdate({ editor }) {
     if (_wysiwygSyncing) return
     _wysiwygSyncing = true
@@ -428,9 +443,26 @@ const wysiwygEditor = useEditor({
     body.value = (editor.storage as any).markdown.getMarkdown()
     _wysiwygSyncing = false
   },
+  onTransaction() { editorState.value++ },
+  onSelectionUpdate() { editorState.value++ },
 })
 
-// Sync body → wysiwyg editor when switching to wysiwyg mode or when the note changes
+function isActive(name: string, attrs?: Record<string, unknown>): boolean {
+  editorState.value // register reactive dependency
+  return wysiwygEditor.value?.isActive(name, attrs) ?? false
+}
+
+function fmtBold()      { wysiwygEditor.value?.chain().focus().toggleBold().run() }
+function fmtItalic()    { wysiwygEditor.value?.chain().focus().toggleItalic().run() }
+function fmtStrike()    { wysiwygEditor.value?.chain().focus().toggleStrike().run() }
+function fmtCode()      { wysiwygEditor.value?.chain().focus().toggleCode().run() }
+function fmtH(level: 1 | 2 | 3) { wysiwygEditor.value?.chain().focus().toggleHeading({ level }).run() }
+function fmtBullet()    { wysiwygEditor.value?.chain().focus().toggleBulletList().run() }
+function fmtOrdered()   { wysiwygEditor.value?.chain().focus().toggleOrderedList().run() }
+function fmtQuote()     { wysiwygEditor.value?.chain().focus().toggleBlockquote().run() }
+function fmtCodeBlock() { wysiwygEditor.value?.chain().focus().toggleCodeBlock().run() }
+function fmtHr()        { wysiwygEditor.value?.chain().focus().setHorizontalRule().run() }
+
 watch(layout, (val) => {
   if (val === 'wysiwyg' && wysiwygEditor.value) {
     _wysiwygSyncing = true
@@ -453,22 +485,18 @@ function syncEditorContent() {
   if (el) el.innerText = body.value
 }
 
-// Reload editor content when the active note changes (skip when just renaming current note)
 watch(() => note.value?.id, () => {
   if (_skipIdSync) return
   nextTick(syncEditorContent)
 })
 
-// Also sync on mount so content shows when navigating back to an already-selected note
 onMounted(() => { if (note.value) nextTick(syncEditorContent) })
 
-// Body without frontmatter for editing
+// Body without frontmatter
 const body = computed({
   get() {
     const raw = note.value.content
     const m = raw.match(/^---\s*\n[\s\S]*?\n---\s*\n?([\s\S]*)$/)
-    // trimStart() strips the blank line stringifyFrontmatter inserts after ---
-    // so body.value matches exactly what parseFrontmatter / the DOM return
     return m ? m[1].trimStart() : raw
   },
   set(val: string) {
@@ -496,36 +524,38 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '').trim()
 }
 
-// Title editing
-const editingTitle = ref(false)
-const titleDraft = ref('')
+// ─── Title (direct input, no pencil-click) ────────────────────────────────────
 const titleInputRef = ref<HTMLInputElement>()
+const titleDraft = ref('')
 
-function startEditTitle() {
-  titleDraft.value = note.value.title
-  editingTitle.value = true
-  nextTick(() => titleInputRef.value?.focus())
-}
+watch(() => note.value?.id, () => {
+  titleDraft.value = note.value?.title ?? ''
+}, { immediate: true })
 
 function confirmTitle() {
-  const t = titleDraft.value.trim()
-  if (t) {
-    store.setTitle(t)
-    const sanitized = sanitizeFilename(t)
+  const v = titleDraft.value.trim()
+  if (v) {
+    store.setTitle(v)
+    const sanitized = sanitizeFilename(v)
     if (sanitized) {
       _skipIdSync = true
       note.value.id = sanitized
       nextTick(() => { _skipIdSync = false })
     }
   }
-  editingTitle.value = false
 }
 
-function cancelTitle() {
-  editingTitle.value = false
+// ─── Cover emoji ──────────────────────────────────────────────────────────────
+const isCoverEmoji = computed(() => {
+  const c = note.value?.cover ?? ''
+  return c && !c.includes('.') && !c.startsWith('http') && !c.startsWith('/')
+})
+
+function changeCoverEmoji() {
+  store.setCover(randomTravelEmoji())
 }
 
-// Tag editing
+// ─── Tags ─────────────────────────────────────────────────────────────────────
 const tagInputVisible = ref(false)
 const tagInputValue = ref('')
 const tagInputRef = ref<HTMLInputElement>()
@@ -535,7 +565,7 @@ const tagSuggestions = computed(() => {
   const q = tagInputValue.value.trim().toLowerCase()
   const existing = new Set(note.value.tags)
   return store.allTags
-    .filter(t => !existing.has(t) && (q === '' || t.toLowerCase().includes(q)))
+    .filter(tg => !existing.has(tg) && (q === '' || tg.toLowerCase().includes(q)))
     .slice(0, 8)
 })
 
@@ -566,7 +596,6 @@ function addTag() {
 }
 
 function onTagInputBlur() {
-  // Delay so mousedown on suggestion fires first
   setTimeout(() => {
     tagInputVisible.value = false
     tagSuggestionsVisible.value = false
@@ -575,11 +604,11 @@ function onTagInputBlur() {
 }
 
 function removeTag(tag: string) {
-  store.setTags(note.value.tags.filter(t => t !== tag))
+  store.setTags(note.value.tags.filter(tg => tg !== tag))
   triggerAutoSave()
 }
 
-// Copy code block (preview pane)
+// ─── Preview click (copy code) ────────────────────────────────────────────────
 function onPreviewClick(e: MouseEvent) {
   const btn = (e.target as HTMLElement).closest('.md-code-copy') as HTMLElement | null
   if (!btn) return
@@ -594,7 +623,6 @@ function renderMarkdown(content: string): string {
     const fixed = content.replace(/!\[([^\]]*)\]\n\(([^)]+)\)/g, '![$1]($2)')
     const raw = md.render(fixed)
     const sanitized = DOMPurify.sanitize(raw)
-    // Post-process img srcs after DOMPurify to bypass URI scheme filtering
     const tmp = document.createElement('div')
     tmp.innerHTML = sanitized
     tmp.querySelectorAll('img').forEach(img => {
@@ -609,7 +637,7 @@ function renderMarkdown(content: string): string {
 
 const previewHtml = computed(() => renderMarkdown(body.value))
 
-// Category L1/L2 editing (pencil-button controlled, same pattern as title)
+// ─── Category editing ────────────────────────────────────────────────────────
 const editingCategory = ref(false)
 const categoryL1Draft = ref('')
 const categoryL2Draft = ref('')
@@ -666,16 +694,12 @@ function onL2Blur() {
   setTimeout(() => { showL2Suggestions.value = false }, 150)
 }
 
-// Rating
+// ─── Rating ───────────────────────────────────────────────────────────────────
 function setRating(r: number) {
-  if (note.value.rating === r) {
-    store.setRating(0)
-  } else {
-    store.setRating(r)
-  }
+  store.setRating(note.value.rating === r ? 0 : r)
 }
 
-// Auto-save
+// ─── Auto-save ────────────────────────────────────────────────────────────────
 const autoSaveTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 const autoSaveStatus = ref<'idle' | 'saving' | 'saved'>('idle')
 
@@ -692,7 +716,6 @@ function triggerAutoSave() {
 
 watch(() => body.value, triggerAutoSave)
 watch(() => body.value, onCopilotBodyChange)
-// Sync external body changes (note switch, programmatic) → contenteditable DOM
 watch(() => body.value, (val) => {
   if (_skipBodyWatch) return
   const el = editableRef.value
@@ -700,24 +723,23 @@ watch(() => body.value, (val) => {
   const cur = el.innerText.replace(/\n$/, '')
   if (cur !== val) {
     if (_ghostSpan) removeGhostSpan(false)
-    // Save cursor before overwriting so programmatic updates don't jump to position 0
     const focused = document.activeElement === el
     const offset  = focused ? getBodyCursorOffset() : -1
     el.innerText = val
     if (focused && offset >= 0) nextTick(() => setBodyCursorOffset(offset))
   }
 }, { flush: 'sync' })
-watch(() => note.value.title, triggerAutoSave)
-watch(() => note.value.lat, triggerAutoSave)
-watch(() => note.value.lng, triggerAutoSave)
+watch(() => note.value.title,      triggerAutoSave)
+watch(() => note.value.lat,        triggerAutoSave)
+watch(() => note.value.lng,        triggerAutoSave)
 watch(() => note.value.categoryL1, triggerAutoSave)
 watch(() => note.value.categoryL2, triggerAutoSave)
-watch(() => note.value.rating, triggerAutoSave)
-watch(() => note.value.date, triggerAutoSave)
-watch(() => note.value.cover, triggerAutoSave)
-watch(() => note.value.status, triggerAutoSave)
+watch(() => note.value.rating,     triggerAutoSave)
+watch(() => note.value.date,       triggerAutoSave)
+watch(() => note.value.cover,      triggerAutoSave)
+watch(() => note.value.status,     triggerAutoSave)
 
-// Save shortcut
+// ─── Save shortcut ────────────────────────────────────────────────────────────
 function onKeydown(e: KeyboardEvent) {
   if ((e.metaKey || e.ctrlKey) && e.key === 's') {
     e.preventDefault()
@@ -725,12 +747,11 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-// Paste handler (image files → markdown; plain text → insert at cursor)
+// ─── Paste handler ────────────────────────────────────────────────────────────
 async function onPaste(e: ClipboardEvent) {
   const items = e.clipboardData?.items
   if (!items) return
 
-  // Image paste: save file and insert markdown
   for (const item of Array.from(items)) {
     if (!item.type.startsWith('image/')) continue
     const file = item.getAsFile()
@@ -747,14 +768,14 @@ async function onPaste(e: ClipboardEvent) {
     await writeFile(`${imgDir}/${filename}`, bytes)
     uploadTravelImage(filename, note.value.id, bytes, item.type).catch(() => {})
 
-    const mdText      = `![${filename}](images/${filename})`
-    const offset      = getBodyCursorOffset()
-    const newBody     = body.value.slice(0, offset) + mdText + body.value.slice(offset)
-    const el          = editableRef.value
-    _skipBodyWatch    = true
-    body.value        = newBody
+    const mdText   = `![${filename}](images/${filename})`
+    const offset   = getBodyCursorOffset()
+    const newBody  = body.value.slice(0, offset) + mdText + body.value.slice(offset)
+    const el       = editableRef.value
+    _skipBodyWatch = true
+    body.value     = newBody
     if (el) el.innerText = newBody
-    const newOffset   = offset + mdText.length
+    const newOffset = offset + mdText.length
     nextTick(() => {
       _skipBodyWatch = false
       el?.focus()
@@ -763,7 +784,6 @@ async function onPaste(e: ClipboardEvent) {
     return
   }
 
-  // Plain-text paste: insert at cursor as text node
   const text = e.clipboardData?.getData('text/plain')
   if (!text) return
   if (_ghostSpan) removeGhostSpan(false)
@@ -783,16 +803,38 @@ async function onPaste(e: ClipboardEvent) {
   nextTick(() => { _skipBodyWatch = false })
 }
 
-// Image asset base
-initImageAssetBase()
+// ─── Split-mode synchronized scrolling ───────────────────────────────────────
+const sourcePaneRef  = ref<HTMLDivElement>()
+const previewPaneRef = ref<HTMLDivElement>()
+let _activeScrollPane: 'source' | 'preview' | null = null
+function setScrollSource()  { _activeScrollPane = 'source' }
+function setScrollPreview() { _activeScrollPane = 'preview' }
+function clearScrollPane()  { _activeScrollPane = null }
 
-// Map picker
+function onSourceScroll() {
+  if (layout.value !== 'split' || _activeScrollPane !== 'source') return
+  const src = sourcePaneRef.value
+  const dst = previewPaneRef.value
+  if (!src || !dst) return
+  const ratio = src.scrollTop / Math.max(1, src.scrollHeight - src.clientHeight)
+  dst.scrollTop = ratio * (dst.scrollHeight - dst.clientHeight)
+}
+
+function onPreviewScroll() {
+  if (layout.value !== 'split' || _activeScrollPane !== 'preview') return
+  const src = previewPaneRef.value
+  const dst = sourcePaneRef.value
+  if (!src || !dst) return
+  const ratio = src.scrollTop / Math.max(1, src.scrollHeight - src.clientHeight)
+  dst.scrollTop = ratio * (dst.scrollHeight - dst.clientHeight)
+}
+
+// ─── Map picker ───────────────────────────────────────────────────────────────
 const showMapPicker = ref(false)
 const pickerMapContainer = ref<HTMLElement>()
 let pickerMap: L.Map | null = null
 let pickerMarker: L.Marker | null = null
 
-// Search
 const pickerSearchQuery   = ref('')
 const pickerSearchResults = ref<{ display_name: string; lat: string; lon: string }[]>([])
 const pickerSearchLoading = ref(false)
@@ -876,219 +918,36 @@ function closePicker() {
   }
   pickerMarker = null
 }
+
+initImageAssetBase()
 </script>
 
 <template>
   <div class="travel-editor" @keydown="onKeydown">
-    <!-- Meta bar -->
-    <div class="meta-bar">
-      <div class="meta-row title-row">
-        <!-- Category area (left of title) -->
-        <div class="category-area">
-          <template v-if="editingCategory">
-            <div class="cat-input-wrap">
-              <input
-                v-model="categoryL1Draft"
-                class="meta-input category-input"
-                :placeholder="t('travel.categoryPlaceholder')"
-                @focus="showL1Suggestions = true"
-                @blur="onL1Blur"
-              />
-              <div v-if="showL1Suggestions && l1Suggestions.length" class="suggestions">
-                <button
-                  v-for="cat in l1Suggestions"
-                  :key="cat"
-                  class="suggestion-item"
-                  @mousedown.prevent="applyL1(cat)"
-                >{{ cat }}</button>
-              </div>
-            </div>
-            <span class="cat-sep-edit">·</span>
-            <div class="cat-input-wrap">
-              <input
-                v-model="categoryL2Draft"
-                class="meta-input category-input"
-                :placeholder="t('travel.categoryPlaceholder')"
-                @focus="showL2Suggestions = true"
-                @blur="onL2Blur"
-              />
-              <div v-if="showL2Suggestions && l2Suggestions.length" class="suggestions">
-                <button
-                  v-for="cat in l2Suggestions"
-                  :key="cat"
-                  class="suggestion-item"
-                  @mousedown.prevent="applyL2(cat)"
-                >{{ cat }}</button>
-              </div>
-            </div>
-            <button class="title-action-btn" @mousedown.prevent="confirmCategory"><Check :size="13" /></button>
-            <button class="title-action-btn" @mousedown.prevent="cancelCategory"><X :size="13" /></button>
-          </template>
-          <template v-else>
-            <span class="cat-text">{{ note.categoryL1 || '—' }}</span>
-            <span class="cat-sep">·</span>
-            <span class="cat-text">{{ note.categoryL2 || '—' }}</span>
-            <button class="title-action-btn cat-edit-btn" @click="startEditCategory"><Pencil :size="11" /></button>
-          </template>
-        </div>
 
-        <!-- Title display / edit -->
-        <div class="title-area">
-          <template v-if="editingTitle">
-            <button class="title-action-btn" @mousedown.prevent="confirmTitle"><Check :size="13" /></button>
-            <button class="title-action-btn" @mousedown.prevent="cancelTitle"><X :size="13" /></button>
-            <input
-              ref="titleInputRef"
-              v-model="titleDraft"
-              class="meta-input title-edit-input"
-              @keydown.enter="confirmTitle"
-              @keydown.escape="cancelTitle"
-              @blur="confirmTitle"
-            />
-          </template>
-          <template v-else>
-            <button class="title-action-btn title-edit-trigger" @click="startEditTitle"><Pencil :size="13" /></button>
-            <span class="title-display">{{ note.title || t('travel.titlePlaceholder') }}</span>
-          </template>
-        </div>
-
-        <!-- Tag area -->
-        <div class="tag-area">
-          <span
-            v-for="tag in note.tags"
-            :key="tag"
-            class="tag-chip"
-          >
-            <Hash :size="10" class="tag-hash" />{{ tag }}
-            <button class="tag-remove-btn" @mousedown.prevent="removeTag(tag)"><X :size="9" /></button>
-          </span>
-          <div v-if="tagInputVisible" class="tag-input-wrap">
-            <input
-              ref="tagInputRef"
-              v-model="tagInputValue"
-              class="tag-input"
-              :placeholder="t('travel.tagPlaceholder')"
-              @keydown.enter.prevent="addTag"
-              @keydown.escape="tagInputVisible = false; tagSuggestionsVisible = false; tagInputValue = ''"
-              @blur="onTagInputBlur"
-            />
-            <div v-if="tagSuggestionsVisible && tagSuggestions.length" class="tag-suggestions">
-              <button
-                v-for="sug in tagSuggestions"
-                :key="sug"
-                class="tag-suggestion-item"
-                @mousedown.prevent="applyTag(sug)"
-              >#{{ sug }}</button>
-            </div>
-          </div>
-          <button v-else class="tag-add-btn" :title="t('travel.tags')" @click="startAddTag">
-            <Plus :size="11" />
-          </button>
-        </div>
-      </div>
-
-      <div class="meta-row">
-        <!-- Lat -->
-        <div class="meta-field">
-          <span class="meta-label">{{ t('travel.lat') }}</span>
-          <input
-            :value="note.lat"
-            type="number"
-            step="any"
-            class="meta-input coord-input"
-            :placeholder="t('travel.lat')"
-            @input="store.setLatLng(Number(($event.target as HTMLInputElement).value), note.lng)"
-          />
-        </div>
-
-        <!-- Lng -->
-        <div class="meta-field">
-          <span class="meta-label">{{ t('travel.lng') }}</span>
-          <input
-            :value="note.lng"
-            type="number"
-            step="any"
-            class="meta-input coord-input"
-            :placeholder="t('travel.lng')"
-            @input="store.setLatLng(note.lat, Number(($event.target as HTMLInputElement).value))"
-          />
-        </div>
-
-        <!-- Map picker -->
-        <button class="picker-btn" :title="t('travel.mapPick')" @click="openMapPicker">
-          <Crosshair :size="14" />
-        </button>
-
-        <!-- Date -->
-        <div class="meta-field">
-          <span class="meta-label">{{ t('travel.date') }}</span>
-          <input
-            v-model="note.date"
-            type="date"
-            class="meta-input date-input"
-            @input="store.setDate(note.date)"
-          />
-        </div>
-
-        <!-- Rating -->
-        <div class="meta-field rating-field">
-          <span class="meta-label">{{ t('travel.rating') }}</span>
-          <div class="star-row">
-            <button
-              v-for="i in 5"
-              :key="i"
-              class="star-btn"
-              :class="{ filled: i <= note.rating }"
-              @click="setRating(i)"
-            >
-              <Star :size="14" />
-            </button>
-          </div>
-        </div>
-
-        <!-- Status -->
-        <div class="meta-field status-field">
-          <span class="meta-label">{{ t('travel.status') }}</span>
-          <div class="status-toggle">
-            <button
-              class="status-btn"
-              :class="{ active: note.status === 'visited' }"
-              @click="store.setStatus('visited')"
-            >{{ t('travel.visited') }}</button>
-            <button
-              class="status-btn"
-              :class="{ active: note.status === 'upcoming' }"
-              @click="store.setStatus('upcoming')"
-            >{{ t('travel.upcoming') }}</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Toolbar -->
+    <!-- ── Toolbar ──────────────────────────────────────────────────────────── -->
     <div class="editor-toolbar">
-      <div class="layout-switch">
-        <button
-          class="layout-btn"
-          :class="{ active: layout === 'edit' }"
-          @click="layout = 'edit'"
-        >{{ t('travel.editMode') }}</button>
-        <button
-          class="layout-btn"
-          :class="{ active: layout === 'split' }"
-          @click="layout = 'split'"
-        >{{ t('travel.splitMode') }}</button>
-        <button
-          class="layout-btn"
-          :class="{ active: layout === 'preview' }"
-          @click="layout = 'preview'"
-        >{{ t('travel.previewMode') }}</button>
-        <button
-          class="layout-btn"
-          :class="{ active: layout === 'wysiwyg' }"
-          @click="layout = 'wysiwyg'"
-        >{{ t('travel.wysiwygMode') }}</button>
+      <div class="fmt-group" :class="{ hidden: layout !== 'wysiwyg' }">
+        <button class="fmt-btn" :class="{ active: isActive('bold') }" title="Bold" @mousedown.prevent="fmtBold"><Bold :size="13" /></button>
+        <button class="fmt-btn" :class="{ active: isActive('italic') }" title="Italic" @mousedown.prevent="fmtItalic"><Italic :size="13" /></button>
+        <button class="fmt-btn" :class="{ active: isActive('strike') }" title="Strikethrough" @mousedown.prevent="fmtStrike"><Strikethrough :size="13" /></button>
+        <button class="fmt-btn" :class="{ active: isActive('code') }" title="Inline Code" @mousedown.prevent="fmtCode"><Code :size="13" /></button>
+        <div class="fmt-sep" />
+        <button class="fmt-btn fmt-btn--text" :class="{ active: isActive('heading', { level: 1 }) }" title="Heading 1" @mousedown.prevent="fmtH(1)">H1</button>
+        <button class="fmt-btn fmt-btn--text" :class="{ active: isActive('heading', { level: 2 }) }" title="Heading 2" @mousedown.prevent="fmtH(2)">H2</button>
+        <button class="fmt-btn fmt-btn--text" :class="{ active: isActive('heading', { level: 3 }) }" title="Heading 3" @mousedown.prevent="fmtH(3)">H3</button>
+        <div class="fmt-sep" />
+        <button class="fmt-btn" :class="{ active: isActive('bulletList') }" title="Bullet List" @mousedown.prevent="fmtBullet"><List :size="13" /></button>
+        <button class="fmt-btn" :class="{ active: isActive('orderedList') }" title="Numbered List" @mousedown.prevent="fmtOrdered"><ListOrdered :size="13" /></button>
+        <button class="fmt-btn" :class="{ active: isActive('blockquote') }" title="Blockquote" @mousedown.prevent="fmtQuote"><Quote :size="13" /></button>
+        <button class="fmt-btn" :class="{ active: isActive('codeBlock') }" title="Code Block" @mousedown.prevent="fmtCodeBlock"><FileCode :size="13" /></button>
+        <button class="fmt-btn" title="Horizontal Rule" @mousedown.prevent="fmtHr"><Minus :size="13" /></button>
       </div>
+
+      <div v-if="layout !== 'wysiwyg'" class="fmt-mode-label">
+        {{ layout === 'edit' ? t('travel.editMode') : layout === 'preview' ? t('travel.previewMode') : t('travel.splitMode') }}
+      </div>
+
       <div class="toolbar-right">
         <span v-if="hasGhostSuggestion" class="copilot-hint">
           <kbd>Tab</kbd> {{ t('travel.copilot.accept') }} &middot;
@@ -1096,7 +955,14 @@ function closePicker() {
           <kbd>Esc</kbd> {{ t('travel.copilot.dismiss') }}
         </span>
         <span v-else-if="autoSaveStatus === 'saving'" class="save-status">{{ t('travel.saving') }}</span>
-        <span v-else-if="autoSaveStatus === 'saved'" class="save-status success">{{ t('travel.saved') }}</span>
+        <span v-else-if="autoSaveStatus === 'saved'" class="save-status saved">{{ t('travel.saved') }}</span>
+
+        <div class="mode-switch">
+          <button class="mode-btn" :class="{ active: layout === 'wysiwyg' }" @click="layout = 'wysiwyg'">{{ t('travel.wysiwygMode') }}</button>
+          <button class="mode-btn" :class="{ active: layout === 'split' }" @click="layout = 'split'">{{ t('travel.splitMode') }}</button>
+          <button class="mode-btn" :class="{ active: layout === 'edit' }" @click="layout = 'edit'">{{ t('travel.editMode') }}</button>
+          <button class="mode-btn" :class="{ active: layout === 'preview' }" @click="layout = 'preview'">{{ t('travel.previewMode') }}</button>
+        </div>
 
         <!-- Copilot toggle + settings -->
         <div class="copilot-wrap" @click.stop>
@@ -1193,7 +1059,169 @@ function closePicker() {
       </div>
     </div>
 
-    <!-- Map picker modal -->
+    <!-- ── Document header (cover + title + meta) ───────────────────────────── -->
+    <div class="doc-header">
+      <div class="doc-inner">
+        <div class="title-row">
+          <button class="cover-btn" :title="t('travel.changeCover')" @click="changeCoverEmoji">
+            <span v-if="isCoverEmoji" class="cover-emoji">{{ note.cover }}</span>
+            <span v-else class="cover-emoji cover-emoji--default">✈️</span>
+          </button>
+          <input
+            ref="titleInputRef"
+            v-model="titleDraft"
+            class="title-input"
+            :placeholder="t('travel.titlePlaceholder')"
+            @keydown.enter.prevent="confirmTitle(); ($event.target as HTMLInputElement).blur()"
+            @blur="confirmTitle"
+          />
+        </div>
+
+        <div class="doc-meta">
+
+          <!-- Category (pencil-click edit) -->
+          <div class="meta-item meta-category" :class="{ 'meta-category--editing': editingCategory }">
+            <Folder :size="11" class="meta-icon" />
+            <template v-if="editingCategory">
+              <div class="cat-input-wrap">
+                <input
+                  v-model="categoryL1Draft"
+                  class="meta-cat-input"
+                  :placeholder="t('travel.categoryPlaceholder')"
+                  @focus="showL1Suggestions = true"
+                  @blur="onL1Blur"
+                />
+                <div v-if="showL1Suggestions && l1Suggestions.length" class="suggestions">
+                  <button v-for="cat in l1Suggestions" :key="cat" class="suggestion-item" @mousedown.prevent="applyL1(cat)">{{ cat }}</button>
+                </div>
+              </div>
+              <span class="meta-cat-sep">·</span>
+              <div class="cat-input-wrap">
+                <input
+                  v-model="categoryL2Draft"
+                  class="meta-cat-input"
+                  :placeholder="t('travel.categoryPlaceholder')"
+                  @focus="showL2Suggestions = true"
+                  @blur="onL2Blur"
+                />
+                <div v-if="showL2Suggestions && l2Suggestions.length" class="suggestions">
+                  <button v-for="cat in l2Suggestions" :key="cat" class="suggestion-item" @mousedown.prevent="applyL2(cat)">{{ cat }}</button>
+                </div>
+              </div>
+              <button class="meta-action-btn" @mousedown.prevent="confirmCategory"><Check :size="11" /></button>
+              <button class="meta-action-btn" @mousedown.prevent="cancelCategory"><X :size="11" /></button>
+            </template>
+            <template v-else>
+              <span class="meta-cat-text">{{ note.categoryL1 || '—' }}</span>
+              <span class="meta-cat-sep">·</span>
+              <span class="meta-cat-text">{{ note.categoryL2 || '—' }}</span>
+              <button class="meta-action-btn meta-cat-edit-btn" @click="startEditCategory"><Pencil :size="10" /></button>
+            </template>
+          </div>
+
+          <span class="meta-dot">·</span>
+
+          <!-- Date -->
+          <div class="meta-item">
+            <Calendar :size="11" class="meta-icon" />
+            <input v-model="note.date" type="date" class="meta-date-input" @input="store.setDate(note.date)" />
+          </div>
+
+          <span class="meta-dot">·</span>
+
+          <!-- Coordinates + map picker -->
+          <div class="meta-item meta-coords">
+            <MapPin :size="11" class="meta-icon" />
+            <input
+              :value="note.lat || ''"
+              type="number"
+              step="any"
+              class="meta-coord-input"
+              :placeholder="t('travel.lat')"
+              @input="store.setLatLng(Number(($event.target as HTMLInputElement).value), note.lng)"
+            />
+            <span class="meta-coord-comma">,</span>
+            <input
+              :value="note.lng || ''"
+              type="number"
+              step="any"
+              class="meta-coord-input"
+              :placeholder="t('travel.lng')"
+              @input="store.setLatLng(note.lat, Number(($event.target as HTMLInputElement).value))"
+            />
+            <button class="meta-action-btn meta-picker-btn" :title="t('travel.mapPick')" @click="openMapPicker">
+              <Crosshair :size="11" />
+            </button>
+          </div>
+
+          <span class="meta-dot">·</span>
+
+          <!-- Rating -->
+          <div class="meta-item">
+            <div class="star-row">
+              <button
+                v-for="i in 5"
+                :key="i"
+                class="star-btn"
+                :class="{ filled: i <= note.rating }"
+                @click="setRating(i)"
+              >
+                <Star :size="12" />
+              </button>
+            </div>
+          </div>
+
+          <span class="meta-dot">·</span>
+
+          <!-- Status -->
+          <div class="meta-item">
+            <div class="status-toggle">
+              <button
+                class="status-btn"
+                :class="{ active: note.status === 'visited' }"
+                @click="store.setStatus('visited')"
+              >{{ t('travel.visited') }}</button>
+              <button
+                class="status-btn"
+                :class="{ active: note.status === 'upcoming' }"
+                @click="store.setStatus('upcoming')"
+              >{{ t('travel.upcoming') }}</button>
+            </div>
+          </div>
+
+          <span class="meta-dot">·</span>
+
+          <!-- Tags -->
+          <div class="meta-tags">
+            <span v-for="tag in note.tags" :key="tag" class="tag-chip">
+              <Hash :size="9" class="tag-hash" />{{ tag }}
+              <button class="tag-remove-btn" @mousedown.prevent="removeTag(tag)">×</button>
+            </span>
+            <div v-if="tagInputVisible" class="tag-input-wrap">
+              <input
+                ref="tagInputRef"
+                v-model="tagInputValue"
+                class="tag-input"
+                :placeholder="t('travel.tagPlaceholder')"
+                @keydown.enter.prevent="addTag"
+                @keydown.escape="tagInputVisible = false; tagSuggestionsVisible = false; tagInputValue = ''"
+                @blur="onTagInputBlur"
+              />
+              <div v-if="tagSuggestionsVisible && tagSuggestions.length" class="tag-suggestions">
+                <button v-for="sug in tagSuggestions" :key="sug" class="tag-suggestion-item" @mousedown.prevent="applyTag(sug)">#{{ sug }}</button>
+              </div>
+            </div>
+            <button v-else class="tag-add-btn" :title="t('travel.tags')" @click="startAddTag">
+              <Plus :size="10" />
+              <span v-if="note.tags.length === 0" class="tag-add-label">{{ t('travel.tags') }}</span>
+            </button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Map picker modal ──────────────────────────────────────────────────── -->
     <Teleport to="body">
       <div v-if="showMapPicker" class="picker-overlay" @click="closePicker">
         <div class="picker-dialog" @click.stop>
@@ -1203,7 +1231,6 @@ function closePicker() {
               <X :size="16" />
             </button>
           </div>
-          <!-- Search bar -->
           <div class="picker-search-wrap">
             <Search :size="13" class="picker-search-icon" />
             <input
@@ -1215,7 +1242,6 @@ function closePicker() {
             />
             <Loader2 v-if="pickerSearchLoading" :size="13" class="picker-search-spin" />
           </div>
-          <!-- Search results -->
           <div v-if="pickerSearchResults.length" class="picker-search-results">
             <button
               v-for="r in pickerSearchResults"
@@ -1235,15 +1261,23 @@ function closePicker() {
       </div>
     </Teleport>
 
-    <!-- Content area -->
+    <!-- ── Content area ──────────────────────────────────────────────────────── -->
     <div class="editor-content" :class="`layout-${layout}`">
-      <!-- WYSIWYG pane (Typora-style) -->
-      <div v-if="layout === 'wysiwyg'" class="wysiwyg-pane">
+
+      <!-- WYSIWYG pane -->
+      <div v-show="layout === 'wysiwyg'" class="wysiwyg-pane">
         <EditorContent :editor="wysiwygEditor" class="wysiwyg-editor" />
       </div>
 
-      <!-- Edit pane -->
-      <div v-show="layout !== 'preview' && layout !== 'wysiwyg'" class="edit-pane">
+      <!-- Source pane (edit + split) -->
+      <div
+        ref="sourcePaneRef"
+        v-show="layout === 'edit' || layout === 'split'"
+        class="source-pane"
+        @scroll="onSourceScroll"
+        @pointerenter="setScrollSource"
+        @pointerleave="clearScrollPane"
+      >
         <div
           ref="editableRef"
           class="md-editor"
@@ -1258,15 +1292,24 @@ function closePicker() {
         />
       </div>
 
-      <!-- Preview pane -->
-      <div v-show="layout !== 'edit' && layout !== 'wysiwyg'" class="preview-pane">
+      <!-- Preview pane (preview + split) -->
+      <div
+        ref="previewPaneRef"
+        v-show="layout === 'preview' || layout === 'split'"
+        class="preview-pane"
+        @scroll="onPreviewScroll"
+        @pointerenter="setScrollPreview"
+        @pointerleave="clearScrollPane"
+      >
         <div class="markdown-body" v-html="previewHtml" @click="onPreviewClick" />
       </div>
+
     </div>
   </div>
 </template>
 
 <style scoped>
+/* ── Root ─────────────────────────────────────────────────────────────────── */
 .travel-editor {
   display: flex;
   flex-direction: column;
@@ -1274,693 +1317,153 @@ function closePicker() {
   background: #ffffff;
 }
 
-/* Meta bar */
-.meta-bar {
-  padding: 10px 14px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex-shrink: 0;
-  background: rgba(250, 250, 250, 0.8);
-}
-
-.meta-row {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.meta-field {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  position: relative;
-}
-
-.meta-label {
-  font-size: 11px;
-  color: #8e8e93;
-  flex-shrink: 0;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.meta-input {
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  background: white;
-  border-radius: 6px;
-  padding: 5px 8px;
-  font-size: 12px;
-  color: #1c1c1e;
-  outline: none;
-  transition: border-color 0.12s;
-}
-
-.meta-input:focus {
-  border-color: rgba(34, 63, 121, 0.35);
-}
-
-.title-row {
-  gap: 6px;
-  flex-wrap: nowrap;
-}
-
-.category-area {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.cat-text {
-  font-size: 12px;
-  font-weight: 500;
-  color: #8e8e93;
-  white-space: nowrap;
-}
-
-.cat-sep {
-  font-size: 12px;
-  color: #c7c7cc;
-}
-
-.cat-sep-edit {
-  font-size: 12px;
-  color: #c7c7cc;
-  flex-shrink: 0;
-}
-
-.cat-edit-btn {
-  opacity: 0;
-  transition: opacity 0.12s;
-}
-
-.category-area:hover .cat-edit-btn {
-  opacity: 1;
-}
-
-.title-area {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-}
-
-.title-display {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1c1c1e;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
-}
-
-.title-edit-input {
-  flex: 1;
-  min-width: 0;
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.title-action-btn {
-  width: 22px;
-  height: 22px;
-  border: none;
-  background: transparent;
-  color: #8e8e93;
-  border-radius: 5px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background 0.12s, color 0.12s;
-}
-
-.title-action-btn:hover {
-  background: rgba(0, 0, 0, 0.06);
-  color: #3c3c43;
-}
-
-/* ─── Tag area ────────────────────────────────────────────────────────────── */
-
-.tag-area {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-  flex-wrap: nowrap;
-  max-width: 220px;
-  min-width: 0;
-}
-
-.tag-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px 5px 2px 4px;
-  background: rgba(34, 63, 121, 0.08);
-  color: #223F79;
-  border-radius: 5px;
-  font-size: 11px;
-  font-weight: 500;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.tag-hash {
-  opacity: 0.6;
-  flex-shrink: 0;
-}
-
-.tag-remove-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  border: none;
-  background: transparent;
-  color: #223F79;
-  opacity: 0.5;
-  cursor: pointer;
-  padding: 0;
-  border-radius: 3px;
-  flex-shrink: 0;
-  transition: opacity 0.12s;
-}
-
-.tag-remove-btn:hover {
-  opacity: 1;
-}
-
-.tag-add-btn {
-  width: 20px;
-  height: 20px;
-  border: none;
-  background: transparent;
-  color: #8e8e93;
-  border-radius: 5px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background 0.12s, color 0.12s;
-}
-
-.tag-add-btn:hover {
-  background: rgba(0, 0, 0, 0.06);
-  color: #3c3c43;
-}
-
-.tag-input-wrap {
-  position: relative;
-}
-
-.tag-input {
-  width: 80px;
-  height: 22px;
-  border: 1px solid rgba(34, 63, 121, 0.3);
-  border-radius: 5px;
-  padding: 0 6px;
-  font-size: 11px;
-  background: rgba(34, 63, 121, 0.04);
-  color: #1c1c1e;
-  outline: none;
-}
-
-.tag-input:focus {
-  border-color: rgba(34, 63, 121, 0.5);
-}
-
-.tag-suggestions {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  min-width: 120px;
-  background: rgba(250, 250, 252, 0.98);
-  border: 1px solid rgba(0, 0, 0, 0.10);
-  border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
-  padding: 4px;
-  z-index: 60;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.tag-suggestion-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 5px 8px;
-  border-radius: 5px;
-  border: none;
-  background: none;
-  font-size: 11.5px;
-  color: #223F79;
-  cursor: pointer;
-  transition: background 0.10s;
-}
-
-.tag-suggestion-item:hover {
-  background: rgba(34, 63, 121, 0.08);
-}
-
-.coord-input { width: 130px; }
-.date-input { width: 130px; }
-.category-input { width: 90px; }
-
-.category-field { position: relative; flex-wrap: wrap; }
-
-.cat-input-wrap { position: relative; }
-
-.category-display {
-  font-size: 12px;
-  color: #1c1c1e;
-  padding: 0 4px;
-}
-
-.suggestions {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  min-width: 140px;
-  background: white;
-  border: 1px solid rgba(0, 0, 0, 0.10);
-  border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.10);
-  padding: 4px;
-  z-index: 50;
-  max-height: 160px;
-  overflow-y: auto;
-}
-
-.suggestion-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 5px 8px;
-  border-radius: 5px;
-  border: none;
-  background: none;
-  font-size: 12px;
-  color: #1c1c1e;
-  cursor: pointer;
-}
-
-.suggestion-item:hover {
-  background: rgba(0, 0, 0, 0.05);
-}
-
-.rating-field {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.star-row {
-  display: flex;
-  gap: 1px;
-}
-
-.star-btn {
-  border: none;
-  background: none;
-  padding: 2px;
-  cursor: pointer;
-  color: #d1d1d6;
-  transition: color 0.12s;
-}
-
-.star-btn:hover,
-.star-btn.filled {
-  color: #ff9500;
-}
-
-.star-btn.filled :deep(svg) {
-  fill: #ff9500;
-}
-
-.status-field {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.status-toggle {
-  display: flex;
-  gap: 0;
-  border-radius: 6px;
-  overflow: hidden;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-}
-
-.status-btn {
-  padding: 3px 10px;
-  border: none;
-  background: white;
-  font-size: 11px;
-  font-weight: 500;
-  color: #8e8e93;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
-}
-
-.status-btn:hover {
-  background: rgba(0, 0, 0, 0.04);
-}
-
-.status-btn.active {
-  background: #223F79;
-  color: white;
-}
-
-/* Toolbar */
+/* ── Toolbar ──────────────────────────────────────────────────────────────── */
 .editor-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 14px;
+  padding: 0 10px 0 8px;
+  height: 42px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   flex-shrink: 0;
-  background: white;
+  background: rgba(250, 250, 250, 0.96);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  gap: 8px;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-.layout-switch {
+.fmt-group {
   display: flex;
-  gap: 2px;
-  background: rgba(0, 0, 0, 0.04);
-  border-radius: 6px;
-  padding: 2px;
+  align-items: center;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 
-.layout-btn {
+.fmt-group.hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.fmt-mode-label {
+  flex: 1;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #8e8e93;
+  padding-left: 4px;
+}
+
+.fmt-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: #6e6e73;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
+}
+
+.fmt-btn:hover { background: rgba(0, 0, 0, 0.06); color: #1c1c1e; }
+.fmt-btn.active { background: rgba(34, 63, 121, 0.10); color: #223F79; }
+
+.fmt-btn--text {
+  font-size: 11px;
+  font-weight: 700;
+  width: 28px;
+  letter-spacing: -0.3px;
+}
+
+.fmt-sep {
+  width: 1px;
+  height: 16px;
+  background: rgba(0, 0, 0, 0.08);
+  margin: 0 3px;
+  flex-shrink: 0;
+}
+
+/* Mode switch */
+.mode-switch {
+  display: flex;
+  gap: 1px;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 7px;
+  padding: 2px;
+  flex-shrink: 0;
+}
+
+.mode-btn {
   border: none;
   background: transparent;
   color: #8e8e93;
-  font-size: 11px;
-  padding: 4px 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.12s;
-}
-
-.layout-btn.active {
-  background: white;
-  color: #1c1c1e;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
-}
-
-.save-btn {
-  border: none;
-  background: rgba(34, 63, 121, 0.10);
-  color: #223F79;
-  font-size: 12px;
+  font-size: 10.5px;
   font-weight: 500;
-  padding: 5px 14px;
-  border-radius: 6px;
+  padding: 3px 9px;
+  border-radius: 5px;
   cursor: pointer;
-  transition: background 0.12s;
+  transition: all 0.15s;
+  white-space: nowrap;
 }
 
-.save-btn:hover {
-  background: rgba(34, 63, 121, 0.18);
-}
-
-:deep(.save-status) {
-  font-size: 11px;
-  color: #8e8e93;
-  margin-right: 8px;
-}
-
-:deep(.save-status.success) {
-  color: #34c759;
+.mode-btn.active {
+  background: #fff;
+  color: #1c1c1e;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.10), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
 }
 
 .toolbar-right {
   display: flex;
   align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
-.picker-btn {
-  width: 26px;
-  height: 26px;
+.save-btn {
   border: none;
-  background: rgba(34, 63, 121, 0.08);
+  background: rgba(34, 63, 121, 0.09);
   color: #223F79;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background 0.12s;
-  flex-shrink: 0;
-}
-
-.picker-btn:hover {
-  background: rgba(34, 63, 121, 0.15);
-}
-
-/* Map picker modal */
-.picker-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.25);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 200;
-  backdrop-filter: blur(2px);
-}
-
-.picker-dialog {
-  background: white;
-  border-radius: 14px;
-  width: 520px;
-  height: 420px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
-}
-
-.picker-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-}
-
-.picker-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1c1c1e;
-  margin: 0;
-}
-
-.picker-close {
-  width: 26px;
-  height: 26px;
-  border: none;
-  background: transparent;
-  color: #8e8e93;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-
-.picker-close:hover {
-  background: rgba(0, 0, 0, 0.06);
-}
-
-.picker-search-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-  position: relative;
-}
-
-.picker-search-icon {
-  color: #8e8e93;
-  flex-shrink: 0;
-}
-
-.picker-search-input {
-  flex: 1;
-  border: none;
-  outline: none;
-  font-size: 12.5px;
-  color: #1c1c1e;
-  background: transparent;
-}
-
-.picker-search-input::placeholder {
-  color: #aeaeb2;
-}
-
-.picker-search-spin {
-  color: #8e8e93;
-  animation: copilot-spin 0.7s linear infinite;
-  flex-shrink: 0;
-}
-
-.picker-search-results {
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-  max-height: 160px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-}
-
-.picker-result-item {
-  text-align: left;
-  padding: 7px 14px;
-  font-size: 12px;
-  color: #1c1c1e;
-  border: none;
-  background: none;
-  cursor: pointer;
-  line-height: 1.4;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
-}
-
-.picker-result-item:last-child {
-  border-bottom: none;
-}
-
-.picker-result-item:hover {
-  background: rgba(34, 63, 121, 0.06);
-}
-
-.picker-map {
-  flex: 1;
-  min-height: 0;
-  background: #e5e7eb;
-}
-
-.picker-footer {
-  padding: 10px 16px;
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
-  display: flex;
-  justify-content: flex-end;
-}
-
-.picker-confirm {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 14px;
-  border-radius: 8px;
-  border: none;
-  background: rgba(34, 63, 121, 0.10);
-  color: #223F79;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 500;
+  padding: 4px 13px;
+  border-radius: 6px;
   cursor: pointer;
   transition: background 0.12s;
 }
 
-.picker-confirm:hover {
-  background: rgba(34, 63, 121, 0.18);
-}
+.save-btn:hover { background: rgba(34, 63, 121, 0.16); }
 
-/* Editor content */
-.editor-content {
-  flex: 1;
-  display: flex;
-  min-height: 0;
-  overflow: hidden;
-}
+.save-status { font-size: 11px; color: #aeaeb2; }
+.save-status.saved { color: #34c759; }
 
-.edit-pane,
-.preview-pane {
-  flex: 1;
-  min-width: 0;
-  overflow: auto;
-}
-
-.edit-pane {
-  border-right: 1px solid rgba(0, 0, 0, 0.06);
-  position: relative;
-  background: #fafafa;
-}
-
-.layout-edit .edit-pane { border-right: none; }
-.layout-preview .preview-pane { border-right: none; }
-
-.md-editor {
-  min-height: 100%;
-  outline: none;
-  padding: 14px;
-  font-size: 13px;
-  line-height: 1.7;
-  color: #1c1c1e;
-  font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-wrap: break-word;
-  box-sizing: border-box;
-  caret-color: #1c1c1e;
-}
-.md-editor:empty::before {
-  content: attr(data-placeholder);
-  color: #aeaeb2;
-  pointer-events: none;
-}
-
-/* Copilot toolbar elements */
+/* Copilot */
 .copilot-hint {
-  font-size: 11px;
-  color: #8e8e93;
-  display: flex;
-  align-items: center;
-  gap: 3px;
+  font-size: 10.5px; color: #8e8e93;
+  display: flex; align-items: center; gap: 3px;
 }
 .copilot-hint kbd {
-  font-family: inherit;
-  font-size: 10px;
-  background: rgba(0,0,0,0.06);
-  border: 1px solid rgba(0,0,0,0.12);
-  border-radius: 3px;
-  padding: 0 4px;
-  line-height: 16px;
+  font-family: inherit; font-size: 10px;
+  background: rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 3px; padding: 0 4px; line-height: 16px;
 }
-.copilot-wrap {
-  position: relative;
-}
+.copilot-wrap { position: relative; }
 .copilot-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border: 1px solid rgba(0,0,0,0.12);
-  border-radius: 6px;
-  background: transparent;
-  cursor: pointer;
-  color: #8e8e93;
-  transition: color 0.15s, background 0.15s;
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px;
+  border: 1px solid rgba(0,0,0,0.10); border-radius: 6px;
+  background: transparent; cursor: pointer; color: #8e8e93;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
 }
-.copilot-btn:hover { background: rgba(0,0,0,0.05); color: #3c3c43; }
-.copilot-btn.active { color: #223F79; background: rgba(34,63,121,0.08); border-color: rgba(34,63,121,0.25); }
+.copilot-btn:hover { background: rgba(0,0,0,0.04); color: #3c3c43; }
+.copilot-btn.active { color: #223F79; background: rgba(34,63,121,0.07); border-color: rgba(34,63,121,0.22); }
 
-@keyframes copilot-spin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
-}
+@keyframes copilot-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 @keyframes rainbow-btn {
   0%   { border-color: #ff3b30; color: #ff3b30; box-shadow: 0 0 8px 2px #ff3b3040; background: #ff3b3012; }
   16%  { border-color: #ff9500; color: #ff9500; box-shadow: 0 0 8px 2px #ff950040; background: #ff950012; }
@@ -1970,260 +1473,331 @@ function closePicker() {
   83%  { border-color: #af52de; color: #af52de; box-shadow: 0 0 8px 2px #af52de40; background: #af52de12; }
   100% { border-color: #ff3b30; color: #ff3b30; box-shadow: 0 0 8px 2px #ff3b3040; background: #ff3b3012; }
 }
-.copilot-btn.generating {
-  animation: rainbow-btn 1.8s linear infinite;
-}
-.copilot-btn.generating :deep(svg) {
-  animation: copilot-spin 0.7s linear infinite;
-}
+.copilot-btn.generating { animation: rainbow-btn 1.8s linear infinite; }
+.copilot-btn.generating :deep(svg) { animation: copilot-spin 0.7s linear infinite; }
 
 .copilot-panel {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 200;
-  background: #fff;
-  border: 1px solid rgba(0,0,0,0.1);
-  border-radius: 10px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
-  padding: 12px;
-  min-width: 220px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 200;
+  background: #fff; border: 1px solid rgba(0,0,0,0.10); border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06);
+  padding: 14px; min-width: 230px; display: flex; flex-direction: column; gap: 10px;
 }
-.copilot-toggle-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: pointer;
-}
-.copilot-panel-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #1c1c1e;
-}
-.copilot-checkbox {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  accent-color: #223F79;
-}
-.copilot-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.copilot-label {
-  font-size: 11px;
-  color: #6e6e73;
-  white-space: nowrap;
-}
-.copilot-select {
-  flex: 1;
-  min-width: 0;
-  font-size: 11px;
-  border: 1px solid rgba(0,0,0,0.12);
-  border-radius: 5px;
-  padding: 3px 5px;
-  background: #f5f5f7;
-  color: #1c1c1e;
-  outline: none;
-}
-.copilot-number {
-  width: 52px;
-  font-size: 11px;
-  border: 1px solid rgba(0,0,0,0.12);
-  border-radius: 5px;
-  padding: 3px 5px;
-  background: #f5f5f7;
-  color: #1c1c1e;
-  outline: none;
-  text-align: center;
-}
-.copilot-delay-wrap {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.copilot-unit {
-  font-size: 11px;
-  color: #8e8e93;
-}
+.copilot-toggle-row { display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
+.copilot-panel-title { font-size: 12px; font-weight: 600; color: #1c1c1e; }
+.copilot-checkbox { width: 16px; height: 16px; cursor: pointer; accent-color: #223F79; }
+.copilot-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.copilot-label { font-size: 11px; color: #6e6e73; white-space: nowrap; }
+.copilot-select { flex: 1; min-width: 0; font-size: 11px; border: 1px solid rgba(0,0,0,0.12); border-radius: 5px; padding: 3px 5px; background: #f5f5f7; color: #1c1c1e; outline: none; }
+.copilot-number { width: 52px; font-size: 11px; border: 1px solid rgba(0,0,0,0.12); border-radius: 5px; padding: 3px 5px; background: #f5f5f7; color: #1c1c1e; outline: none; text-align: center; }
+.copilot-delay-wrap { display: flex; align-items: center; gap: 4px; }
+.copilot-unit { font-size: 11px; color: #8e8e93; }
 .copilot-number--wide { width: 68px; }
 
-.preview-pane {
-  background: white;
-  padding: 14px;
+/* ── Document header ──────────────────────────────────────────────────────── */
+.doc-header {
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  padding: 10px 0 0;
+  background: #fff;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-/* ─── WYSIWYG (Tiptap) ─────────────────────────────────────── */
+.doc-inner {
+  padding: 0 40px;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.cover-btn {
+  display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; padding: 0;
+  cursor: pointer; border-radius: 8px; flex-shrink: 0;
+  transition: transform 0.18s ease, opacity 0.15s;
+}
+.cover-btn:hover { transform: scale(1.12); opacity: 0.85; }
+.cover-emoji { font-size: 32px; line-height: 1; display: block; user-select: none; }
+.cover-emoji--default { opacity: 0.3; }
+
+.title-input {
+  flex: 1; min-width: 0;
+  border: none; outline: none; background: transparent;
+  font-size: 28px; font-weight: 700; color: #1c1c1e; line-height: 1.25; padding: 0;
+  letter-spacing: -0.3px; caret-color: #223F79; box-sizing: border-box;
+  user-select: text; -webkit-user-select: text;
+}
+.title-input::placeholder { color: #d1d1d6; font-weight: 600; }
+
+/* Doc meta row */
+.doc-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding-bottom: 14px;
+}
+
+.meta-dot { font-size: 11px; color: #d1d1d6; flex-shrink: 0; }
+.meta-item { display: flex; align-items: center; gap: 4px; position: relative; }
+.meta-icon { color: #aeaeb2; flex-shrink: 0; }
+
+/* Category */
+.meta-category { gap: 4px; }
+.meta-cat-text { font-size: 11.5px; color: #6e6e73; white-space: nowrap; }
+.meta-cat-sep  { font-size: 11px; color: #c7c7cc; }
+.meta-cat-edit-btn { opacity: 0; transition: opacity 0.12s; }
+.meta-category:hover .meta-cat-edit-btn { opacity: 1; }
+.cat-input-wrap { position: relative; }
+.meta-cat-input {
+  width: 80px; font-size: 11px;
+  border: 1px solid rgba(0,0,0,0.12); border-radius: 4px;
+  padding: 2px 6px; outline: none; background: white; color: #1c1c1e; font-family: inherit;
+}
+.meta-cat-input:focus { border-color: rgba(34,63,121,0.35); }
+
+.suggestions {
+  position: absolute; top: calc(100% + 4px); left: 0; min-width: 130px;
+  background: rgba(252,252,254,0.98); border: 1px solid rgba(0,0,0,0.09);
+  border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  padding: 4px; z-index: 60; display: flex; flex-direction: column; gap: 1px;
+}
+.suggestion-item {
+  display: block; width: 100%; text-align: left; padding: 5px 9px;
+  border-radius: 6px; border: none; background: none; font-size: 11.5px;
+  color: #1c1c1e; cursor: pointer; transition: background 0.10s; font-family: inherit;
+}
+.suggestion-item:hover { background: rgba(0,0,0,0.05); }
+
+/* Date */
+.meta-date-input {
+  border: none; background: transparent; outline: none;
+  font-size: 11.5px; color: #6e6e73; cursor: pointer; font-family: inherit; padding: 0;
+}
+.meta-date-input:hover { color: #3c3c43; }
+
+/* Coordinates */
+.meta-coords { gap: 3px; }
+.meta-coord-input {
+  width: 72px; border: none; background: transparent; outline: none;
+  font-size: 11.5px; color: #6e6e73; font-family: inherit; padding: 0; text-align: center;
+}
+.meta-coord-input:focus { color: #1c1c1e; }
+.meta-coord-comma { font-size: 11px; color: #c7c7cc; flex-shrink: 0; }
+
+/* Action buttons (check, x, pencil, crosshair) */
+.meta-action-btn {
+  width: 18px; height: 18px;
+  border: none; background: transparent; color: #8e8e93;
+  border-radius: 4px; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; padding: 0; flex-shrink: 0; transition: background 0.12s, color 0.12s;
+}
+.meta-action-btn:hover { background: rgba(0,0,0,0.06); color: #3c3c43; }
+.meta-picker-btn { color: #223F79; opacity: 0.7; }
+.meta-picker-btn:hover { opacity: 1; background: rgba(34,63,121,0.08); }
+
+/* Rating */
+.star-row { display: flex; gap: 1px; }
+.star-btn { border: none; background: none; padding: 1px; cursor: pointer; color: #d1d1d6; transition: color 0.12s; }
+.star-btn:hover, .star-btn.filled { color: #ff9500; }
+.star-btn.filled :deep(svg) { fill: #ff9500; }
+
+/* Status toggle */
+.status-toggle {
+  display: flex; border-radius: 5px; overflow: hidden;
+  border: 1px solid rgba(0,0,0,0.10);
+}
+.status-btn {
+  padding: 2px 9px; border: none; background: white;
+  font-size: 10.5px; font-weight: 500; color: #8e8e93;
+  cursor: pointer; transition: background 0.12s, color 0.12s;
+}
+.status-btn:hover { background: rgba(0,0,0,0.04); }
+.status-btn.active { background: #223F79; color: white; }
+
+/* Tags */
+.meta-tags { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.tag-chip { display: inline-flex; align-items: center; gap: 2px; padding: 2px 6px 2px 5px; background: rgba(34,63,121,0.07); color: #223F79; border-radius: 5px; font-size: 11px; font-weight: 500; white-space: nowrap; }
+.tag-hash { opacity: 0.5; flex-shrink: 0; }
+.tag-remove-btn { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border: none; background: transparent; color: #223F79; opacity: 0.45; cursor: pointer; padding: 0; border-radius: 3px; font-size: 13px; line-height: 1; flex-shrink: 0; transition: opacity 0.12s; }
+.tag-remove-btn:hover { opacity: 0.9; }
+.tag-add-btn { display: inline-flex; align-items: center; gap: 3px; border: none; background: transparent; color: #aeaeb2; border-radius: 5px; padding: 2px 5px; font-size: 11px; cursor: pointer; transition: background 0.12s, color 0.12s; }
+.tag-add-btn:hover { background: rgba(0,0,0,0.05); color: #6e6e73; }
+.tag-add-label { font-size: 11px; }
+.tag-input-wrap { position: relative; }
+.tag-input { width: 80px; height: 22px; border: 1px solid rgba(34,63,121,0.28); border-radius: 5px; padding: 0 7px; font-size: 11px; background: rgba(34,63,121,0.04); color: #1c1c1e; outline: none; font-family: inherit; }
+.tag-input:focus { border-color: rgba(34,63,121,0.5); }
+.tag-suggestions { position: absolute; top: calc(100% + 4px); left: 0; min-width: 130px; background: rgba(252,252,254,0.98); border: 1px solid rgba(0,0,0,0.09); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.12); padding: 4px; z-index: 60; display: flex; flex-direction: column; gap: 1px; }
+.tag-suggestion-item { display: block; width: 100%; text-align: left; padding: 5px 9px; border-radius: 6px; border: none; background: none; font-size: 11.5px; color: #223F79; cursor: pointer; transition: background 0.10s; font-family: inherit; }
+.tag-suggestion-item:hover { background: rgba(34,63,121,0.08); }
+
+/* ── Map picker modal ─────────────────────────────────────────────────────── */
+.picker-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.25);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 200; backdrop-filter: blur(2px);
+}
+.picker-dialog {
+  background: white; border-radius: 14px; width: 520px; height: 420px;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.15);
+}
+.picker-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+.picker-title { font-size: 14px; font-weight: 600; color: #1c1c1e; margin: 0; }
+.picker-close {
+  width: 26px; height: 26px; border: none; background: transparent;
+  color: #8e8e93; border-radius: 6px; display: flex; align-items: center;
+  justify-content: center; cursor: pointer; transition: background 0.12s;
+}
+.picker-close:hover { background: rgba(0,0,0,0.06); }
+.picker-search-wrap {
+  display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+  border-bottom: 1px solid rgba(0,0,0,0.06); position: relative;
+}
+.picker-search-icon { color: #8e8e93; flex-shrink: 0; }
+.picker-search-input { flex: 1; border: none; outline: none; font-size: 12.5px; color: #1c1c1e; background: transparent; }
+.picker-search-input::placeholder { color: #aeaeb2; }
+.picker-search-spin { color: #8e8e93; animation: copilot-spin 0.7s linear infinite; flex-shrink: 0; }
+.picker-search-results { border-bottom: 1px solid rgba(0,0,0,0.06); max-height: 160px; overflow-y: auto; display: flex; flex-direction: column; }
+.picker-result-item { text-align: left; padding: 7px 14px; font-size: 12px; color: #1c1c1e; border: none; background: none; cursor: pointer; line-height: 1.4; border-bottom: 1px solid rgba(0,0,0,0.04); }
+.picker-result-item:last-child { border-bottom: none; }
+.picker-result-item:hover { background: rgba(34,63,121,0.06); }
+.picker-map { flex: 1; min-height: 0; background: #e5e7eb; }
+.picker-footer { padding: 10px 16px; border-top: 1px solid rgba(0,0,0,0.06); display: flex; justify-content: flex-end; }
+.picker-confirm { display: flex; align-items: center; gap: 4px; padding: 6px 14px; border-radius: 8px; border: none; background: rgba(34,63,121,0.10); color: #223F79; font-size: 12px; font-weight: 500; cursor: pointer; transition: background 0.12s; }
+.picker-confirm:hover { background: rgba(34,63,121,0.18); }
+
+/* ── Content area ─────────────────────────────────────────────────────────── */
+.editor-content {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* WYSIWYG pane */
 .wysiwyg-pane {
   flex: 1;
   min-width: 0;
   overflow: auto;
-  background: #ffffff;
-  padding: 14px 20px;
+  background: #fff;
 }
 
-.wysiwyg-editor {
-  height: 100%;
-}
+.wysiwyg-editor { height: 100%; }
 
 .wysiwyg-editor :deep(.ProseMirror) {
-  outline: none;
-  min-height: 100%;
-  font-size: 14px;
-  line-height: 1.75;
-  color: #1c1c1e;
+  outline: none; min-height: 100%;
+  font-size: 15px; line-height: 1.80; color: #1c1c1e;
   font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
-  max-width: 720px;
-  margin: 0 auto;
-  padding-bottom: 80px;
+  padding: 24px 40px 100px;
 }
 
-.wysiwyg-editor :deep(.ProseMirror h1) { font-size: 26px; font-weight: 700; margin: 20px 0 10px; line-height: 1.3; }
-.wysiwyg-editor :deep(.ProseMirror h2) { font-size: 21px; font-weight: 650; margin: 18px 0 8px; line-height: 1.35; }
-.wysiwyg-editor :deep(.ProseMirror h3) { font-size: 17px; font-weight: 620; margin: 14px 0 6px; }
-.wysiwyg-editor :deep(.ProseMirror p) { margin: 6px 0; }
-.wysiwyg-editor :deep(.ProseMirror ul), .wysiwyg-editor :deep(.ProseMirror ol) { padding-left: 22px; margin: 6px 0; }
-.wysiwyg-editor :deep(.ProseMirror li) { margin: 3px 0; }
-.wysiwyg-editor :deep(.ProseMirror strong) { font-weight: 600; }
-.wysiwyg-editor :deep(.ProseMirror em) { font-style: italic; }
+.wysiwyg-editor :deep(.ProseMirror h1) { font-size: 26px; font-weight: 700; margin: 28px 0 10px; line-height: 1.25; color: #1c1c1e; letter-spacing: -0.3px; }
+.wysiwyg-editor :deep(.ProseMirror h2) { font-size: 20px; font-weight: 650; margin: 22px 0 8px; color: #1c1c1e; }
+.wysiwyg-editor :deep(.ProseMirror h3) { font-size: 16px; font-weight: 620; margin: 16px 0 6px; color: #2c2c2e; }
+.wysiwyg-editor :deep(.ProseMirror p) { margin: 8px 0; }
+.wysiwyg-editor :deep(.ProseMirror ul), .wysiwyg-editor :deep(.ProseMirror ol) { padding-left: 22px; margin: 8px 0; }
+.wysiwyg-editor :deep(.ProseMirror li) { margin: 4px 0; }
+.wysiwyg-editor :deep(.ProseMirror strong) { font-weight: 650; color: #1c1c1e; }
+.wysiwyg-editor :deep(.ProseMirror em) { font-style: italic; color: #3c3c43; }
+.wysiwyg-editor :deep(.ProseMirror s) { color: #8e8e93; }
 .wysiwyg-editor :deep(.ProseMirror code) {
-  background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 4px;
-  font-size: 12.5px; font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  background: rgba(0,0,0,0.055); padding: 2px 5px; border-radius: 4px;
+  font-size: 13.5px; font-family: ui-monospace,'SF Mono',Menlo,monospace; color: #d63384;
 }
 .wysiwyg-editor :deep(.ProseMirror pre) {
-  background: #f6f8fa; border: 1px solid rgba(0,0,0,0.08); border-radius: 8px;
-  padding: 10px 14px; margin: 10px 0; overflow-x: auto;
+  background: #f8f9fb; border: 1px solid rgba(0,0,0,0.07); border-radius: 10px;
+  padding: 12px 14px; margin: 14px 0; overflow-x: auto;
 }
-.wysiwyg-editor :deep(.ProseMirror pre code) {
-  background: none; padding: 0; font-size: 12.5px;
-}
+.wysiwyg-editor :deep(.ProseMirror pre code) { background: none; padding: 0; font-size: 13px; color: #24292e; }
 .wysiwyg-editor :deep(.ProseMirror blockquote) {
-  border-left: 3px solid rgba(34, 63, 121, 0.3); margin: 8px 0; padding-left: 12px; color: #555;
+  border-left: 3px solid rgba(34,63,121,0.22); margin: 10px 0;
+  padding: 4px 0 4px 14px; color: #6e6e73; background: rgba(34,63,121,0.03); border-radius: 0 6px 6px 0;
 }
-.wysiwyg-editor :deep(.ProseMirror img) { max-width: 100%; border-radius: 8px; margin: 6px 0; }
-.wysiwyg-editor :deep(.ProseMirror hr) { border: none; border-top: 1px solid rgba(0,0,0,0.08); margin: 14px 0; }
-
+.wysiwyg-editor :deep(.ProseMirror img) { max-width: 100%; border-radius: 8px; margin: 8px 0; }
+.wysiwyg-editor :deep(.ProseMirror hr) { border: none; border-top: 1px solid rgba(0,0,0,0.08); margin: 20px 0; }
 .wysiwyg-editor :deep(.ProseMirror p.is-editor-empty:first-child::before) {
-  content: attr(data-placeholder);
-  color: #aeaeb2;
-  pointer-events: none;
-  float: left;
-  height: 0;
+  content: attr(data-placeholder); color: #c7c7cc; pointer-events: none; float: left; height: 0;
+}
+
+/* Source pane */
+.source-pane {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background: #fafafa;
+  border-right: 1px solid rgba(0,0,0,0.05);
+}
+
+.layout-edit .source-pane { border-right: none; }
+
+.md-editor {
+  min-height: 100%;
+  outline: none;
+  padding: 24px 40px 100px;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: #2c2c2e;
+  font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  box-sizing: border-box;
+  caret-color: #223F79;
+}
+.md-editor:empty::before { content: attr(data-placeholder); color: #c7c7cc; pointer-events: none; }
+
+/* Preview pane */
+.preview-pane {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background: #fff;
 }
 
 .markdown-body {
-  font-size: 13px;
-  line-height: 1.7;
-  color: #1c1c1e;
+  padding: 24px 40px 100px;
+  font-size: 15px; line-height: 1.80; color: #1c1c1e;
 }
-
-.markdown-body :deep(h1) { font-size: 18px; font-weight: 700; margin: 16px 0 8px; }
-.markdown-body :deep(h2) { font-size: 16px; font-weight: 600; margin: 14px 0 7px; }
-.markdown-body :deep(h3) { font-size: 14px; font-weight: 600; margin: 12px 0 6px; }
+.markdown-body :deep(h1) { font-size: 26px; font-weight: 700; margin: 28px 0 10px; letter-spacing: -0.3px; }
+.markdown-body :deep(h2) { font-size: 20px; font-weight: 650; margin: 22px 0 8px; }
+.markdown-body :deep(h3) { font-size: 16px; font-weight: 620; margin: 16px 0 6px; }
 .markdown-body :deep(p) { margin: 8px 0; }
-.markdown-body :deep(ul), .markdown-body :deep(ol) { margin: 8px 0; padding-left: 20px; }
-.markdown-body :deep(li) { margin: 3px 0; }
-.markdown-body :deep(.md-code-inline) {
-  background: rgba(0,0,0,0.06);
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
-}
-.markdown-body :deep(.md-code-wrap) {
-  background: #f6f8fa;
-  border: 1px solid rgba(0,0,0,0.08);
-  border-radius: 8px;
-  margin: 10px 0;
-  overflow: hidden;
-  position: relative;
-}
-.markdown-body :deep(.md-code-header) {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 8px 4px 12px;
-  border-bottom: 1px solid rgba(0,0,0,0.06);
-}
-.markdown-body :deep(.md-code-lang) {
-  font-size: 10px;
-  font-weight: 500;
-  color: #8e8e93;
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-.markdown-body :deep(.md-code-copy) {
-  font-size: 10px;
-  color: #8e8e93;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-  opacity: 0;
-  transition: opacity 0.15s, background 0.12s, color 0.15s;
-  font-family: inherit;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
+.markdown-body :deep(ul), .markdown-body :deep(ol) { margin: 8px 0; padding-left: 22px; }
+.markdown-body :deep(li) { margin: 4px 0; }
+.markdown-body :deep(.md-code-inline) { background: rgba(0,0,0,0.055); padding: 2px 5px; border-radius: 4px; font-size: 13px; font-family: ui-monospace,'SF Mono',Menlo,Monaco,monospace; color: #d63384; }
+.markdown-body :deep(.md-code-wrap) { background: #f8f9fb; border: 1px solid rgba(0,0,0,0.07); border-radius: 10px; margin: 14px 0; overflow: hidden; }
+.markdown-body :deep(.md-code-header) { display: flex; align-items: center; justify-content: space-between; padding: 5px 12px 5px 14px; border-bottom: 1px solid rgba(0,0,0,0.06); background: rgba(0,0,0,0.02); }
+.markdown-body :deep(.md-code-lang) { font-size: 10px; font-weight: 600; color: #8e8e93; font-family: ui-monospace,'SF Mono',Menlo,monospace; text-transform: uppercase; letter-spacing: 0.08em; }
+.markdown-body :deep(.md-code-copy) { font-size: 10px; color: #8e8e93; background: transparent; border: none; cursor: pointer; padding: 2px 7px; border-radius: 4px; opacity: 0; transition: opacity 0.15s, background 0.12s; font-family: inherit; display: flex; align-items: center; gap: 3px; }
 .markdown-body :deep(.md-code-wrap:hover .md-code-copy) { opacity: 1; }
-.markdown-body :deep(.md-code-copy:hover) { background: rgba(0,0,0,0.06); color: #3c3c43; }
+.markdown-body :deep(.md-code-copy:hover) { background: rgba(0,0,0,0.06); }
 .markdown-body :deep(.md-code-copy .copy-done) { display: none; color: #34c759; }
 .markdown-body :deep(.md-code-copy[data-copied]) { opacity: 1; color: #34c759; }
 .markdown-body :deep(.md-code-copy[data-copied] .copy-label) { display: none; }
 .markdown-body :deep(.md-code-copy[data-copied] .copy-done) { display: flex; align-items: center; gap: 3px; }
-.markdown-body :deep(.md-code-wrap pre) {
-  margin: 0;
-  padding: 10px 12px;
-  background: transparent;
-  border-radius: 0;
-  overflow-x: auto;
-}
-.markdown-body :deep(.md-code-wrap pre code) {
-  background: none;
-  padding: 0;
-  font-size: 12px;
-  font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
-  color: #24292e;
-}
-.markdown-body :deep(blockquote) {
-  border-left: 3px solid rgba(34, 63, 121, 0.25);
-  margin: 8px 0;
-  padding-left: 10px;
-  color: #555;
-}
-.markdown-body :deep(img) { max-width: 100%; border-radius: 6px; }
-.markdown-body :deep(a) { color: #223F79; }
-.markdown-body :deep(hr) { border: none; border-top: 1px solid rgba(0,0,0,0.08); margin: 12px 0; }
-.markdown-body :deep(table) { border-collapse: collapse; width: 100%; margin: 8px 0; }
-.markdown-body :deep(th), .markdown-body :deep(td) { border: 1px solid rgba(0,0,0,0.08); padding: 5px 8px; font-size: 12px; }
+.markdown-body :deep(.md-code-wrap pre) { margin: 0; padding: 12px 14px; background: transparent; overflow-x: auto; }
+.markdown-body :deep(.md-code-wrap pre code) { background: none; padding: 0; font-size: 13px; font-family: ui-monospace,'SF Mono',Menlo,Monaco,monospace; color: #24292e; line-height: 1.6; }
+.markdown-body :deep(blockquote) { border-left: 3px solid rgba(34,63,121,0.22); margin: 10px 0; padding: 4px 0 4px 14px; color: #6e6e73; background: rgba(34,63,121,0.03); border-radius: 0 6px 6px 0; }
+.markdown-body :deep(img) { max-width: 100%; border-radius: 8px; margin: 8px 0; display: block; }
+.markdown-body :deep(a) { color: #223F79; text-decoration: underline; text-decoration-color: rgba(34,63,121,0.35); }
+.markdown-body :deep(a:hover) { text-decoration-color: rgba(34,63,121,0.8); }
+.markdown-body :deep(hr) { border: none; border-top: 1px solid rgba(0,0,0,0.08); margin: 20px 0; }
+.markdown-body :deep(table) { border-collapse: collapse; width: 100%; margin: 12px 0; }
+.markdown-body :deep(th), .markdown-body :deep(td) { border: 1px solid rgba(0,0,0,0.08); padding: 7px 12px; font-size: 14px; }
 .markdown-body :deep(th) { background: #f5f5f7; font-weight: 600; }
 </style>
 
 <style>
 /* highlight.js token colors (light theme) */
 .hljs-keyword, .hljs-selector-tag, .hljs-built_in { color: #d73a49; }
-
-/* Copilot ghost suggestion text — must be global because it lives inside v-html */
-.copilot-ghost-text { color: #b0b7c0; }
-
-/* WYSIWYG code block copy button (NodeView renders outside scoped CSS) */
-.wysiwyg-editor .md-code-wrap { background: #f6f8fa; border: 1px solid rgba(0,0,0,0.08); border-radius: 8px; margin: 10px 0; overflow: hidden; }
-.wysiwyg-editor .md-code-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px 4px 12px; border-bottom: 1px solid rgba(0,0,0,0.06); }
-.wysiwyg-editor .md-code-lang { font-size: 10px; font-weight: 500; color: #8e8e93; font-family: ui-monospace, 'SF Mono', Menlo, monospace; text-transform: uppercase; letter-spacing: 0.06em; }
-.wysiwyg-editor .md-code-copy { font-size: 10px; color: #8e8e93; background: transparent; border: none; cursor: pointer; padding: 2px 6px; border-radius: 4px; opacity: 0; transition: opacity 0.15s, color 0.15s; font-family: inherit; display: flex; align-items: center; gap: 3px; }
-.wysiwyg-editor .md-code-wrap:hover .md-code-copy { opacity: 1; }
-.wysiwyg-editor .md-code-copy:hover { background: rgba(0,0,0,0.06); }
-.wysiwyg-editor .md-code-copy[data-copied] { opacity: 1; color: #34c759; }
-.wysiwyg-editor .md-code-wrap pre { margin: 0; padding: 10px 12px; background: transparent; overflow-x: auto; }
-.wysiwyg-editor .md-code-wrap pre code { background: none; padding: 0; font-size: 12px; font-family: ui-monospace, 'SF Mono', Menlo, Monaco, monospace; }
 .hljs-string, .hljs-attr { color: #032f62; }
 .hljs-comment { color: #6a737d; font-style: italic; }
 .hljs-number, .hljs-literal { color: #005cc5; }
@@ -2233,4 +1807,18 @@ function closePicker() {
 .hljs-name { color: #22863a; }
 .hljs-type { color: #6f42c1; }
 .hljs-meta { color: #999; }
+
+/* Copilot ghost suggestion text */
+.copilot-ghost-text { color: #b0b7c0; }
+
+/* WYSIWYG code block (NodeView renders outside scoped CSS) */
+.wysiwyg-editor .md-code-wrap { background: #f8f9fb; border: 1px solid rgba(0,0,0,0.07); border-radius: 10px; margin: 14px 0; overflow: hidden; }
+.wysiwyg-editor .md-code-header { display: flex; align-items: center; justify-content: space-between; padding: 5px 12px 5px 14px; border-bottom: 1px solid rgba(0,0,0,0.06); background: rgba(0,0,0,0.02); }
+.wysiwyg-editor .md-code-lang { font-size: 10px; font-weight: 600; color: #8e8e93; font-family: ui-monospace,'SF Mono',Menlo,monospace; text-transform: uppercase; letter-spacing: 0.08em; }
+.wysiwyg-editor .md-code-copy { font-size: 10px; color: #8e8e93; background: transparent; border: none; cursor: pointer; padding: 2px 7px; border-radius: 4px; opacity: 0; transition: opacity 0.15s, color 0.15s; font-family: inherit; display: flex; align-items: center; gap: 3px; }
+.wysiwyg-editor .md-code-wrap:hover .md-code-copy { opacity: 1; }
+.wysiwyg-editor .md-code-copy:hover { background: rgba(0,0,0,0.06); }
+.wysiwyg-editor .md-code-copy[data-copied] { opacity: 1; color: #34c759; }
+.wysiwyg-editor .md-code-wrap pre { margin: 0; padding: 12px 14px; background: transparent; overflow-x: auto; }
+.wysiwyg-editor .md-code-wrap pre code { background: none; padding: 0; font-size: 13px; font-family: ui-monospace,'SF Mono',Menlo,Monaco,monospace; }
 </style>

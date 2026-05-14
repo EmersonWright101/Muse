@@ -177,8 +177,10 @@ const LS_SETTINGS       = 'muse-ebook-settings'
 const LS_COLLECTIONS    = 'muse-ebook-collections'
 const LS_COPILOT        = 'muse-ebook-copilot'
 const LS_TTS_SETTINGS   = 'muse-ebook-tts-settings'
-const LS_TTS_JOBS       = 'muse-ebook-tts-jobs'
-const LS_TTS_PLAYBACK   = 'muse-ebook-tts-playback'
+const LS_TTS_JOBS              = 'muse-ebook-tts-jobs'
+const LS_TTS_PLAYBACK          = 'muse-ebook-tts-playback'
+const LS_DELETED_ANNOTATIONS   = 'muse-ebook-deleted-annotations'
+const LS_DELETED_BOOKS         = 'muse-ebook-deleted-books'
 
 function load<T>(key: string, fallback: T): T {
   try { return JSON.parse(localStorage.getItem(key) ?? 'null') ?? fallback } catch { return fallback }
@@ -237,6 +239,10 @@ export const useEbookStore = defineStore('ebook', () => {
   const copilotSessions = ref<CopilotSession[]>(load(LS_COPILOT, []))
   const ttsSettings     = ref<TtsSettings>({ ...DEFAULT_TTS_SETTINGS, ...load<Partial<TtsSettings>>(LS_TTS_SETTINGS, {}) })
   const storageUsed     = ref<number>(0)
+  // Tombstone sets — IDs that have been deleted on this device.
+  // Shared in the sync payload so other devices stop re-adding deleted items.
+  const deletedAnnotationIds = ref<Set<string>>(new Set(load<string[]>(LS_DELETED_ANNOTATIONS, [])))
+  const deletedBookIds        = ref<Set<string>>(new Set(load<string[]>(LS_DELETED_BOOKS, [])))
   let _serverPushTimer: ReturnType<typeof setTimeout> | null = null
 
   // Normalize any "running" job back to "paused" in case the app was closed mid-generation
@@ -371,6 +377,8 @@ export const useEbookStore = defineStore('ebook', () => {
   async function removeBook(id: string) {
     const book = books.value.find(b => b.id === id)
     if (!book) return
+    deletedBookIds.value.add(id)
+    save(LS_DELETED_BOOKS, [...deletedBookIds.value])
     await deleteBookFile(book)
     books.value = books.value.filter(b => b.id !== id)
     delete progress.value[id]
@@ -431,6 +439,8 @@ export const useEbookStore = defineStore('ebook', () => {
   }
 
   function removeAnnotation(id: string) {
+    deletedAnnotationIds.value.add(id)
+    save(LS_DELETED_ANNOTATIONS, [...deletedAnnotationIds.value])
     annotations.value = annotations.value.filter(a => a.id !== id)
     save(LS_ANNOTATIONS, annotations.value)
     pushToServer().catch((err) => { console.error('[EbookSync] Push to server failed:', err) })
@@ -714,6 +724,8 @@ export const useEbookStore = defineStore('ebook', () => {
     copilotStats?: Record<string, EbookCopilotDailyStat>
     ttsPlaybackPos?: Record<string, TtsPlaybackPos>
     ttsSettings?: TtsSettings
+    deletedAnnotationIds?: string[]
+    deletedBookIds?: string[]
   }
 
   async function pushToServer(): Promise<void> {
@@ -742,6 +754,8 @@ export const useEbookStore = defineStore('ebook', () => {
       copilotStats,
       ttsPlaybackPos: ttsPlaybackPos.value,
       ttsSettings: ttsSettings.value,
+      deletedAnnotationIds: [...deletedAnnotationIds.value],
+      deletedBookIds: [...deletedBookIds.value],
     }
     try {
       await apiPut('/api/ebook/library', payload, {
@@ -763,12 +777,16 @@ export const useEbookStore = defineStore('ebook', () => {
             }
             return Array.from(map.values())
           }
-          merged.books = unionById(payload.books as any[], remote.books ?? [])
+          const delAnn = new Set([...(payload.deletedAnnotationIds ?? []), ...(remote.deletedAnnotationIds ?? [])])
+          const delBook = new Set([...(payload.deletedBookIds ?? []), ...(remote.deletedBookIds ?? [])])
+          merged.books = unionById(payload.books as any[], remote.books ?? []).filter((b: any) => !delBook.has(b.id))
           merged.progress = unionProgress(payload.progress as any[], remote.progress ?? [])
-          merged.annotations = unionById(payload.annotations as any[], remote.annotations ?? [])
+          merged.annotations = unionById(payload.annotations as any[], remote.annotations ?? []).filter((a: any) => !delAnn.has(a.id))
           merged.sessions = unionById(payload.sessions as any[], remote.sessions ?? [])
           merged.collections = unionById(payload.collections as any[], remote.collections ?? [])
           merged.copilotSessions = unionById((payload.copilotSessions ?? []) as any[], remote.copilotSessions ?? [])
+          merged.deletedAnnotationIds = [...delAnn]
+          merged.deletedBookIds = [...delBook]
           return merged
         },
       })
@@ -864,6 +882,22 @@ export const useEbookStore = defineStore('ebook', () => {
       console.log('[EbookSync] syncFromServer: remote books =', remote.books?.length ?? 0)
       const r = remote
 
+      // ─── 0. Merge tombstone sets FIRST so entity merges can use them ─────────
+      for (const id of r.deletedAnnotationIds ?? []) deletedAnnotationIds.value.add(id)
+      for (const id of r.deletedBookIds ?? []) deletedBookIds.value.add(id)
+      save(LS_DELETED_ANNOTATIONS, [...deletedAnnotationIds.value])
+      save(LS_DELETED_BOOKS, [...deletedBookIds.value])
+      // Evict any locally-held books the server says are deleted
+      if (books.value.some(b => deletedBookIds.value.has(b.id))) {
+        books.value = books.value.filter(b => !deletedBookIds.value.has(b.id))
+        save(LS_BOOKS, books.value)
+      }
+      // Evict locally-held annotations the server says are deleted
+      if (annotations.value.some(a => deletedAnnotationIds.value.has(a.id))) {
+        annotations.value = annotations.value.filter(a => !deletedAnnotationIds.value.has(a.id))
+        save(LS_ANNOTATIONS, annotations.value)
+      }
+
       // Work with plain copies to avoid mid-merge reactivity side-effects
       let localBooks: Book[] = JSON.parse(JSON.stringify(books.value))
       const remoteBooks: Book[] = JSON.parse(JSON.stringify(r.books ?? []))
@@ -925,6 +959,7 @@ export const useEbookStore = defineStore('ebook', () => {
       for (const b of localBooks) localBookByFp.set(bookFingerprint(b), b)
 
       for (const rb of remoteBooks) {
+        if (deletedBookIds.value.has(rb.id)) continue
         const fp = bookFingerprint(rb)
         const lb = localBookByFp.get(fp)
         if (lb) {
@@ -943,6 +978,7 @@ export const useEbookStore = defineStore('ebook', () => {
         }
       }
       for (const lb of localBooks) {
+        if (deletedBookIds.value.has(lb.id)) continue
         if (!mergedBooks.find(b => b.id === lb.id)) {
           mergedBooks.push(lb)
         }
@@ -969,6 +1005,7 @@ export const useEbookStore = defineStore('ebook', () => {
       // ─── 4. Merge annotations ──────────────────────────────────────────────────
       const annByFp = new Map<string, BookAnnotation>()
       for (const la of localAnnotations) {
+        if (deletedAnnotationIds.value.has(la.id)) continue
         const newBookId = remapBookId(la.bookId)
         const fp = annotationFingerprint({ ...la, bookId: newBookId })
         const existing = annByFp.get(fp)
@@ -977,6 +1014,7 @@ export const useEbookStore = defineStore('ebook', () => {
         }
       }
       for (const ra of remoteAnnotations) {
+        if (deletedAnnotationIds.value.has(ra.id)) continue
         const newBookId = remapBookId(ra.bookId)
         const fp = annotationFingerprint({ ...ra, bookId: newBookId })
         const existing = annByFp.get(fp)

@@ -6,6 +6,7 @@ import {
   Send, Square, MessageSquare, SquarePen, Eraser, X,
   BookOpen, ExternalLink, FileText, ChevronDown, ChevronUp, ChevronLeft,
   ThumbsUp, ThumbsDown, Download, Eye, Trash2, Star,
+  Newspaper, Play, Bot, Coins, Clock,
 } from 'lucide-vue-next'
 import { useAssistantStore } from '../../stores/assistant'
 import { usePapersStore } from '../../stores/papers'
@@ -15,6 +16,11 @@ import PaperCopilot from './components/PaperCopilot.vue'
 import { usePaperCopilotStore } from '../../stores/paperCopilot'
 import copilotIcon from '../../assets/icons/copilot.svg'
 import { renderLatexInText, stripLatex } from '../../utils/latex'
+import {
+  getSummaryReports,
+  triggerSummary,
+  type SummaryReport,
+} from '../../services/summaryPush'
 
 const assistant = useAssistantStore()
 const papers    = usePapersStore()
@@ -233,10 +239,66 @@ watch(activePaper, (paper) => {
   }
 })
 
+// ─── Summary push view ────────────────────────────────────────────────────────
+
+const summaryReports = ref<SummaryReport[]>([])
+const summaryGenerating = ref(false)
+const summaryToast = ref<{ msg: string; type: 'ok' | 'err' } | null>(null)
+let _summaryToastTimer: ReturnType<typeof setTimeout> | null = null
+
+const activeReport = computed(() =>
+  assistant.activeReportId
+    ? summaryReports.value.find(r => r.id === assistant.activeReportId) ?? null
+    : null,
+)
+
+watch(() => assistant.papersViewMode, async (mode) => {
+  if (mode === 'summary') {
+    const data = await getSummaryReports(undefined, 50)
+    if (data) summaryReports.value = data.items
+  }
+}, { immediate: true })
+
+watch(() => assistant.activeReportId, (id) => {
+  if (!id) return
+  if (!summaryReports.value.find(r => r.id === id)) return
+})
+
+async function generateSummary(type: 'daily' | 'weekly') {
+  summaryGenerating.value = true
+  try {
+    const result = await triggerSummary(type)
+    const data = await getSummaryReports(undefined, 50)
+    if (data) summaryReports.value = data.items
+    assistant.activeReportId = result.report.id
+    showSummaryToast(`${type === 'daily' ? '日报' : '周报'}生成成功`, 'ok')
+  } catch {
+    showSummaryToast('生成失败，请检查总结推送设置', 'err')
+  } finally {
+    summaryGenerating.value = false
+  }
+}
+
+function showSummaryToast(msg: string, type: 'ok' | 'err') {
+  summaryToast.value = { msg, type }
+  if (_summaryToastTimer) clearTimeout(_summaryToastTimer)
+  _summaryToastTimer = setTimeout(() => { summaryToast.value = null }, 3000)
+}
+
+function fmtSummaryDate(iso: string): string {
+  const d = new Date(iso)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function fmtSummaryTime(iso: string): string {
+  const d = new Date(iso)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 </script>
 
 <template>
-  <div :class="['assistant-main', assistant.papersViewMode === 'papers' ? 'theme-orange' : 'theme-blue']">
+  <div :class="['assistant-main', assistant.papersViewMode === 'chat' ? 'theme-blue' : 'theme-orange']">
 
     <!-- Papers view -->
     <template v-if="assistant.papersViewMode === 'papers'">
@@ -662,6 +724,100 @@ watch(activePaper, (paper) => {
     <!-- AI Copilot panel -->
     <PaperCopilot v-if="copilot.isOpen && activePaperForCopilot" :paper="activePaperForCopilot" />
     </div><!-- /papers-split-wrapper -->
+    </template>
+
+    <!-- Summary push view -->
+    <template v-else-if="assistant.papersViewMode === 'summary'">
+      <!-- Empty state: no report selected -->
+      <div v-if="!activeReport" class="summary-empty">
+        <div class="summary-empty-icon"><Newspaper :size="40" /></div>
+        <h2 class="summary-empty-title">总结推送</h2>
+        <p class="summary-empty-desc">从左侧选择一篇总结，或立即生成今日日报 / 本周周报。</p>
+        <div class="summary-generate-btns">
+          <button
+            class="summary-gen-btn primary"
+            :disabled="summaryGenerating"
+            @click="generateSummary('daily')"
+          >
+            <Play v-if="!summaryGenerating" :size="13" />
+            <span class="btn-spin-sm" v-else />
+            {{ summaryGenerating ? '生成中…' : '生成日报' }}
+          </button>
+          <button
+            class="summary-gen-btn"
+            :disabled="summaryGenerating"
+            @click="generateSummary('weekly')"
+          >
+            <Play v-if="!summaryGenerating" :size="13" />
+            <span class="btn-spin-sm" v-else />
+            {{ summaryGenerating ? '生成中…' : '生成周报' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Report detail view -->
+      <div v-else class="summary-detail">
+        <!-- Topbar -->
+        <div class="summary-topbar">
+          <button class="summary-back-btn" @click="assistant.activeReportId = null">
+            <ChevronLeft :size="15" />
+            报告列表
+          </button>
+          <div class="summary-topbar-meta">
+            <span class="summary-type-badge">{{ activeReport.type === 'daily' ? '日报' : '周报' }}</span>
+            <span class="summary-report-date">{{ activeReport.date }}</span>
+          </div>
+          <div class="summary-topbar-actions">
+            <button
+              class="summary-gen-btn-sm"
+              :disabled="summaryGenerating"
+              @click="generateSummary('daily')"
+              title="生成日报"
+            >
+              <Play :size="11" />
+              日报
+            </button>
+            <button
+              class="summary-gen-btn-sm secondary"
+              :disabled="summaryGenerating"
+              @click="generateSummary('weekly')"
+              title="生成周报"
+            >
+              <Play :size="11" />
+              周报
+            </button>
+          </div>
+        </div>
+
+        <!-- Content -->
+        <div class="summary-scroll">
+          <!-- Meta row -->
+          <div class="summary-meta-row">
+            <span v-if="activeReport.provider_name" class="summary-meta-chip">
+              <Bot :size="11" />
+              {{ activeReport.provider_name }} / {{ activeReport.model }}
+            </span>
+            <span class="summary-meta-chip">
+              <Clock :size="11" />
+              {{ fmtSummaryDate(activeReport.created_at) }} {{ fmtSummaryTime(activeReport.created_at) }}
+            </span>
+            <span v-if="activeReport.tokens_input || activeReport.tokens_output" class="summary-meta-chip">
+              <Coins :size="11" />
+              {{ activeReport.tokens_input + activeReport.tokens_output }} tokens
+            </span>
+          </div>
+
+          <!-- Report body -->
+          <div class="summary-body">{{ activeReport.content }}</div>
+        </div>
+      </div>
+
+      <!-- Toast -->
+      <Transition name="papers-toast">
+        <div v-if="summaryToast" class="papers-toast" :class="summaryToast.type === 'err' ? 'err' : 'ok'">
+          {{ summaryToast.msg }}
+        </div>
+      </Transition>
     </template>
 
     <!-- Chat view -->
@@ -1917,5 +2073,215 @@ watch(activePaper, (paper) => {
   background: rgba(74, 123, 200, 0.14);
   border-color: rgba(74, 123, 200, 0.26);
   color: #264178;
+}
+
+/* ── Summary push view ───────────────────────────────────────────────────────── */
+
+.summary-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 40px;
+  text-align: center;
+}
+
+.summary-empty-icon { color: #c7c7cc; }
+
+.summary-empty-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1c1c1e;
+  margin: 0;
+}
+
+.summary-empty-desc {
+  font-size: 14px;
+  color: #8e8e93;
+  margin: 0;
+  max-width: 340px;
+  line-height: 1.6;
+}
+
+.summary-generate-btns {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.summary-gen-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 18px;
+  border-radius: 10px;
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: rgba(221, 133, 60, 0.10);
+  color: #DD853C;
+  transition: background 0.15s;
+}
+
+.summary-gen-btn:hover:not(:disabled) { background: rgba(221, 133, 60, 0.18); }
+.summary-gen-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.summary-gen-btn.primary {
+  background: #DD853C;
+  color: #fff;
+}
+
+.summary-gen-btn.primary:hover:not(:disabled) { background: #c97530; }
+
+.btn-spin-sm {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border: 1.5px solid rgba(221, 133, 60, 0.3);
+  border-top-color: #DD853C;
+  border-radius: 50%;
+  animation: papers-rotate 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.summary-gen-btn.primary .btn-spin-sm {
+  border-color: rgba(255,255,255,0.35);
+  border-top-color: #fff;
+}
+
+/* Summary detail */
+.summary-detail {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.summary-topbar {
+  height: 46px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(12px);
+}
+
+.summary-back-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: #8e8e93;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 7px;
+  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
+}
+
+.summary-back-btn:hover { background: rgba(0,0,0,0.06); color: #3c3c43; }
+
+.summary-topbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.summary-type-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 20px;
+  background: rgba(221, 133, 60, 0.10);
+  color: #DD853C;
+  flex-shrink: 0;
+}
+
+.summary-report-date {
+  font-size: 13px;
+  font-weight: 600;
+  color: #3c3c43;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.summary-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.summary-gen-btn-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 11px;
+  border-radius: 7px;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  background: #DD853C;
+  color: #fff;
+  transition: background 0.15s;
+}
+
+.summary-gen-btn-sm:hover:not(:disabled) { background: #c97530; }
+.summary-gen-btn-sm:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.summary-gen-btn-sm.secondary {
+  background: rgba(221, 133, 60, 0.10);
+  color: #DD853C;
+}
+
+.summary-gen-btn-sm.secondary:hover:not(:disabled) { background: rgba(221, 133, 60, 0.18); }
+
+.summary-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 40px 40px;
+}
+
+.summary-scroll::-webkit-scrollbar { width: 4px; }
+.summary-scroll::-webkit-scrollbar-track { background: transparent; }
+.summary-scroll::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.10); border-radius: 2px; }
+
+.summary-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+
+.summary-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #8e8e93;
+  background: rgba(0,0,0,0.04);
+  padding: 3px 9px;
+  border-radius: 20px;
+}
+
+.summary-body {
+  font-size: 15px;
+  line-height: 1.85;
+  color: #2c2c34;
+  white-space: pre-wrap;
+  max-width: 720px;
 }
 </style>

@@ -436,11 +436,23 @@ export function setTrashRetentionDays(days: number): void {
 
 async function trashDir(): Promise<string> {
   const dir = await notesDir()
-  return `${dir}/.trash`
+  return `${dir}/_trash`
 }
 
 async function ensureTrashDir(): Promise<void> {
   const d = await trashDir()
+  // Migrate from old hidden .trash directory (Tauri scope doesn't allow hidden dirs)
+  const legacy = `${(await notesDir())}/.trash`
+  if (await exists(legacy)) {
+    await mkdir(d, { recursive: true })
+    const entries = await readDir(legacy)
+    for (const e of entries) {
+      if (e.name) {
+        try { await rename(`${legacy}/${e.name}`, `${d}/${e.name}`) } catch { /* skip */ }
+      }
+    }
+    try { await remove(legacy) } catch { /* skip */ }
+  }
   if (!(await exists(d))) await mkdir(d, { recursive: true })
 }
 

@@ -109,7 +109,7 @@ jobs:
 
       - name: install frontend dependencies
         shell: bash
-        run: npm ci
+        run: npm install
 
       - name: Install create-dmg (macOS)
         if: matrix.platform == 'macos-latest'

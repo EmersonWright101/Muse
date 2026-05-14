@@ -107,14 +107,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Remove lock file on Windows (optional-dep platform fix)
-        if: matrix.platform == 'windows-latest'
-        shell: bash
-        run: rm -f package-lock.json
-
       - name: install frontend dependencies
         shell: bash
         run: npm install
+
+      - name: Fix Tauri CLI Windows native binding
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          CLI_VERSION=$(node -p "require('./node_modules/@tauri-apps/cli/package.json').version")
+          npm install --no-save "@tauri-apps/cli-win32-x64-msvc@${CLI_VERSION}"
 
       - name: Install create-dmg (macOS)
         if: matrix.platform == 'macos-latest'

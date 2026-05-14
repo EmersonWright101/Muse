@@ -15,10 +15,10 @@ name = "muse_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.11", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "macos-private-api", "image-png"] }
+tauri = { version = "2.11", features = ["protocol-asset", "macos-private-api", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-http = "2"

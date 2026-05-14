@@ -134,17 +134,6 @@ export function computeChangeset<T extends { id: string; updatedAt?: string }>(
   return { upserts, deletes }
 }
 
-/**
- * 从已同步的完整状态中提取轻量清单。
- */
-function extractManifestFromState(state: any): LightweightItem[] {
-  if (!Array.isArray(state)) return []
-  return state.map((item: any) => ({
-    id: item.id,
-    updatedAt: item.updatedAt,
-    _version: item._version,
-  }))
-}
 
 /**
  * 基于轻量清单（manifest）计算 changeset。

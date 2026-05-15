@@ -521,28 +521,17 @@ function fmtDate(iso: string): string {
                 @mouseenter="hoveredDay = day.date"
                 @mouseleave="hoveredDay = null"
               >
-                <div class="daily-bar-track">
-                  <!-- Stacked from bottom to top: unread, read_only, favorite, bad, good -->
+                <div class="daily-bar-chart-area">
                   <div
-                    class="daily-bar-segment unread"
-                    :style="{ height: `${(day.unread / maxDailyTotal) * 100}%` }"
-                  />
-                  <div
-                    class="daily-bar-segment read-only"
-                    :style="{ height: `${(day.read_only / maxDailyTotal) * 100}%` }"
-                  />
-                  <div
-                    class="daily-bar-segment favorite"
-                    :style="{ height: `${(day.favorite / maxDailyTotal) * 100}%` }"
-                  />
-                  <div
-                    class="daily-bar-segment bad"
-                    :style="{ height: `${(day.bad / maxDailyTotal) * 100}%` }"
-                  />
-                  <div
-                    class="daily-bar-segment good"
-                    :style="{ height: `${(day.good / maxDailyTotal) * 100}%` }"
-                  />
+                    class="daily-bar-track"
+                    :style="{ height: day.total ? `${(day.total / maxDailyTotal) * 100}%` : '0' }"
+                  >
+                    <div v-if="day.good" class="daily-bar-segment good" :style="{ height: `${(day.good / day.total) * 100}%` }" />
+                    <div v-if="day.bad" class="daily-bar-segment bad" :style="{ height: `${(day.bad / day.total) * 100}%` }" />
+                    <div v-if="day.favorite" class="daily-bar-segment favorite" :style="{ height: `${(day.favorite / day.total) * 100}%` }" />
+                    <div v-if="day.read_only" class="daily-bar-segment read-only" :style="{ height: `${(day.read_only / day.total) * 100}%` }" />
+                    <div v-if="day.unread" class="daily-bar-segment unread" :style="{ height: `${(day.unread / day.total) * 100}%` }" />
+                  </div>
                 </div>
                 <div class="daily-bar-label">{{ fmtDailyDate(day.date) }}</div>
                 <!-- Tooltip -->
@@ -1335,7 +1324,7 @@ function fmtDate(iso: string): string {
 .daily-chart { display: flex; flex-direction: column; gap: 12px; }
 .daily-chart-bars {
   display: flex;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 4px;
   height: 180px;
   padding: 0 8px;
@@ -1353,21 +1342,27 @@ function fmtDate(iso: string): string {
 .daily-bar-wrap:hover {
   transform: translateY(-2px);
 }
-.daily-bar-track {
+.daily-bar-chart-area {
+  flex: 1;
   width: 100%;
   max-width: 24px;
-  height: 100%;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+}
+.daily-bar-track {
+  width: 100%;
   display: flex;
   flex-direction: column-reverse;
-  border-radius: 4px;
   overflow: hidden;
-  background: rgba(0,0,0,0.04);
-  border: 1px solid rgba(0,0,0,0.06);
 }
 .daily-bar-segment {
   width: 100%;
-  min-height: 2px;
   transition: opacity 0.15s, height 0.5s ease, filter 0.15s;
+  flex-shrink: 0;
 }
 .daily-bar-segment.good { background: #34C759; }
 .daily-bar-segment.bad { background: #FF3B30; }

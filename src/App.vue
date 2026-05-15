@@ -70,9 +70,9 @@ const panelFloats = computed(() => routeHasSidebar.value)
 const routeHasSidebar = computed(() => route.path !== '/home')
 
 // When the floating panel is visible, push the main content right so it isn't hidden.
-// Travel and ebook routes let the sidebar float over the content (map/reader fills full width).
+// Travel lets the sidebar float over the map. All other routes (including ebook) push content right.
 const panelActive = computed(() => {
-  if (route.path.startsWith('/travel') || route.path.startsWith('/ebook')) return false
+  if (route.path.startsWith('/travel')) return false
   return showPanel.value && routeHasSidebar.value
 })
 

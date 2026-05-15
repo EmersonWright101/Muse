@@ -78,6 +78,21 @@ const loading = ref(false)
 const activeSubTab = ref<'papers' | 'chat'>('papers')
 const hoveredDay = ref<string | null>(null)
 const hoveredSlice = ref<string | null>(null)
+const dailyMouseX = ref(0)
+const dailyMouseY = ref(0)
+const hoveredSegment = ref<{ label: string; count: number; cls: string } | null>(null)
+
+function onDailyMouseMove(e: MouseEvent) {
+  dailyMouseX.value = e.clientX
+  dailyMouseY.value = e.clientY
+}
+
+function enterSeg(label: string, count: number, cls: string) {
+  hoveredSegment.value = { label, count, cls }
+}
+function leaveSeg() {
+  hoveredSegment.value = null
+}
 
 const subTabs = [
   { id: 'papers' as const, label: t('statistics.assistantStats.papersTab') },
@@ -206,8 +221,8 @@ const dailyStats = computed(() => {
 })
 
 const maxDailyTotal = computed(() => {
-  const vals = dailyStats.value.map(d => d.total)
-  return vals.length ? Math.max(...vals) : 1
+  const vals = dailyStats.value.map(d => d.good + d.bad + d.favorite + d.read_only)
+  return vals.length ? Math.max(...vals, 1) : 1
 })
 
 // Format date like "3/15"
@@ -513,37 +528,44 @@ function fmtDate(iso: string): string {
           <div class="dash-section-title">近 30 天每日论文状态</div>
           <div v-if="!dailyStats.length" class="no-data">{{ t('statistics.assistantStats.noData') }}</div>
           <div v-else class="daily-chart">
-            <div class="daily-chart-bars">
+            <div class="daily-chart-bars" @mousemove="onDailyMouseMove">
               <div
                 v-for="day in dailyStats"
                 :key="day.date"
                 class="daily-bar-wrap"
                 @mouseenter="hoveredDay = day.date"
-                @mouseleave="hoveredDay = null"
+                @mouseleave="hoveredDay = null; hoveredSegment = null"
               >
-                <div class="daily-bar-chart-area">
-                  <div
-                    class="daily-bar-track"
-                    :style="{ height: day.total ? `${(day.total / maxDailyTotal) * 100}%` : '0' }"
-                  >
-                    <div v-if="day.good" class="daily-bar-segment good" :style="{ height: `${(day.good / day.total) * 100}%` }" />
-                    <div v-if="day.bad" class="daily-bar-segment bad" :style="{ height: `${(day.bad / day.total) * 100}%` }" />
-                    <div v-if="day.favorite" class="daily-bar-segment favorite" :style="{ height: `${(day.favorite / day.total) * 100}%` }" />
-                    <div v-if="day.read_only" class="daily-bar-segment read-only" :style="{ height: `${(day.read_only / day.total) * 100}%` }" />
-                    <div v-if="day.unread" class="daily-bar-segment unread" :style="{ height: `${(day.unread / day.total) * 100}%` }" />
-                  </div>
+                <!-- 总数贴在柱子顶部 -->
+                <div v-if="day.good + day.bad + day.favorite + day.read_only > 0" class="daily-bar-total">
+                  {{ day.good + day.bad + day.favorite + day.read_only }}
+                </div>
+                <div
+                  class="daily-bar-track"
+                  :style="{ height: (() => { const a = day.good + day.bad + day.favorite + day.read_only; return a ? `${(a / maxDailyTotal) * 140}px` : '0' })() }"
+                >
+                  <div v-if="day.good" class="daily-bar-segment good"
+                    :style="{ height: `${(day.good / (day.good + day.bad + day.favorite + day.read_only)) * 100}%` }"
+                    @mouseenter.stop="enterSeg('点赞', day.good, 'good')"
+                    @mouseleave.stop="leaveSeg()"
+                  />
+                  <div v-if="day.bad" class="daily-bar-segment bad"
+                    :style="{ height: `${(day.bad / (day.good + day.bad + day.favorite + day.read_only)) * 100}%` }"
+                    @mouseenter.stop="enterSeg('踩', day.bad, 'bad')"
+                    @mouseleave.stop="leaveSeg()"
+                  />
+                  <div v-if="day.favorite" class="daily-bar-segment favorite"
+                    :style="{ height: `${(day.favorite / (day.good + day.bad + day.favorite + day.read_only)) * 100}%` }"
+                    @mouseenter.stop="enterSeg('收藏', day.favorite, 'favorite')"
+                    @mouseleave.stop="leaveSeg()"
+                  />
+                  <div v-if="day.read_only" class="daily-bar-segment read-only"
+                    :style="{ height: `${(day.read_only / (day.good + day.bad + day.favorite + day.read_only)) * 100}%` }"
+                    @mouseenter.stop="enterSeg('已读', day.read_only, 'read-only')"
+                    @mouseleave.stop="leaveSeg()"
+                  />
                 </div>
                 <div class="daily-bar-label">{{ fmtDailyDate(day.date) }}</div>
-                <!-- Tooltip -->
-                <div v-if="hoveredDay === day.date" class="daily-tooltip">
-                  <div class="tooltip-date">{{ day.date }}</div>
-                  <div class="tooltip-row"><span class="dot good" /> 点赞 {{ day.good }}</div>
-                  <div class="tooltip-row"><span class="dot bad" /> 踩 {{ day.bad }}</div>
-                  <div class="tooltip-row"><span class="dot favorite" /> 收藏 {{ day.favorite }}</div>
-                  <div class="tooltip-row"><span class="dot read-only" /> 已读 {{ day.read_only }}</div>
-                  <div class="tooltip-row"><span class="dot unread" /> 未读 {{ day.unread }}</div>
-                  <div class="tooltip-total">总计 {{ day.total }}</div>
-                </div>
               </div>
             </div>
             <!-- Legend -->
@@ -552,8 +574,18 @@ function fmtDate(iso: string): string {
               <div class="daily-legend-item"><span class="dot bad" /> 踩</div>
               <div class="daily-legend-item"><span class="dot favorite" /> 收藏</div>
               <div class="daily-legend-item"><span class="dot read-only" /> 已读</div>
-              <div class="daily-legend-item"><span class="dot unread" /> 未读</div>
             </div>
+            <!-- 跟随鼠标的色块 tooltip -->
+            <Teleport to="body">
+              <div
+                v-if="hoveredSegment"
+                class="daily-tooltip-fixed"
+                :style="{ left: dailyMouseX + 'px', top: dailyMouseY + 'px', transform: 'translateX(-50%) translateY(-100%)' }"
+              >
+                <span class="dot" :class="hoveredSegment.cls" />
+                {{ hoveredSegment.label }} <strong>{{ hoveredSegment.count }}</strong>
+              </div>
+            </Teleport>
           </div>
         </div>
 
@@ -1324,9 +1356,9 @@ function fmtDate(iso: string): string {
 .daily-chart { display: flex; flex-direction: column; gap: 12px; }
 .daily-chart-bars {
   display: flex;
-  align-items: stretch;
+  align-items: flex-end;
   gap: 4px;
-  height: 180px;
+  height: 160px;
   padding: 0 8px;
 }
 .daily-bar-wrap {
@@ -1335,65 +1367,61 @@ function fmtDate(iso: string): string {
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  position: relative;
   cursor: pointer;
   transition: transform 0.15s ease;
 }
 .daily-bar-wrap:hover {
   transform: translateY(-2px);
 }
-.daily-bar-chart-area {
-  flex: 1;
-  width: 100%;
-  max-width: 24px;
-  background: rgba(0, 0, 0, 0.04);
-  border-radius: 4px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  overflow: hidden;
-  display: flex;
-  align-items: flex-end;
-}
 .daily-bar-track {
   width: 100%;
+  max-width: 28px;
   display: flex;
   flex-direction: column-reverse;
   overflow: hidden;
+  border-radius: 4px;
 }
 .daily-bar-segment {
   width: 100%;
-  transition: opacity 0.15s, height 0.5s ease, filter 0.15s;
+  transition: opacity 0.15s, filter 0.15s;
   flex-shrink: 0;
 }
 .daily-bar-segment.good { background: #34C759; }
 .daily-bar-segment.bad { background: #FF3B30; }
 .daily-bar-segment.favorite { background: #FF9500; }
 .daily-bar-segment.read-only { background: #007AFF; }
-.daily-bar-segment.unread { background: #AEAEB2; }
 .daily-bar-wrap:hover .daily-bar-segment { filter: brightness(1.1); }
 .daily-chart-bars:hover .daily-bar-wrap:not(:hover) .daily-bar-segment { opacity: 0.45; }
 .daily-bar-label { font-size: 10px; color: #8e8e93; white-space: nowrap; }
+.daily-bar-total {
+  font-size: 10px;
+  font-weight: 700;
+  color: #3c3c43;
+  line-height: 1;
+  margin-bottom: 3px;
+}
 
-/* Tooltip */
-.daily-tooltip {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
+/* 跟随鼠标的 tooltip */
+.daily-tooltip-fixed {
+  position: fixed;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   background: rgba(28, 28, 30, 0.92);
   backdrop-filter: blur(12px);
   color: #fff;
-  padding: 10px 14px;
-  border-radius: 10px;
-  font-size: 12px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-size: 13px;
   white-space: nowrap;
-  z-index: 10;
+  z-index: 9999;
   box-shadow: 0 4px 20px rgba(0,0,0,0.2);
   pointer-events: none;
-  animation: tooltipIn 0.15s ease;
+  animation: tooltipIn 0.1s ease;
 }
 @keyframes tooltipIn {
-  from { opacity: 0; transform: translateX(-50%) translateY(4px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .tooltip-date { font-weight: 600; margin-bottom: 6px; font-size: 13px; }
 .tooltip-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }

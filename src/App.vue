@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { useTravelStore } from './stores/travel'
 import { useTodoNotifications } from './modules/todo/composables/useTodoNotifications'
 import TitleBar from './components/TitleBar.vue'
 import AppSidebar from './components/AppSidebar.vue'
@@ -13,7 +12,6 @@ import { useEbookStore } from './stores/ebook'
 
 const showPanel = ref(true)
 const route = useRoute()
-const travel = useTravelStore()
 const todo = useTodoStore()
 const ebookStore = useEbookStore()
 

@@ -30,7 +30,7 @@ import { useNotesCopilotStore } from '../../../stores/notesCopilot'
 import { useAiSettingsStore } from '../../../stores/aiSettings'
 import { streamCopilotCompletion } from '../../../composables/useCopilotStream'
 import { writeFile, mkdir, exists } from '@tauri-apps/plugin-fs'
-import { notesDir, uploadNoteImage, resolveNoteImageUrl, initNotesImageAssetBase, randomNoteEmoji } from '../../../utils/notesStorage'
+import { notesDir, uploadNoteImage, resolveNoteImageUrl, initNotesImageAssetBase } from '../../../utils/notesStorage'
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('typescript', typescript)

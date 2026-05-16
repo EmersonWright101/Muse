@@ -182,6 +182,7 @@ const LS_TTS_JOBS              = 'muse-ebook-tts-jobs'
 const LS_TTS_PLAYBACK          = 'muse-ebook-tts-playback'
 const LS_DELETED_ANNOTATIONS   = 'muse-ebook-deleted-annotations'
 const LS_DELETED_BOOKS         = 'muse-ebook-deleted-books'
+const LS_SERVER_SYNCED         = 'muse-ebook-server-synced'
 
 function load<T>(key: string, fallback: T): T {
   try { return JSON.parse(localStorage.getItem(key) ?? 'null') ?? fallback } catch { return fallback }
@@ -245,6 +246,7 @@ export const useEbookStore = defineStore('ebook', () => {
   // Shared in the sync payload so other devices stop re-adding deleted items.
   const deletedAnnotationIds = ref<Set<string>>(new Set(load<string[]>(LS_DELETED_ANNOTATIONS, [])))
   const deletedBookIds        = ref<Set<string>>(new Set(load<string[]>(LS_DELETED_BOOKS, [])))
+  const serverSyncedIds       = ref<string[]>(load<string[]>(LS_SERVER_SYNCED, []))
   let _serverPushTimer: ReturnType<typeof setTimeout> | null = null
 
   // Normalize any "running" job back to "paused" in case the app was closed mid-generation
@@ -265,6 +267,13 @@ export const useEbookStore = defineStore('ebook', () => {
   let _sessionBookId = ''
 
   // ─── Book file I/O ──────────────────────────────────────────────────────────
+
+  function markServerSynced(bookId: string) {
+    if (!serverSyncedIds.value.includes(bookId)) {
+      serverSyncedIds.value = [...serverSyncedIds.value, bookId]
+      save(LS_SERVER_SYNCED, serverSyncedIds.value)
+    }
+  }
 
   async function getEbooksDir(): Promise<string> {
     const dir = await ebooksDir()
@@ -299,6 +308,7 @@ export const useEbookStore = defineStore('ebook', () => {
             save(LS_BOOKS, books.value)
           }
           console.log('[EbookSync] Download OK:', book.title, `(${book.id})`, `${remote.byteLength} bytes`)
+          markServerSynced(book.id)
           return uint8ToArrayBuffer(remote)
         }
         console.error('[EbookSync] Download failed: server returned empty for', book.title, `(${book.id})`)
@@ -322,6 +332,7 @@ export const useEbookStore = defineStore('ebook', () => {
           'application/epub+zip',
         ).then(() => {
           console.log('[EbookSync] importBookFile upload OK:', bookId)
+          markServerSynced(bookId)
         }).catch((err) => {
           console.error('[EbookSync] importBookFile upload failed:', bookId, err)
         })
@@ -381,6 +392,8 @@ export const useEbookStore = defineStore('ebook', () => {
     if (!book) return
     deletedBookIds.value.add(id)
     save(LS_DELETED_BOOKS, [...deletedBookIds.value])
+    serverSyncedIds.value = serverSyncedIds.value.filter(sid => sid !== id)
+    save(LS_SERVER_SYNCED, serverSyncedIds.value)
     await deleteBookFile(book)
     books.value = books.value.filter(b => b.id !== id)
     delete progress.value[id]
@@ -818,6 +831,7 @@ export const useEbookStore = defineStore('ebook', () => {
         uint8ToArrayBuffer(bytes),
         'application/epub+zip',
       )
+      markServerSynced(book.id)
       console.log('[EbookSync] pushBookFileToServer OK:', book.title, `(${book.id})`)
     } catch (err) {
       console.error('[EbookSync] pushBookFileToServer failed:', book.title, `(${book.id})`, err)
@@ -861,6 +875,18 @@ export const useEbookStore = defineStore('ebook', () => {
       readStatus: readStatusRank(local.readStatus) >= readStatusRank(remote.readStatus) ? local.readStatus : remote.readStatus,
       collectionIds: [...new Set([...(local.collectionIds ?? []), ...(remote.collectionIds ?? [])])],
     }
+  }
+
+  async function refreshServerSyncedIds(): Promise<void> {
+    if (!isBackendConfigured()) return
+    try {
+      const res = await apiGet<{ ids: string[] }>('/api/ebook/books/synced-file-ids')
+      if (res?.ids) {
+        const merged = [...new Set([...serverSyncedIds.value, ...res.ids])]
+        serverSyncedIds.value = merged
+        save(LS_SERVER_SYNCED, merged)
+      }
+    } catch { /* non-critical */ }
   }
 
   async function syncFromServer(): Promise<void> {
@@ -1170,6 +1196,8 @@ export const useEbookStore = defineStore('ebook', () => {
         (storageUsed as any)._breakdown = r.storageBreakdown
       }
       recordSyncTimestamp('ebook', new Date().toISOString())
+      // Refresh which books have files on the server (for sync badge display)
+      refreshServerSyncedIds().catch(() => {})
     } catch (err) {
       console.error('[EbookSync] syncFromServer uncaught error:', err)
     }
@@ -1180,10 +1208,11 @@ export const useEbookStore = defineStore('ebook', () => {
     books, progress, annotations, sessions, settings, collections,
     copilotSessions,
     activeBookId, activeBook,
+    serverSyncedIds,
     // Library
     addBook, updateBook, removeBook, setActiveBook,
     // File I/O
-    readBookFile, importBookFile,
+    readBookFile, importBookFile, pushBookFileToServer,
     // Progress
     saveProgress, getProgress,
     // Annotations
@@ -1205,6 +1234,6 @@ export const useEbookStore = defineStore('ebook', () => {
     // Copilot
     saveCopilotSession, getCopilotSessions, deleteCopilotSession,
     // Sync
-    pushToServer, syncFromServer,
+    pushToServer, syncFromServer, refreshServerSyncedIds,
   }
 })

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
-import { Plus, BookOpen, Trash2, Clock, MoreVertical, VolumeX } from 'lucide-vue-next'
+import { Plus, BookOpen, Trash2, Clock, MoreVertical, VolumeX, Upload, Cloud, CloudUpload } from 'lucide-vue-next'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { useEbookStore, type Book } from '../../../stores/ebook'
+import { isBackendConfigured } from '../../../services/api'
 import { useI18n } from 'vue-i18n'
 
 // @ts-ignore – epubjs ships its own typedefs
@@ -12,8 +13,34 @@ import ePub from 'epubjs'
 const { t } = useI18n()
 const store = useEbookStore()
 
+const backendOk = computed(() => isBackendConfigured())
+
 const isImporting = ref(false)
 const menuOpenId  = ref<string | null>(null)
+const syncingId   = ref<string | null>(null)
+const syncResult  = ref<Record<string, 'ok' | 'err'>>({})
+
+async function syncFileToServer(book: Book) {
+  syncingId.value = book.id
+  try {
+    await store.pushBookFileToServer(book)
+    syncResult.value = { ...syncResult.value, [book.id]: 'ok' }
+    setTimeout(() => {
+      const r = { ...syncResult.value }
+      delete r[book.id]
+      syncResult.value = r
+    }, 3000)
+  } catch {
+    syncResult.value = { ...syncResult.value, [book.id]: 'err' }
+    setTimeout(() => {
+      const r = { ...syncResult.value }
+      delete r[book.id]
+      syncResult.value = r
+    }, 4000)
+  } finally {
+    syncingId.value = null
+  }
+}
 const isDragOver  = ref(false)
 
 // ─── Import ───────────────────────────────────────────────────────────────────
@@ -198,6 +225,11 @@ const sortedBooks = computed(() =>
           <div v-if="book.totalProgress > 0" class="progress-bar">
             <div class="progress-fill" :style="{ width: `${book.totalProgress}%` }" />
           </div>
+          <!-- Sync badge -->
+          <div v-if="backendOk" class="sync-badge" :class="store.serverSyncedIds.includes(book.id) ? 'badge-synced' : 'badge-unsynced'">
+            <Cloud v-if="store.serverSyncedIds.includes(book.id)" :size="10" />
+            <CloudUpload v-else :size="10" />
+          </div>
         </div>
 
         <!-- Info -->
@@ -223,6 +255,17 @@ const sortedBooks = computed(() =>
 
         <!-- Dropdown -->
         <div v-if="menuOpenId === book.id" class="card-dropdown" @click.stop>
+          <button
+            v-if="!store.serverSyncedIds.includes(book.id) || syncResult[book.id] === 'err'"
+            class="dropdown-item"
+            :disabled="syncingId === book.id"
+            @click="syncFileToServer(book)"
+          >
+            <Upload :size="14" />
+            <span v-if="syncingId === book.id">同步中…</span>
+            <span v-else-if="syncResult[book.id] === 'err'">✗ 同步失败，重试</span>
+            <span v-else>同步文件到服务器</span>
+          </button>
           <button
             v-if="store.ttsJobStates[book.id] && store.ttsJobStates[book.id].status !== 'idle'"
             class="dropdown-item"
@@ -398,6 +441,26 @@ const sortedBooks = computed(() =>
   height: 100%;
   background: #223F79;
   transition: width 0.3s;
+}
+.sync-badge {
+  position: absolute;
+  bottom: 7px;
+  left: 6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.badge-synced {
+  background: rgba(52, 199, 89, 0.92);
+  color: white;
+}
+.badge-unsynced {
+  background: rgba(255, 149, 0, 0.92);
+  color: white;
 }
 
 .book-info {

@@ -264,6 +264,17 @@ export function useEpubReader(containerRef: Ref<HTMLElement | undefined>) {
     selection.value = null
   }
 
+  async function jumpToSpineIdx(idx: number) {
+    const r = renditionRef.value
+    const b = bookRef.value
+    if (!r || !b || idx <= 0) return
+    const item = b.spine.spineItems[idx]
+    if (item) {
+      pendingPageDirection = 'jump'
+      await r.display(item.href).catch(() => r.display())
+    }
+  }
+
   // ─── Appearance ──────────────────────────────────────────────────────────────
 
   function buildFontCss(s: ReaderSettings): string {
@@ -784,7 +795,7 @@ img { max-width: 100% !important; height: auto !important; }
     toc, currentCfi, currentHref, currentSpineIdx, percentage, totalLocs,
     selection, contextMenu, clickedAnnotationCfi, currentChapterText, currentPageText, pageTurn,
     // Methods
-    loadBook, display, next, prev, jumpTo,
+    loadBook, display, next, prev, jumpTo, jumpToSpineIdx,
     updateSettings, applyTheme, resize,
     addHighlight, addUnderline, removeHighlight, restoreAnnotations,
     highlightTextSegment, removeTextHighlight,

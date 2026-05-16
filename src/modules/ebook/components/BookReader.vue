@@ -93,7 +93,11 @@ async function reloadBook() {
   if (!bookBuffer.value) return
   const saved = store.getProgress(props.book.id)
   await reader.loadBook(bookBuffer.value, settings.value)
-  await reader.display(saved?.cfi)
+  if (saved?.cfi) {
+    await reader.display(saved.cfi)
+  } else if (saved?.chapterIndex) {
+    await reader.jumpToSpineIdx(saved.chapterIndex)
+  }
   reader.restoreAnnotations(store.getAnnotations(props.book.id))
 }
 

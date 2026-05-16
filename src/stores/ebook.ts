@@ -70,6 +70,7 @@ export interface ReadingProgress {
   bookId: string
   cfi: string                // EPUB CFI location
   chapterHref: string
+  chapterIndex?: number
   percentage: number
   updatedAt: number
 }

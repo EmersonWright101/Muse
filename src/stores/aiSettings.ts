@@ -399,11 +399,16 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
   function removeProvider(id: string) {
     const idx = providers.value.findIndex(p => p.id === id)
     if (idx === -1) return
-    providers.value.splice(idx, 1)
-    if (activeProviderId.value === id) {
+    const target = providers.value[idx]
+    // Tombstone ALL providers sharing the same name to clear all duplicates at once
+    const sameNameIds = providers.value
+      .filter(p => p.name === target.name)
+      .map(p => p.id)
+    providers.value = providers.value.filter(p => p.name !== target.name)
+    if (sameNameIds.includes(activeProviderId.value)) {
       activeProviderId.value = providers.value[0]?.id ?? ''
     }
-    recordProviderDeletion(id)
+    for (const pid of sameNameIds) recordProviderDeletion(pid)
     persist()
   }
 
@@ -653,10 +658,12 @@ export const useAiSettingsStore = defineStore('aiSettings', () => {
       }
     }
 
-    // 2. Add remote-only providers
+    // 2. Add remote-only providers (skip if same name already in merged to avoid duplicates)
+    const mergedNames = new Set(merged.map(p => p.name))
     for (const remote of remoteProviders) {
-      if (!remoteMatched.has(remote.id)) {
+      if (!remoteMatched.has(remote.id) && !mergedNames.has(remote.name)) {
         merged.push(remote)
+        mergedNames.add(remote.name)
       }
     }
 

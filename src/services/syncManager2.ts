@@ -67,6 +67,7 @@ interface SettingsState {
 
 // Map category IDs to existing modified-at localStorage keys where available
 const _SETTINGS_TS_KEYS: Record<string, string> = {
+  ai: 'muse-ai-settings-modified-at',
   chat: 'muse-chat-settings-modified-at',
   webSearch: 'muse-web-search-settings-modified-at',
   travelCopilot: 'muse-travel-copilot-modified-at',
@@ -150,6 +151,7 @@ async function _collectRawSettingsState(): Promise<SettingsState> {
       paperDefaultModelId: aiStore.paperDefaultModelId,
       titleGenProviderId: aiStore.titleGenProviderId,
       titleGenModelId: aiStore.titleGenModelId,
+      deletedProviders: (await import('../stores/aiSettings')).getDeletedProviders(),
     },
     chat: {
       titleGenProviderId: chatStore.titleGenProviderId,

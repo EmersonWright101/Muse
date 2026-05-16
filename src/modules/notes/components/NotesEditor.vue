@@ -75,6 +75,14 @@ let _copilotAbort: AbortController | null = null
 let _copilotTimer: ReturnType<typeof setTimeout> | null = null
 let _skipBodyWatch  = false
 let _acceptingChunk = false
+let _isComposing    = false
+let _savedRange: Range | null = null
+
+// ─── Undo / Redo ─────────────────────────────────────────────────────────────
+const _undoStack: string[] = []
+const _redoStack: string[] = []
+let _historyTimer: ReturnType<typeof setTimeout> | null = null
+let _lastHistoryText = ''
 
 const configuredProviders = computed(() =>
   aiStore.providers.filter(p => p.enabled && (p.apiKey || p.type === 'ollama'))
@@ -228,6 +236,7 @@ function acceptNextChunk() {
 
 async function requestCompletion() {
   if (!copilot.enabled) return
+  if (_isComposing) return
   if (!editableRef.value) return
   if (body.value.trim().length < 8) return
   const provider = aiStore.providers.find(p => p.id === copilot.providerId && p.enabled)
@@ -267,17 +276,20 @@ async function requestCompletion() {
 function onCopilotBodyChange() {
   if (!copilot.enabled) return
   if (_acceptingChunk) return
+  if (_isComposing) return
   if (_ghostSpan) dismissSuggestion()
   if (_copilotTimer) clearTimeout(_copilotTimer)
   _copilotTimer = setTimeout(() => { _copilotTimer = null; requestCompletion() }, copilot.triggerDelay)
 }
 
-function onEditableInput() {
+function onEditableInput(e: Event) {
+  if ((e as InputEvent).isComposing) return
   if (_ghostSpan) removeGhostSpan(false)
   const text = getCleanText()
   _skipBodyWatch = true
   body.value = text
   nextTick(() => { _skipBodyWatch = false })
+  scheduleHistory()
 }
 
 function onEditableBeforeInput(e: InputEvent) {
@@ -286,7 +298,20 @@ function onEditableBeforeInput(e: InputEvent) {
   }
 }
 
-function onEditableCompositionStart() { if (_ghostSpan) dismissSuggestion() }
+function onEditableCompositionStart() {
+  _isComposing = true
+  if (_copilotTimer) { clearTimeout(_copilotTimer); _copilotTimer = null }
+  if (_ghostSpan) dismissSuggestion()
+}
+
+function onEditableCompositionEnd() {
+  _isComposing = false
+  const text = getCleanText()
+  _skipBodyWatch = true
+  body.value = text
+  nextTick(() => { _skipBodyWatch = false })
+  scheduleHistory()
+}
 
 function onEditableKeydown(e: KeyboardEvent) {
   if (e.key === 'Tab' && _ghostSpan) {
@@ -296,6 +321,15 @@ function onEditableKeydown(e: KeyboardEvent) {
     e.preventDefault(); e.stopPropagation(); acceptNextChunk(); return
   }
   if (e.key === 'Escape' && _ghostSpan) { dismissSuggestion(); return }
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'z') {
+    e.preventDefault(); e.stopPropagation()
+    if (_ghostSpan) dismissSuggestion()
+    undoEdit(); return
+  }
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'z') {
+    e.preventDefault(); e.stopPropagation()
+    redoEdit(); return
+  }
   if (_ghostSpan && (e.key.length === 1 || ['Backspace', 'Delete', 'Enter'].includes(e.key))) {
     dismissSuggestion()
   }
@@ -605,12 +639,15 @@ function syncEditorContent() {
 }
 
 watch(() => note.value?.id, () => {
-  nextTick(syncEditorContent)
+  _undoStack.length = 0
+  _redoStack.length = 0
+  if (_historyTimer) { clearTimeout(_historyTimer); _historyTimer = null }
+  nextTick(() => { syncEditorContent(); _lastHistoryText = getCleanText() })
 })
 
 onMounted(() => {
   initNotesImageAssetBase()
-  if (note.value) nextTick(syncEditorContent)
+  if (note.value) nextTick(() => { syncEditorContent(); _lastHistoryText = getCleanText() })
 })
 
 const body = computed({
@@ -768,6 +805,67 @@ function onKeydown(e: KeyboardEvent) {
   if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); store.saveActive() }
 }
 
+function trackCursor() {
+  const el = editableRef.value
+  const sel = window.getSelection()
+  if (!el || !sel || sel.rangeCount === 0) return
+  const r = sel.getRangeAt(0)
+  if (el.contains(r.startContainer) || el === r.startContainer) {
+    _savedRange = r.cloneRange()
+  }
+}
+
+function onEditableBlur() {
+  const sel = window.getSelection()
+  if (sel && sel.rangeCount > 0) _savedRange = sel.getRangeAt(0).cloneRange()
+}
+
+function commitHistory() {
+  if (_historyTimer) { clearTimeout(_historyTimer); _historyTimer = null }
+  const text = getCleanText()
+  if (text === _lastHistoryText) return
+  _undoStack.push(_lastHistoryText)
+  if (_undoStack.length > 100) _undoStack.shift()
+  _redoStack.length = 0
+  _lastHistoryText = text
+}
+
+function scheduleHistory() {
+  if (_historyTimer) clearTimeout(_historyTimer)
+  _historyTimer = setTimeout(() => { _historyTimer = null; commitHistory() }, 500)
+}
+
+function restoreHistoryText(text: string) {
+  const el = editableRef.value
+  if (!el) return
+  _skipBodyWatch = true
+  body.value = text
+  el.innerText = text
+  nextTick(() => {
+    _skipBodyWatch = false
+    el.focus()
+    setBodyCursorOffset(text.length)
+  })
+}
+
+function undoEdit() {
+  if (_historyTimer) { clearTimeout(_historyTimer); _historyTimer = null }
+  if (_undoStack.length === 0) return
+  _redoStack.push(getCleanText())
+  const prev = _undoStack.pop()!
+  _lastHistoryText = prev
+  restoreHistoryText(prev)
+}
+
+function redoEdit() {
+  if (_historyTimer) { clearTimeout(_historyTimer); _historyTimer = null }
+  if (_redoStack.length === 0) return
+  _undoStack.push(getCleanText())
+  const next = _redoStack.pop()!
+  _lastHistoryText = next
+  restoreHistoryText(next)
+}
+
 async function onPaste(e: ClipboardEvent) {
   const items = e.clipboardData?.items
   if (!items) return
@@ -775,6 +873,7 @@ async function onPaste(e: ClipboardEvent) {
     if (!item.type.startsWith('image/')) continue
     const file = item.getAsFile()
     if (!file) continue
+    commitHistory()
     const buffer = await file.arrayBuffer()
     const bytes = new Uint8Array(buffer)
     const ext = item.type === 'image/jpeg' ? 'jpg' : item.type.replace('image/', '')
@@ -785,14 +884,29 @@ async function onPaste(e: ClipboardEvent) {
     await writeFile(`${imgDir}/${filename}`, bytes)
     uploadNoteImage(filename, note.value.id, bytes, item.type).catch(() => {})
     const mdText = `![${filename}](images/${filename})`
-    const offset = getBodyCursorOffset()
-    const newBody = body.value.slice(0, offset) + mdText + body.value.slice(offset)
-    const el = editableRef.value
-    _skipBodyWatch = true
-    body.value = newBody
-    if (el) el.innerText = newBody
-    const newOffset = offset + mdText.length
-    nextTick(() => { _skipBodyWatch = false; el?.focus(); setBodyCursorOffset(newOffset) })
+    const el    = editableRef.value
+    const saved = _savedRange
+    if (el && saved && el.contains(saved.startContainer)) {
+      saved.deleteContents()
+      const textNode = document.createTextNode(mdText)
+      saved.insertNode(textNode)
+      const after = document.createRange()
+      after.setStartAfter(textNode)
+      after.collapse(true)
+      const sel = window.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(after)
+      _savedRange = after.cloneRange()
+      _skipBodyWatch = true
+      body.value = getCleanText()
+      nextTick(() => { _skipBodyWatch = false })
+    } else {
+      const newBody = body.value + '\n' + mdText
+      _skipBodyWatch = true
+      body.value = newBody
+      if (el) el.innerText = newBody
+      nextTick(() => { _skipBodyWatch = false; el?.focus(); setBodyCursorOffset(newBody.length) })
+    }
     return
   }
   const text = e.clipboardData?.getData('text/plain')
@@ -973,7 +1087,11 @@ initNotesImageAssetBase()
           @input="onEditableInput"
           @beforeinput="onEditableBeforeInput"
           @compositionstart="onEditableCompositionStart"
+          @compositionend="onEditableCompositionEnd"
           @keydown="onEditableKeydown"
+          @mouseup="trackCursor"
+          @keyup="trackCursor"
+          @blur="onEditableBlur"
           @paste.prevent="onPaste"
         />
       </div>

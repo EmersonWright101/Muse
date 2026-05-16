@@ -9,11 +9,13 @@ import { tryNewSync } from './services/syncManager2'
 import { drainOfflineQueue, startNetworkMonitor } from './services/offlineQueue'
 import { useTodoStore } from './stores/todo'
 import { useEbookStore } from './stores/ebook'
+import { useTravelStore } from './stores/travel'
 
 const showPanel = ref(true)
 const route = useRoute()
 const todo = useTodoStore()
 const ebookStore = useEbookStore()
+const travelStore = useTravelStore()
 
 // Auto-hide sidebar when opening a book; restore when closing
 watch(() => ebookStore.activeBookId, (id, prevId) => {
@@ -70,9 +72,9 @@ const panelFloats = computed(() => routeHasSidebar.value)
 const routeHasSidebar = computed(() => route.path !== '/home')
 
 // When the floating panel is visible, push the main content right so it isn't hidden.
-// Travel lets the sidebar float over the map. All other routes (including ebook) push content right.
+// Travel pushes content right only in editor mode; map/powerMap let the sidebar float over the map.
 const panelActive = computed(() => {
-  if (route.path.startsWith('/travel')) return false
+  if (route.path.startsWith('/travel')) return showPanel.value && travelStore.viewMode === 'editor'
   return showPanel.value && routeHasSidebar.value
 })
 

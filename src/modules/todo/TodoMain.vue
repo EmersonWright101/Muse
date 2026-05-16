@@ -38,6 +38,11 @@ const REMINDER_OPTIONS = [
   { value: 1440,  label: '1 天前' },
 ]
 
+let _compositionEndedAt = 0
+function onCompositionStart() { _compositionEndedAt = 0 }
+function onCompositionEnd()   { _compositionEndedAt = Date.now() }
+function isJustComposed()     { return Date.now() - _compositionEndedAt < 100 }
+
 async function createTask() {
   const title = newTaskTitle.value.trim()
   if (!title) return
@@ -53,7 +58,7 @@ async function createTask() {
 }
 
 function onNewTaskKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter') createTask()
+  if (e.key === 'Enter' && !isJustComposed()) createTask()
   if (e.key === 'Escape') { newTaskTitle.value = ''; newTaskInputRef.value?.blur() }
 }
 
@@ -303,6 +308,8 @@ watch(() => store.apiError, (msg) => {
                 class="add-task-input"
                 placeholder="添加新任务…"
                 @keydown="onNewTaskKeydown"
+                @compositionstart="onCompositionStart"
+                @compositionend="onCompositionEnd"
               />
               <button
                 class="add-options-btn"

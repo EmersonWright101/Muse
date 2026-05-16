@@ -141,34 +141,61 @@ async function extractChapters(
 
 // ─── Text splitting ───────────────────────────────────────────────────────────
 
-// Safety cap: paragraphs longer than this are split at sentence boundaries.
-const MAX_PARA_CHARS = 500
+// Hard cap for TTS API input length.
+const MAX_CHUNK_CHARS = 10000
 
-function splitByParagraphs(text: string): string[] {
-  const paragraphs = text
+/**
+ * Split chapter text into TTS chunks.
+ *
+ * Strategy:
+ *   1. Split into individual paragraphs.
+ *   2. Accumulate consecutive paragraphs until the running total reaches
+ *      `targetChunkSize`, then seal the chunk at the paragraph boundary.
+ *      A single paragraph that already meets or exceeds the target is its
+ *      own chunk (no mid-paragraph merging).
+ *   3. Any chunk that still exceeds MAX_CHUNK_CHARS is further split at
+ *      sentence boundaries so TTS API limits are never exceeded.
+ */
+function splitByParagraphs(text: string, targetChunkSize: number): string[] {
+  const paras = text
     .split(/\n+/)
     .map(p => p.replace(/\s+/g, ' ').trim())
     .filter(p => p.length > 0)
 
-  const result: string[] = []
-  for (const para of paragraphs) {
-    if (para.length <= MAX_PARA_CHARS) {
-      result.push(para)
+  // Phase 1: group paragraphs into target-sized chunks.
+  const grouped: string[] = []
+  let current = ''
+  for (const para of paras) {
+    if (current.length === 0) {
+      current = para
+    } else if (current.length + 1 + para.length < targetChunkSize) {
+      current += ' ' + para
     } else {
-      // Oversized paragraph: cut at sentence boundaries
-      let remaining = para
-      while (remaining.length > MAX_PARA_CHARS) {
-        let cutAt = -1
-        for (const sep of ['。', '！', '？', '…', '. ', '! ', '? ']) {
-          const pos = remaining.lastIndexOf(sep, MAX_PARA_CHARS)
-          if (pos > MAX_PARA_CHARS * 0.3) { cutAt = pos + sep.length; break }
-        }
-        if (cutAt <= 0) cutAt = MAX_PARA_CHARS
-        result.push(remaining.slice(0, cutAt).trim())
-        remaining = remaining.slice(cutAt).trim()
-      }
-      if (remaining) result.push(remaining)
+      grouped.push(current)
+      current = para
     }
+  }
+  if (current) grouped.push(current)
+
+  // Phase 2: hard-cap at MAX_CHUNK_CHARS by splitting at sentence boundaries.
+  const result: string[] = []
+  for (const chunk of grouped) {
+    if (chunk.length <= MAX_CHUNK_CHARS) {
+      result.push(chunk)
+      continue
+    }
+    let remaining = chunk
+    while (remaining.length > MAX_CHUNK_CHARS) {
+      let cutAt = -1
+      for (const sep of ['。', '！', '？', '…', '. ', '! ', '? ']) {
+        const pos = remaining.lastIndexOf(sep, MAX_CHUNK_CHARS)
+        if (pos > MAX_CHUNK_CHARS * 0.3) { cutAt = pos + sep.length; break }
+      }
+      if (cutAt <= 0) cutAt = MAX_CHUNK_CHARS
+      result.push(remaining.slice(0, cutAt).trim())
+      remaining = remaining.slice(cutAt).trim()
+    }
+    if (remaining) result.push(remaining)
   }
   return result.filter(c => c.length > 0)
 }
@@ -239,9 +266,10 @@ export function useEbookTtsGenerator() {
       }
 
       // ── Phase 2: build full chunk list + save manifests ───────────────────
+      const chunkSize = ebookStore.ttsSettings.chunkSize ?? 200
       const allChunks: ChunkRef[] = []
       for (const ch of chapters) {
-        const texts = splitByParagraphs(ch.text)
+        const texts = splitByParagraphs(ch.text, chunkSize)
         // Save manifest with chunk texts for highlighting during playback
         await saveManifest(bookId, ch.chapterIdx, texts).catch(() => {})
         texts.forEach((text, partIdx) => {
@@ -337,8 +365,9 @@ export function useEbookTtsGenerator() {
     }
     let total = 0
     let done  = 0
+    const chunkSize = ebookStore.ttsSettings.chunkSize ?? 200
     for (const ch of chapters) {
-      splitByParagraphs(ch.text).forEach((_, pi) => {
+      splitByParagraphs(ch.text, chunkSize).forEach((_, pi) => {
         total++
         if (doneFiles.has(`${ch.chapterIdx}_${pi}.wav`)) done++
       })

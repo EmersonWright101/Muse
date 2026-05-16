@@ -400,6 +400,16 @@ const currentBookHasJob = computed(() =>
                 :value="ttsSettings.speed"
                 @input="store.updateTtsSettings({ speed: parseFloat(($event.target as HTMLInputElement).value) })" />
             </div>
+            <div class="tts-field tts-field-col">
+              <div class="tts-chunk-row">
+                <span class="tts-lbl">分段长度</span>
+                <span class="tts-chunk-val">{{ ttsSettings.chunkSize ?? 200 }} 字</span>
+              </div>
+              <input type="range" class="tts-slider" min="50" max="10000" step="50"
+                :value="ttsSettings.chunkSize ?? 200"
+                @input="store.updateTtsSettings({ chunkSize: parseInt(($event.target as HTMLInputElement).value) })" />
+              <span class="tts-chunk-hint">调整后需重新生成有声书</span>
+            </div>
           </template>
         </div>
 
@@ -814,6 +824,9 @@ const currentBookHasJob = computed(() =>
 .sidebar-theme-dark .voice-sample-btn.playing { background: #6d9bef; color: #1c1c1e; }
 
 .tts-slider { width: 100%; accent-color: #223F79; cursor: pointer; }
+.tts-chunk-row { display: flex; align-items: center; justify-content: space-between; }
+.tts-chunk-val { font-size: 11px; color: #3c3c43; font-variant-numeric: tabular-nums; }
+.tts-chunk-hint { font-size: 10px; color: #aeaeb2; }
 
 
 /* Toggle */

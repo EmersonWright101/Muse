@@ -344,24 +344,28 @@ export const usePapersStore = defineStore('papers', () => {
   // Toggle: clicking the same value again cancels it (→ null); clicking the opposite switches.
   async function togglePaperGood(paperId: string, value: boolean, source = 'arxiv') {
     if (!isConfigured.value) return
-    const paper = pushPapers.value.find(p => p.id === paperId)
-    const cancel = paper?.good === value
+    const idx = pushPapers.value.findIndex(p => p.id === paperId)
+    if (idx < 0) return
+    const prevGood = pushPapers.value[idx].good
+    const cancel = prevGood === value
+    const nextGood = cancel ? null : value
+    pushPapers.value[idx] = { ...pushPapers.value[idx], good: nextGood }
     try {
       if (cancel) {
         const r = await apiFetch(`/papers/${paperId}/good?source=${source}`, { method: 'DELETE' })
-        if (r.ok) {
-          const idx = pushPapers.value.findIndex(p => p.id === paperId)
-          if (idx >= 0) pushPapers.value[idx] = { ...pushPapers.value[idx], good: null }
-        }
+        if (!r.ok) pushPapers.value[idx] = { ...pushPapers.value[idx], good: prevGood }
       } else {
         const r = await apiFetch(`/papers/${paperId}/good?good=${value}&source=${source}`, { method: 'PUT' })
         if (r.ok) {
           const updated: Paper = await r.json()
-          const idx = pushPapers.value.findIndex(p => p.id === paperId)
-          if (idx >= 0) pushPapers.value[idx] = updated
+          pushPapers.value[idx] = updated
+        } else {
+          pushPapers.value[idx] = { ...pushPapers.value[idx], good: prevGood }
         }
       }
-    } catch { /* ignore */ }
+    } catch {
+      pushPapers.value[idx] = { ...pushPapers.value[idx], good: prevGood }
+    }
   }
 
   async function markRead(paperId: string, source = 'arxiv') {

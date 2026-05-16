@@ -148,6 +148,7 @@ export interface TtsSettings {
   modelId:    string   // references an AIModel.id within that provider (must have audio: true)
   voice:      string   // voice id, e.g. "Ryan" — sourced from /v1/models or custom input
   speed:      number   // 0.25 – 4.0
+  chunkSize:  number   // target chars per audio chunk; paragraphs are grouped to meet this target
 }
 
 export interface BookTtsJobState {
@@ -214,6 +215,7 @@ const DEFAULT_TTS_SETTINGS: TtsSettings = {
   modelId:    '',
   voice:      '',
   speed:      1.0,
+  chunkSize:  200,
 }
 
 function normalizeSettings(raw: Partial<ReaderSettings>): ReaderSettings {

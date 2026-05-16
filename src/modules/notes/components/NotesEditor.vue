@@ -54,8 +54,21 @@ const aiStore = useAiSettingsStore()
 // ─── AI Copilot ──────────────────────────────────────────────────────────────
 
 const editableRef         = ref<HTMLDivElement | null>(null)
+const copilotBtnRef       = ref<HTMLButtonElement | null>(null)
 const showCopilotSettings = ref(false)
+const copilotPanelStyle   = ref({ top: '0px', right: '0px' })
 const isGenerating        = ref(false)
+
+function toggleCopilotSettings() {
+  if (!showCopilotSettings.value && copilotBtnRef.value) {
+    const r = copilotBtnRef.value.getBoundingClientRect()
+    copilotPanelStyle.value = {
+      top:   `${r.bottom + 6}px`,
+      right: `${window.innerWidth - r.right}px`,
+    }
+  }
+  showCopilotSettings.value = !showCopilotSettings.value
+}
 const hasGhostSuggestion  = ref(false)
 let _ghostSpan:    HTMLSpanElement | null = null
 let _copilotAbort: AbortController | null = null
@@ -288,13 +301,6 @@ function onEditableKeydown(e: KeyboardEvent) {
   }
 }
 
-function onCopilotSettingsClickOutside(e: MouseEvent) {
-  if (!showCopilotSettings.value) return
-  const el = (e.target as HTMLElement).closest('.copilot-wrap')
-  if (!el) showCopilotSettings.value = false
-}
-onMounted(()   => document.addEventListener('click', onCopilotSettingsClickOutside))
-onUnmounted(() => document.removeEventListener('click', onCopilotSettingsClickOutside))
 
 // ─── Layout: wysiwyg (default) | source | split ──────────────────────────────
 const layout = ref<'wysiwyg' | 'source' | 'split'>('wysiwyg')
@@ -884,57 +890,64 @@ initNotesImageAssetBase()
         </div>
 
         <!-- Copilot -->
-        <div class="copilot-wrap" @click.stop>
+        <div class="copilot-wrap">
           <button
+            ref="copilotBtnRef"
             class="copilot-btn"
             :class="{ active: copilot.enabled, generating: isGenerating }"
             :title="t('notes.copilot.label')"
-            @click.stop="showCopilotSettings = !showCopilotSettings"
+            @click="toggleCopilotSettings"
           >
             <Loader2 v-if="isGenerating" :size="14" />
             <Sparkles v-else :size="13" />
           </button>
-          <div v-if="showCopilotSettings" class="copilot-panel">
-            <label class="copilot-toggle-row">
-              <span class="copilot-panel-title">{{ t('notes.copilot.label') }}</span>
-              <input type="checkbox" class="copilot-checkbox" :checked="copilot.enabled" @change="copilot.setEnabled(($event.target as HTMLInputElement).checked)" />
-            </label>
-            <template v-if="copilot.enabled">
-              <div class="copilot-row">
-                <span class="copilot-label">{{ t('notes.copilot.provider') }}</span>
-                <select class="copilot-select" :value="copilot.providerId" @change="copilot.setProvider(($event.target as HTMLSelectElement).value)">
-                  <option value="" disabled>{{ t('notes.copilot.selectProvider') }}</option>
-                  <option v-for="p in configuredProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
-                </select>
-              </div>
-              <div class="copilot-row">
-                <span class="copilot-label">{{ t('notes.copilot.model') }}</span>
-                <select class="copilot-select" :value="copilot.modelId" @change="copilot.setModel(($event.target as HTMLSelectElement).value)">
-                  <option value="" disabled>{{ t('notes.copilot.selectModel') }}</option>
-                  <option v-for="m in copilotProviderModels" :key="m.id" :value="m.id">{{ m.name }}</option>
-                </select>
-              </div>
-              <div class="copilot-row">
-                <span class="copilot-label">{{ t('notes.copilot.words') }}</span>
-                <input type="number" class="copilot-number" :value="copilot.completionWords" min="1" max="100" @change="copilot.setWords(Number(($event.target as HTMLInputElement).value))" />
-              </div>
-              <div class="copilot-row">
-                <span class="copilot-label">{{ t('notes.copilot.delay') }}</span>
-                <div class="copilot-delay-wrap">
-                  <input type="number" class="copilot-number" :value="copilot.triggerDelay" min="200" max="5000" step="100" @change="copilot.setDelay(Number(($event.target as HTMLInputElement).value))" />
-                  <span class="copilot-unit">ms</span>
-                </div>
-              </div>
-              <div class="copilot-row">
-                <span class="copilot-label">{{ t('notes.copilot.context') }}</span>
-                <div class="copilot-delay-wrap">
-                  <input type="number" class="copilot-number copilot-number--wide" :value="copilot.contextChars" min="200" max="10000" step="200" @change="copilot.setContext(Number(($event.target as HTMLInputElement).value))" />
-                  <span class="copilot-unit">{{ t('notes.copilot.chars') }}</span>
-                </div>
-              </div>
-            </template>
-          </div>
         </div>
+
+        <Teleport to="body">
+          <template v-if="showCopilotSettings">
+            <div class="copilot-overlay" @mousedown="showCopilotSettings = false" />
+            <div class="copilot-panel" :style="copilotPanelStyle">
+              <label class="copilot-toggle-row">
+                <span class="copilot-panel-title">{{ t('notes.copilot.label') }}</span>
+                <input type="checkbox" class="copilot-checkbox" :checked="copilot.enabled" @change="copilot.setEnabled(($event.target as HTMLInputElement).checked)" />
+              </label>
+              <template v-if="copilot.enabled">
+                <div class="copilot-row">
+                  <span class="copilot-label">{{ t('notes.copilot.provider') }}</span>
+                  <select class="copilot-select" :value="copilot.providerId" @change="copilot.setProvider(($event.target as HTMLSelectElement).value)">
+                    <option value="" disabled>{{ t('notes.copilot.selectProvider') }}</option>
+                    <option v-for="p in configuredProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
+                  </select>
+                </div>
+                <div class="copilot-row">
+                  <span class="copilot-label">{{ t('notes.copilot.model') }}</span>
+                  <select class="copilot-select" :value="copilot.modelId" @change="copilot.setModel(($event.target as HTMLSelectElement).value)">
+                    <option value="" disabled>{{ t('notes.copilot.selectModel') }}</option>
+                    <option v-for="m in copilotProviderModels" :key="m.id" :value="m.id">{{ m.name }}</option>
+                  </select>
+                </div>
+                <div class="copilot-row">
+                  <span class="copilot-label">{{ t('notes.copilot.words') }}</span>
+                  <input type="number" class="copilot-number" :value="copilot.completionWords" min="1" max="100" @change="copilot.setWords(Number(($event.target as HTMLInputElement).value))" />
+                </div>
+                <div class="copilot-row">
+                  <span class="copilot-label">{{ t('notes.copilot.delay') }}</span>
+                  <div class="copilot-delay-wrap">
+                    <input type="number" class="copilot-number" :value="copilot.triggerDelay" min="200" max="5000" step="100" @change="copilot.setDelay(Number(($event.target as HTMLInputElement).value))" />
+                    <span class="copilot-unit">ms</span>
+                  </div>
+                </div>
+                <div class="copilot-row">
+                  <span class="copilot-label">{{ t('notes.copilot.context') }}</span>
+                  <div class="copilot-delay-wrap">
+                    <input type="number" class="copilot-number copilot-number--wide" :value="copilot.contextChars" min="200" max="10000" step="200" @change="copilot.setContext(Number(($event.target as HTMLInputElement).value))" />
+                    <span class="copilot-unit">{{ t('notes.copilot.chars') }}</span>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+        </Teleport>
 
         <button class="save-btn" @click="store.saveActive()">{{ t('common.save') }}</button>
       </div>
@@ -1129,6 +1142,7 @@ initNotesImageAssetBase()
 }
 
 .copilot-wrap { position: relative; }
+.copilot-overlay { position: fixed; inset: 0; z-index: 9998; }
 
 .copilot-btn {
   display: flex; align-items: center; justify-content: center;
@@ -1154,7 +1168,7 @@ initNotesImageAssetBase()
 .copilot-btn.generating :deep(svg) { animation: copilot-spin 0.7s linear infinite; }
 
 .copilot-panel {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 200;
+  position: fixed; z-index: 9999;
   background: #fff; border: 1px solid rgba(0,0,0,0.10); border-radius: 12px;
   box-shadow: 0 8px 28px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06);
   padding: 14px; min-width: 230px; display: flex; flex-direction: column; gap: 10px;
